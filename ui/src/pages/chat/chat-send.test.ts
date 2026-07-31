@@ -1337,8 +1337,9 @@ describe("handleSendChat", () => {
       sessionKey: "agent:main",
     });
 
-    const send = handleSendChat(host);
-    const duplicate = handleSendChat(host);
+    const submission = { submissionId: "redirect-submission" };
+    const send = handleSendChat(host, undefined, submission);
+    const duplicate = handleSendChat(host, undefined, submission);
     expect(await raceWithMacrotask(send)).toBe("pending");
     await duplicate;
     expect(host.request).not.toHaveBeenCalled();
@@ -4526,6 +4527,37 @@ describe("handleSendChat", () => {
     }
   });
 
+  it("executes one chat.send for reentry of the same logical submission", async () => {
+    const ack = createDeferred<unknown>();
+    const sends: Record<string, unknown>[] = [];
+    const host = makeHost({
+      requestHandlers: {
+        "chat.send": (params: unknown) => {
+          const payload = requireRecord(params, "same logical submission payload");
+          sends.push(payload);
+          return ack.promise;
+        },
+      },
+    });
+    const options = { submissionId: "same-logical-submission" };
+
+    const first = handleSendChat(host, "send once", options);
+    const reentry = handleSendChat(host, "send once", options);
+    await waitForFast(() => expect(sends).toHaveLength(1));
+
+    expect(host.chatQueue).toHaveLength(1);
+    expect(sends[0]).toMatchObject({
+      idempotencyKey: "same-logical-submission",
+      message: "send once",
+    });
+
+    ack.resolve({ runId: "same-logical-submission", status: "ok" });
+    await Promise.all([first, reentry]);
+    await handleSendChat(host, "send once", options);
+
+    expect(sends).toHaveLength(1);
+  });
+
   it("executes duplicate in-flight chat submits with distinct run ids", async () => {
     const firstAck = createDeferred<unknown>();
     const sends: Record<string, unknown>[] = [];
@@ -4548,9 +4580,11 @@ describe("handleSendChat", () => {
     const second = handleSendChat(host, "same prompt");
 
     expect(host.request.mock.calls.filter(([method]) => method === "chat.send")).toHaveLength(1);
-    expect(host.chatQueue).toHaveLength(1);
-    expect(host.chatQueue[0]?.text).toBe("same prompt");
+    expect(host.chatQueue).toHaveLength(2);
+    expect(host.chatQueue.map((item) => item.text)).toEqual(["same prompt", "same prompt"]);
+    expect(new Set(host.chatQueue.map((item) => item.sendRunId)).size).toBe(2);
     expect(host.chatQueue[0]?.sendState).toBe("sending");
+    expect(host.chatQueue[1]?.sendState).toBe("waiting-idle");
     expect(host.chatMessages).toStrictEqual([]);
 
     firstAck.resolve({ runId: sends[0]?.idempotencyKey, status: "ok" });
@@ -4575,7 +4609,7 @@ describe("handleSendChat", () => {
     const duplicate = handleSendChat(host, "/compact");
 
     try {
-      expect(host.chatQueue.filter((item) => item.localCommandName === "compact")).toHaveLength(1);
+      expect(host.chatQueue.filter((item) => item.localCommandName === "compact")).toHaveLength(2);
       expect(executeSlashCommandMock).toHaveBeenCalledOnce();
     } finally {
       command.resolve({ content: "Compaction complete." });

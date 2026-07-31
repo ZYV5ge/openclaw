@@ -26,6 +26,7 @@ export type ChatHost = ChatInputHistoryState &
     chatQueueByScope?: Record<string, ChatQueueItem[]>;
     /** Active leaf of the history snapshot currently rendered by this pane. */
     chatDisplayedLeafEntryId?: string | null;
+    chatLoading?: boolean;
     chatRunId: string | null;
     chatRunStartup?: ChatRunStartupState | null;
     chatRunUsageById?: Map<string, number>;
@@ -38,7 +39,11 @@ export type ChatHost = ChatInputHistoryState &
     renderLifecycle?: RenderLifecycle;
     requestUpdate?: () => void;
     refreshSessionsAfterChat: Map<string, SessionRefreshTarget>;
-    chatSubmitGuards?: Map<string, Promise<void>>;
+    chatSubmitGuards?: Map<string, Promise<unknown>>;
+    chatSubmissionGuards?: Map<
+      string,
+      { promise: Promise<unknown>; settled: boolean }
+    >;
     chatSendTimingsByRun?: Map<string, ChatSendTimingEntry>;
     eventLogBuffer?: unknown[];
     assistantAgentId?: string | null;

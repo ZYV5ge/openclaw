@@ -24,6 +24,7 @@ function createChatComposerState(): ChatComposerState {
     composerComposing: false,
     composingDraft: null,
     composerInputIntentKey: null,
+    composerSubmission: null,
     pendingClearedSubmittedDraft: null,
     goalExpandedId: null,
     activeGatewayQuestionId: null,

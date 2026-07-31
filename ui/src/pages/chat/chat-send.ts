@@ -7,4 +7,7 @@ export {
   sendChatMessageNow,
   sendQueuedChatMessage,
 } from "./chat-send-queued.ts";
-export { withChatSubmitGuard } from "./chat-submit-guard.ts";
+export {
+  withChatSubmissionGuard,
+  withChatSubmitGuard,
+} from "./chat-submit-guard.ts";

@@ -4,6 +4,7 @@ import { loadSettings, normalizeChatSendShortcut, patchSettings } from "../../..
 import "../../../components/tooltip.ts";
 import { t } from "../../../i18n/index.ts";
 import { areUiSessionKeysEquivalent } from "../../../lib/sessions/session-key.ts";
+import { generateUUID } from "../../../lib/uuid.ts";
 import { ComposerDictationController, insertComposerDictation } from "../composer-dictation.ts";
 import { discoverRealtimeTalkInputs } from "../realtime-talk-input.ts";
 import { isLargePastedTextAttachment } from "./chat-attachments.ts";
@@ -121,6 +122,33 @@ function handleComposerMenuKeyDown<T>(
     default:
       return false;
   }
+}
+
+function composerSubmissionKey(
+  props: ChatComposerProps,
+  draftKey: string,
+  draft: string,
+): string {
+  const attachments = props.getAttachments?.() ?? props.attachments ?? [];
+  return JSON.stringify([
+    draftKey,
+    draft,
+    attachments.map((attachment) => [
+      attachment.id,
+      attachment.mimeType,
+      attachment.fileName ?? "",
+      attachment.sizeBytes ?? 0,
+    ]),
+  ]);
+}
+
+function resolveComposerSubmissionId(state: ChatComposerState, key: string): string {
+  if (state.composerSubmission?.key === key) {
+    return state.composerSubmission.id;
+  }
+  const id = generateUUID();
+  state.composerSubmission = { id, key };
+  return id;
 }
 
 export function renderChatComposer(props: ChatComposerProps) {
@@ -398,6 +426,9 @@ export function renderChatComposer(props: ChatComposerProps) {
         if (result.preventDefault) {
           event.preventDefault();
         }
+        // History navigation is an explicit new draft lifecycle even when it
+        // restores text identical to the most recently submitted prompt.
+        state.composerSubmission = null;
         // History navigation updates the renderer-owned draft outside a
         // reactive property; commit it before placing the caret in the DOM.
         requestUpdate();
@@ -416,7 +447,12 @@ export function renderChatComposer(props: ChatComposerProps) {
       event.preventDefault();
       const target = event.target as HTMLTextAreaElement;
       commitComposerDraft(props, target.value);
-      props.onSend();
+      props.onSend(
+        resolveComposerSubmissionId(
+          state,
+          composerSubmissionKey(props, draftKey, target.value),
+        ),
+      );
       syncComposerDraftAfterSend(target);
     }
   };
@@ -437,6 +473,7 @@ export function renderChatComposer(props: ChatComposerProps) {
     requestUpdate();
   };
   const handleBeforeInput = (event: InputEvent) => {
+    state.composerSubmission = null;
     if (!state.composerComposing && !event.isComposing) {
       markComposerInputIntent(state, composerDraftKey(props));
     }
@@ -479,6 +516,7 @@ export function renderChatComposer(props: ChatComposerProps) {
     );
   };
   const handleCompositionEnd = (event: CompositionEvent) => {
+    state.composerSubmission = null;
     state.composerComposing = false;
     if (state.composingDraft?.key === draftKey) {
       state.composingDraft = null;
@@ -501,7 +539,9 @@ export function renderChatComposer(props: ChatComposerProps) {
     }
     commitComposerDraft(props, draft);
     props.onTypingChange?.(false);
-    props.onSend();
+    props.onSend(
+      resolveComposerSubmissionId(state, composerSubmissionKey(props, draftKey, draft)),
+    );
     syncComposerDraftAfterSend(state.composerTextarea);
   };
   const handleVoicePrimaryAction = () => {
@@ -581,6 +621,7 @@ export function renderChatComposer(props: ChatComposerProps) {
     enabled: props.composerHoldToRecord !== false,
     realtimeTalkActive: props.realtimeTalkActive === true,
     onCommit: (transcript: string) => {
+      state.composerSubmission = null;
       const target = state.composerTextarea;
       const selection = state.dictationSelection ?? {
         start: target?.selectionStart ?? visibleDraft.length,

@@ -29,6 +29,7 @@ export function enqueuePendingSendMessage(
   sendState?: ChatQueueItem["sendState"],
   skillWorkshopRevision?: ChatQueueItem["skillWorkshopRevision"],
   replyToId?: string,
+  sendRunId?: string,
 ): ChatQueueItem | null {
   const trimmed = text.trim();
   const hasAttachments = Boolean(attachments && attachments.length > 0);
@@ -43,7 +44,7 @@ export function enqueuePendingSendMessage(
     attachments: hasAttachments ? attachments : undefined,
     refreshSessions,
     sendAttempts: 0,
-    sendRunId: generateUUID(),
+    sendRunId: sendRunId ?? generateUUID(),
     sendState,
     sendSubmittedAtMs: submittedAtMs,
     sessionKey: host.sessionKey,
