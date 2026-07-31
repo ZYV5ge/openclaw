@@ -26,6 +26,7 @@ import {
   type SessionAccessScope,
   type SessionTranscriptReadScope,
   upsertSessionEntry,
+  waitForSessionTranscriptProjection,
 } from "../../config/sessions/session-accessor.js";
 import { resolveMirroredTranscriptText } from "../../config/sessions/transcript-mirror.js";
 import { withOwnedSessionTranscriptWrites } from "../../config/sessions/transcript-write-context.js";
@@ -1212,7 +1213,10 @@ describe("chat directive tag stripping for non-streaming final payloads", () => 
 
     await send({
       idempotencyKey: `idem-${name}-leaf`,
-      requestParams: { expectedLeafEntryId: expectedLeaf },
+      requestParams: {
+        sessionId: mockState.sessionId,
+        expectedLeafEntryId: expectedLeaf,
+      },
       waitFor: "none",
     });
 
@@ -1269,6 +1273,140 @@ describe("chat directive tag stripping for non-streaming final payloads", () => 
       expect.any(Object),
     );
     expect(context.addChatRun).toHaveBeenCalledTimes(1);
+  });
+
+  it("allows a displayed ancestor after the same session advances on its active path", async () => {
+    await createGatewayUserTurnSqliteFixture("openclaw-chat-send-active-ancestor-");
+    await appendTranscriptMessage(transcriptScope(), {
+      eventId: "displayed-leaf",
+      message: { role: "assistant", content: "displayed" },
+      now: 1,
+      parentId: null,
+    });
+    await appendTranscriptMessage(transcriptScope(), {
+      eventId: "background-leaf",
+      message: { role: "assistant", content: "NO_REPLY" },
+      now: 2,
+      parentId: "displayed-leaf",
+    });
+    const { context, respond, send } = createChatRequestFixture();
+
+    await send({
+      idempotencyKey: "idem-active-ancestor",
+      requestParams: {
+        sessionId: mockState.sessionId,
+        expectedLeafEntryId: "displayed-leaf",
+      },
+    });
+
+    expect(respond).toHaveBeenCalledWith(
+      true,
+      expect.objectContaining({ status: "started" }),
+      undefined,
+      expect.any(Object),
+    );
+    expect(context.addChatRun).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects an off-path entry even when the rendered session still matches", async () => {
+    await createGatewayUserTurnSqliteFixture("openclaw-chat-send-off-path-entry-");
+    await appendTranscriptMessage(transcriptScope(), {
+      eventId: "root",
+      message: { role: "user", content: "root" },
+      now: 1,
+      parentId: null,
+    });
+    await appendTranscriptMessage(transcriptScope(), {
+      eventId: "inactive-leaf",
+      message: { role: "assistant", content: "inactive" },
+      now: 2,
+      parentId: "root",
+    });
+    await appendTranscriptMessage(transcriptScope(), {
+      eventId: "active-leaf",
+      message: { role: "assistant", content: "active" },
+      now: 3,
+      parentId: "root",
+    });
+    await waitForSessionTranscriptProjection(transcriptScope());
+    const before = loadTranscriptEventsSync(transcriptScope());
+    const { context, respond, send } = createChatRequestFixture();
+
+    await send({
+      idempotencyKey: "idem-off-path-entry",
+      requestParams: {
+        sessionId: mockState.sessionId,
+        expectedLeafEntryId: "inactive-leaf",
+      },
+      waitFor: "none",
+    });
+
+    expect(lastRespondCall(respond)).toEqual([
+      false,
+      undefined,
+      expect.objectContaining({ details: { reason: "active-leaf-changed" } }),
+    ]);
+    expect(context.addChatRun).not.toHaveBeenCalled();
+    expect(mockState.lastDispatchCtx).toBeUndefined();
+    expect(loadTranscriptEventsSync(transcriptScope())).toEqual(before);
+  });
+
+  it("keeps exact-leaf behavior when the client omits its session generation", async () => {
+    await createGatewayUserTurnSqliteFixture("openclaw-chat-send-ancestor-no-session-");
+    await appendTranscriptMessage(transcriptScope(), {
+      eventId: "displayed-leaf",
+      message: { role: "assistant", content: "displayed" },
+      now: 1,
+      parentId: null,
+    });
+    await appendTranscriptMessage(transcriptScope(), {
+      eventId: "background-leaf",
+      message: { role: "assistant", content: "NO_REPLY" },
+      now: 2,
+      parentId: "displayed-leaf",
+    });
+    const { context, respond, send } = createChatRequestFixture();
+
+    await send({
+      idempotencyKey: "idem-ancestor-no-session",
+      requestParams: { expectedLeafEntryId: "displayed-leaf" },
+      waitFor: "none",
+    });
+
+    expect(lastRespondCall(respond)).toEqual([
+      false,
+      undefined,
+      expect.objectContaining({ details: { reason: "active-leaf-changed" } }),
+    ]);
+    expect(context.addChatRun).not.toHaveBeenCalled();
+  });
+
+  it("rejects a stale rendered session even when its leaf id still matches", async () => {
+    await createGatewayUserTurnSqliteFixture("openclaw-chat-send-stale-session-generation-");
+    await appendTranscriptMessage(transcriptScope(), {
+      eventId: "current-leaf",
+      message: { role: "assistant", content: "current" },
+      now: 1,
+      parentId: null,
+    });
+    const { context, respond, send } = createChatRequestFixture();
+
+    await send({
+      idempotencyKey: "idem-stale-session-generation",
+      requestParams: {
+        sessionId: "session-before-branch-switch",
+        expectedLeafEntryId: "current-leaf",
+      },
+      waitFor: "none",
+    });
+
+    expect(lastRespondCall(respond)).toEqual([
+      false,
+      undefined,
+      expect.objectContaining({ details: { reason: "active-leaf-changed" } }),
+    ]);
+    expect(context.addChatRun).not.toHaveBeenCalled();
+    expect(mockState.lastDispatchCtx).toBeUndefined();
   });
 
   it("broadcasts session metadata changes reported by chat command dispatch", async () => {
