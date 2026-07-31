@@ -22,7 +22,7 @@ type TestChatPane = HTMLElement & {
   state: ChatPageHost;
   connectedClient: GatewayBrowserClient | null;
   connectionGeneration: number;
-  continueCatalogSession: (key: CatalogSessionKey) => Promise<void>;
+  continueCatalogSession: (key: CatalogSessionKey, submissionId?: string) => Promise<void>;
   catalogLoadGeneration: number;
   catalogSession: SessionCatalogSession | null;
   sessionKey: string;
@@ -684,7 +684,7 @@ describe("chat pane catalog continuation lifecycle", () => {
     const request = vi.fn().mockResolvedValue({ sessionKey: "agent:main:continued" });
     const { key, pane, state } = createCatalogContinuationPane(request);
 
-    await pane.continueCatalogSession(key);
+    await pane.continueCatalogSession(key, "catalog-submit");
 
     expect(request).toHaveBeenCalledWith("sessions.catalog.continue", key);
     const onPaneSessionChange = expectDefined(
@@ -707,7 +707,9 @@ describe("chat pane catalog continuation lifecycle", () => {
     expect(state.handleChatDraftChange).toHaveBeenCalledWith(
       "Continue the original catalog conversation",
     );
-    expect(state.handleSendChat).toHaveBeenCalledOnce();
+    expect(state.handleSendChat).toHaveBeenCalledWith(undefined, {
+      submissionId: "catalog-submit",
+    });
   });
 
   it("does not send a stale catalog draft after the user switches conversations", async () => {
@@ -797,32 +799,59 @@ describe("chat pane catalog continuation lifecycle", () => {
     expect(state.chatSending).toBe(true);
   });
 
-  it("allows only the latest overlapping catalog continuation to adopt and send", async () => {
-    const first = createDeferred<{ sessionKey: string }>();
-    const second = createDeferred<{ sessionKey: string }>();
-    const request = vi
-      .fn()
-      .mockImplementationOnce(() => first.promise)
-      .mockImplementationOnce(() => second.promise);
+  it("joins reentry of the same catalog submission before adoption", async () => {
+    const continued = createDeferred<{ sessionKey: string }>();
+    const request = vi.fn(() => continued.promise);
     const { key, pane, state } = createCatalogContinuationPane(request);
 
-    const staleContinuation = pane.continueCatalogSession(key);
-    state.chatMessage = "Only send the latest catalog draft";
-    const currentContinuation = pane.continueCatalogSession(key);
-    first.resolve({ sessionKey: "agent:main:stale-continuation" });
-    await staleContinuation;
+    const first = pane.continueCatalogSession(key, "catalog-same");
+    const reentry = pane.continueCatalogSession(key, "catalog-same");
+    const adoptionRequests = request.mock.calls.length;
+    continued.resolve({ sessionKey: "agent:main:continued" });
+    await Promise.all([first, reentry]);
 
-    expect(pane.switchPaneSession).not.toHaveBeenCalled();
-    expect(state.handleSendChat).not.toHaveBeenCalled();
-    expect(state.chatSending).toBe(true);
+    expect(adoptionRequests).toBe(1);
+    expect(request).toHaveBeenCalledTimes(1);
+    expect(state.handleSendChat).toHaveBeenCalledTimes(1);
+    expect(state.handleSendChat).toHaveBeenCalledWith(undefined, {
+      submissionId: "catalog-same",
+    });
+  });
 
-    second.resolve({ sessionKey: "agent:main:latest-continuation" });
-    await currentContinuation;
+  it("queues distinct catalog submissions FIFO after one adoption", async () => {
+    const continued = createDeferred<{ sessionKey: string }>();
+    const firstSend = createDeferred<void>();
+    const request = vi.fn(() => continued.promise);
+    const { key, pane, state } = createCatalogContinuationPane(request);
+    state.handleSendChat = vi
+      .fn()
+      .mockImplementationOnce(() => firstSend.promise)
+      .mockResolvedValueOnce(undefined);
 
-    expect(pane.switchPaneSession).toHaveBeenCalledOnce();
-    expect(pane.switchPaneSession).toHaveBeenCalledWith("agent:main:latest-continuation");
-    expect(state.handleChatDraftChange).toHaveBeenCalledWith("Only send the latest catalog draft");
-    expect(state.handleSendChat).toHaveBeenCalledOnce();
+    const first = pane.continueCatalogSession(key, "catalog-a");
+    state.chatMessage = "Second catalog draft";
+    const second = pane.continueCatalogSession(key, "catalog-b");
+    const adoptionRequests = request.mock.calls.length;
+    continued.resolve({ sessionKey: "agent:main:continued" });
+    await vi.waitFor(() => expect(state.handleSendChat).toHaveBeenCalledTimes(1));
+    const sendsWhileFirstPending = vi.mocked(state.handleSendChat).mock.calls.length;
+    firstSend.resolve();
+    await Promise.all([first, second]);
+
+    expect(adoptionRequests).toBe(1);
+    expect(request).toHaveBeenCalledTimes(1);
+    expect(sendsWhileFirstPending).toBe(1);
+    expect(state.handleChatDraftChange).toHaveBeenNthCalledWith(
+      1,
+      "Continue the original catalog conversation",
+    );
+    expect(state.handleChatDraftChange).toHaveBeenNthCalledWith(2, "Second catalog draft");
+    expect(state.handleSendChat).toHaveBeenNthCalledWith(1, undefined, {
+      submissionId: "catalog-a",
+    });
+    expect(state.handleSendChat).toHaveBeenNthCalledWith(2, undefined, {
+      submissionId: "catalog-b",
+    });
   });
 
   it("does not display a rejected catalog continuation in a different conversation", async () => {

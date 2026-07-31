@@ -1341,13 +1341,13 @@ describe("handleSendChat", () => {
     const send = handleSendChat(host, undefined, submission);
     const duplicate = handleSendChat(host, undefined, submission);
     expect(await raceWithMacrotask(send)).toBe("pending");
-    await duplicate;
+    expect(await raceWithMacrotask(duplicate)).toBe("pending");
     expect(host.request).not.toHaveBeenCalled();
     expect(host.chatMessage).toBe("/redirect start over");
 
     host.chatMessage = "new draft";
     settingsPatch.resolve(true);
-    await send;
+    await Promise.all([send, duplicate]);
 
     expect(host.request).toHaveBeenCalledWith("sessions.steer", {
       key: "agent:main",
@@ -6327,6 +6327,50 @@ describe("handleSendChat", () => {
     });
   });
 
+  it("rechecks history started during settings wait before choosing the foreground leaf", async () => {
+    const settingsPatch = createDeferred<boolean>();
+    const history = createDeferred<unknown>();
+    const sends: Record<string, unknown>[] = [];
+    const host = makeHost({
+      requestHandlers: {
+        "chat.history": () => history.promise,
+        "chat.send": (params: unknown) => {
+          const payload = requireRecord(params, "settings-delayed refreshed leaf payload");
+          sends.push(payload);
+          return { runId: payload.idempotencyKey, status: "started" };
+        },
+      },
+      chatDisplayedLeafEntryId: "leaf-stale",
+      chatMessage: "send after settings and history",
+      pendingSettingsPatches: { "agent:main": settingsPatch.promise },
+    });
+
+    const send = handleSendChat(host);
+    await Promise.resolve();
+    const refresh = loadChatHistory(host as unknown as Parameters<typeof loadChatHistory>[0]);
+    expect(host.chatLoading).toBe(true);
+    settingsPatch.resolve(true);
+    await Promise.resolve();
+    await Promise.resolve();
+    const sendsBeforeHistory = sends.length;
+
+    history.resolve({
+      messages: [],
+      sessionInfo: {
+        ...row("agent:main", { hasActiveRun: false, status: "done" }),
+        activeLeafEntryId: "leaf-current",
+      },
+    });
+    await Promise.all([refresh, send]);
+
+    expect(sendsBeforeHistory).toBe(0);
+    expect(sends).toHaveLength(1);
+    expect(sends[0]).toMatchObject({
+      expectedLeafEntryId: "leaf-current",
+      message: "send after settings and history",
+    });
+  });
+
   it("attaches an authoritative empty displayed leaf to a foreground send", async () => {
     const host = makeHost({
       requestHandlers: {
@@ -6415,6 +6459,7 @@ describe("handleSendChat", () => {
   });
 
   it("parks an active-leaf rejection, restores the draft, and refreshes branch state", async () => {
+    const onSubmissionRetryable = vi.fn();
     const host = makeHost({
       requestHandlers: {
         "chat.send": () => {
@@ -6435,7 +6480,14 @@ describe("handleSendChat", () => {
       chatMessage: "stale branch prompt",
     });
 
-    await handleSendChat(host);
+    await handleSendChat(
+      host,
+      undefined,
+      {
+        submissionId: "active-leaf-submission",
+        onSubmissionRetryable,
+      } as never,
+    );
     await waitForFast(() => {
       expect(host.request).toHaveBeenCalledWith("chat.history", {
         sessionKey: "agent:main",
@@ -6454,6 +6506,7 @@ describe("handleSendChat", () => {
       }),
     ]);
     expect(host.request.mock.calls.filter(([method]) => method === "chat.send")).toHaveLength(1);
+    expect(onSubmissionRetryable).toHaveBeenCalledWith("active-leaf-submission");
   });
 
   it("marks validation failures visible and restores the composer", async () => {
