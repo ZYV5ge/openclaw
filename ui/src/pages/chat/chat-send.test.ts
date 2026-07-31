@@ -4526,12 +4526,21 @@ describe("handleSendChat", () => {
     }
   });
 
-  it("coalesces duplicate in-flight chat submits before the gateway acknowledges them", async () => {
-    const sent = createDeferred<unknown>();
+  it("executes duplicate in-flight chat submits with distinct run ids", async () => {
+    const firstAck = createDeferred<unknown>();
+    const sends: Record<string, unknown>[] = [];
 
     const host = makeHost({
       requestHandlers: {
-        "chat.send": () => sent.promise,
+        "chat.history": () => idleChatHistory(),
+        "chat.send": (params: unknown) => {
+          const payload = requireRecord(params, "duplicate chat send payload");
+          sends.push(payload);
+          if (sends.length === 1) {
+            return firstAck.promise;
+          }
+          return { runId: payload.idempotencyKey, status: "ok" };
+        },
       },
     });
 
@@ -4544,21 +4553,15 @@ describe("handleSendChat", () => {
     expect(host.chatQueue[0]?.sendState).toBe("sending");
     expect(host.chatMessages).toStrictEqual([]);
 
-    const queuedRunId = host.chatQueue[0]?.sendRunId;
-    sent.resolve({ runId: queuedRunId, status: "started" });
+    firstAck.resolve({ runId: sends[0]?.idempotencyKey, status: "ok" });
     await Promise.all([first, second]);
 
-    expect(host.request.mock.calls.filter(([method]) => method === "chat.send")).toHaveLength(1);
-    expect(host.chatQueue).toEqual([
-      expect.objectContaining({ sendState: "sending", text: "same prompt" }),
-    ]);
-    expect(loadChatComposerSnapshot(host, host.sessionKey)?.queue).toEqual([
-      expect.objectContaining({ sendAttempts: 1, sendState: "waiting-reconnect" }),
-    ]);
-    expect(host.chatMessages).toStrictEqual([]);
+    expect(sends).toHaveLength(2);
+    expect(sends.map((payload) => payload.message)).toEqual(["same prompt", "same prompt"]);
+    expect(sends[0]?.idempotencyKey).not.toBe(sends[1]?.idempotencyKey);
   });
 
-  it("coalesces duplicate queued local commands while the first command is running", async () => {
+  it("executes duplicate queued local commands after the first command finishes", async () => {
     const command = createDeferred<{ content: string }>();
     executeSlashCommandMock.mockImplementation(() => command.promise);
     const host = makeHost({
@@ -4579,7 +4582,7 @@ describe("handleSendChat", () => {
       await Promise.all([first, duplicate]);
     }
 
-    expect(executeSlashCommandMock).toHaveBeenCalledOnce();
+    expect(executeSlashCommandMock).toHaveBeenCalledTimes(2);
   });
 
   it("keeps normal prompt text visible as pending until chat.send is acknowledged", async () => {
@@ -6249,6 +6252,45 @@ describe("handleSendChat", () => {
     expect(
       findRequestPayload(host.request as unknown as MockCallSource, "chat.send", "foreground send"),
     ).toMatchObject({ expectedLeafEntryId: "leaf-rendered" });
+  });
+
+  it("waits for an in-flight history refresh before choosing the foreground leaf", async () => {
+    const history = createDeferred<unknown>();
+    const sends: Record<string, unknown>[] = [];
+    const host = makeHost({
+      requestHandlers: {
+        "chat.history": () => history.promise,
+        "chat.send": (params: unknown) => {
+          const payload = requireRecord(params, "refreshed leaf send payload");
+          sends.push(payload);
+          return { runId: payload.idempotencyKey, status: "started" };
+        },
+      },
+      chatDisplayedLeafEntryId: "leaf-stale",
+      chatMessage: "repeat after the previous turn",
+    });
+
+    const refresh = loadChatHistory(host as unknown as Parameters<typeof loadChatHistory>[0]);
+    expect(host.chatLoading).toBe(true);
+
+    const send = handleSendChat(host);
+    await Promise.resolve();
+    expect(sends).toStrictEqual([]);
+
+    history.resolve({
+      messages: [],
+      sessionInfo: {
+        ...row("agent:main", { hasActiveRun: false, status: "done" }),
+        activeLeafEntryId: "leaf-current",
+      },
+    });
+    await Promise.all([refresh, send]);
+
+    expect(sends).toHaveLength(1);
+    expect(sends[0]).toMatchObject({
+      expectedLeafEntryId: "leaf-current",
+      message: "repeat after the previous turn",
+    });
   });
 
   it("attaches an authoritative empty displayed leaf to a foreground send", async () => {
