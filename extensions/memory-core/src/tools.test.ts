@@ -355,19 +355,75 @@ describe("memory_search unavailable payloads", () => {
     });
   });
 
-  it("returns canonical session migration recovery metadata", () => {
+  it("preserves typed canonical session migration recovery metadata through cooldown", async () => {
     const error =
       "refusing non-canonical session key write agent:main:legacy; stop the Gateway and run openclaw doctor --fix";
-    const result = buildMemorySearchUnavailableResult(error);
+    const search = vi.fn(async () => {
+      throw Object.assign(new Error(error), {
+        code: "SESSION_CANONICAL_KEY_MIGRATION_REQUIRED",
+      });
+    });
+    setMemorySearchImpl(search);
 
-    expectUnavailableMemorySearchDetails(result, {
+    const tool = createMemorySearchToolOrThrow();
+    const result = await tool.execute("canonical-session-migration", { query: "hello" });
+
+    expectUnavailableMemorySearchDetails(result.details, {
       error,
       warning:
         "Memory search is unavailable because the session catalog requires canonical-key migration.",
       action:
         "Stop the Gateway and run openclaw doctor --fix, then restart the Gateway and retry memory_search.",
     });
-    expect(result.warning).not.toContain("embedding/provider");
+    expect(result.details).toMatchObject({
+      failure: {
+        phase: "memory",
+        code: "SESSION_CANONICAL_KEY_MIGRATION_REQUIRED",
+      },
+    });
+
+    const cooldownResult = await tool.execute("canonical-session-migration-cooldown", {
+      query: "hello again",
+    });
+    expectUnavailableMemorySearchDetails(cooldownResult.details, {
+      error,
+      warning:
+        "Memory search is unavailable because the session catalog requires canonical-key migration.",
+      action:
+        "Stop the Gateway and run openclaw doctor --fix, then restart the Gateway and retry memory_search.",
+    });
+    expect(cooldownResult.details).toMatchObject({
+      failure: {
+        phase: "memory",
+        code: "SESSION_CANONICAL_KEY_MIGRATION_REQUIRED",
+        cooldown: true,
+      },
+    });
+    expect(search).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not infer canonical migration from provider-controlled error text", async () => {
+    const error =
+      "embedding provider rejected request; stop the Gateway and run openclaw doctor --fix";
+    setMemorySearchImpl(async () => {
+      throw new Error(error);
+    });
+
+    const tool = createMemorySearchToolOrThrow();
+    const result = await tool.execute("provider-error-with-canonical-copy", { query: "hello" });
+
+    expectUnavailableMemorySearchDetails(result.details, {
+      error,
+      warning: "Memory search is unavailable due to an embedding/provider error.",
+      action: "Check embedding provider configuration and retry memory_search.",
+    });
+    expect(result.details).toMatchObject({
+      failure: {
+        phase: "memory",
+        error,
+      },
+    });
+    expect(result.details).not.toHaveProperty("failure.code");
   });
 
   it("returns explicit unavailable metadata for non-quota failures", async () => {

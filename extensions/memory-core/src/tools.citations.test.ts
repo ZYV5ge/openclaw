@@ -581,7 +581,9 @@ describe("memory tools", () => {
     const error =
       "duplicate canonical session keys detected; stop the Gateway and run openclaw doctor --fix";
     setMemorySearchImpl(async () => {
-      throw new Error(error);
+      throw Object.assign(new Error(error), {
+        code: "SESSION_CANONICAL_KEY_MIGRATION_REQUIRED",
+      });
     });
     registerMemoryCorpusSupplement("healthy-wiki", {
       search: async () => [
@@ -610,6 +612,7 @@ describe("memory tools", () => {
       failure: {
         phase: "memory",
         error,
+        code: "SESSION_CANONICAL_KEY_MIGRATION_REQUIRED",
         timedOut: false,
         elapsedMs: expect.any(Number),
       },
@@ -1190,6 +1193,60 @@ describe("memory tools", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("keeps typed canonical recovery when memory and every wiki supplement fail", async () => {
+    const memoryError =
+      "canonical session migration required before memory search can continue";
+    setMemorySearchImpl(async () => {
+      throw Object.assign(new Error(memoryError), {
+        code: "SESSION_CANONICAL_KEY_MIGRATION_REQUIRED",
+      });
+    });
+    registerMemoryCorpusSupplement("broken-wiki-a", {
+      search: async () => {
+        throw new Error("first wiki unavailable");
+      },
+      get: async () => null,
+    });
+    registerMemoryCorpusSupplement("broken-wiki-b", {
+      search: async () => {
+        throw new Error("second wiki unavailable");
+      },
+      get: async () => null,
+    });
+    const tool = createMemorySearchToolOrThrow();
+
+    const result = await tool.execute("call_all_canonical_double_failure", {
+      query: "alpha",
+      corpus: "all",
+    });
+
+    expectUnavailableMemorySearchDetails(result.details, {
+      error:
+        "memory: canonical session migration required before memory search can continue; supplement: All memory corpus supplements failed (broken-wiki-a: first wiki unavailable; broken-wiki-b: second wiki unavailable)",
+      warning: "Memory and wiki supplement searches are both unavailable.",
+      action:
+        "Stop the Gateway and run openclaw doctor --fix, then restart the Gateway and retry memory_search.",
+    });
+    expect(result.details).toMatchObject({
+      failures: [
+        {
+          phase: "memory",
+          error: memoryError,
+          code: "SESSION_CANONICAL_KEY_MIGRATION_REQUIRED",
+        },
+        {
+          phase: "supplement",
+          error:
+            "All memory corpus supplements failed (broken-wiki-a: first wiki unavailable; broken-wiki-b: second wiki unavailable)",
+        },
+      ],
+      debug: {
+        action:
+          "Stop the Gateway and run openclaw doctor --fix, then restart the Gateway and retry memory_search.",
+      },
+    });
   });
 
   it("cooldowns primary memory when corpus=all memory search stalls", async () => {
