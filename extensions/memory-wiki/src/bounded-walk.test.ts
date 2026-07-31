@@ -65,4 +65,29 @@ describe("walkMemoryWikiDirectory", () => {
       expect.objectContaining({ relativePath: "missing", kind: "directory-error" }),
     ]);
   });
+
+  it("stops walking when the search deadline aborts", async () => {
+    const root = await createTempDir();
+    await Promise.all(
+      Array.from({ length: 20 }, (_, index) =>
+        fs.writeFile(path.join(root, `page-${index}.md`), `page ${index}`),
+      ),
+    );
+    const controller = new AbortController();
+    let visited = 0;
+
+    await expect(
+      walkMemoryWikiDirectory(root, "", {
+        signal: controller.signal,
+        entryFilter: () => {
+          visited += 1;
+          if (visited === 1) {
+            controller.abort(new Error("wiki search deadline reached"));
+          }
+          return "include";
+        },
+      }),
+    ).rejects.toThrow("wiki search deadline reached");
+    expect(visited).toBe(1);
+  });
 });

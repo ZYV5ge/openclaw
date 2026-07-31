@@ -62,7 +62,7 @@ export function expectUnavailableMemorySearchDetails(
     action: string;
   },
 ) {
-  expect(details).toEqual({
+  expect(details).toMatchObject({
     results: [],
     disabled: true,
     unavailable: true,

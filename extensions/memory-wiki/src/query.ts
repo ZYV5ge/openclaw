@@ -208,11 +208,12 @@ function mergeWikiSearchCorpusResults(params: {
   return sortWikiSearchResults(selected).slice(0, params.maxResults);
 }
 
-async function listWikiMarkdownFiles(rootDir: string): Promise<string[]> {
+async function listWikiMarkdownFiles(rootDir: string, signal?: AbortSignal): Promise<string[]> {
+  signal?.throwIfAborted();
   const files = (
     await Promise.all(
       QUERY_DIRS.map(async (relativeDir) => {
-        const entries = await walkMemoryWikiDirectory(rootDir, relativeDir);
+        const entries = await walkMemoryWikiDirectory(rootDir, relativeDir, { signal });
         return entries
           .filter(
             (entry) =>
@@ -224,34 +225,43 @@ async function listWikiMarkdownFiles(rootDir: string): Promise<string[]> {
       }),
     )
   ).flat();
+  signal?.throwIfAborted();
   return files.toSorted((left, right) => left.localeCompare(right));
 }
 
-export async function readQueryableWikiPages(rootDir: string): Promise<QueryableWikiPage[]> {
-  const files = await listWikiMarkdownFiles(rootDir);
-  return readQueryableWikiPagesByPaths(rootDir, files);
+export async function readQueryableWikiPages(
+  rootDir: string,
+  signal?: AbortSignal,
+): Promise<QueryableWikiPage[]> {
+  const files = await listWikiMarkdownFiles(rootDir, signal);
+  return readQueryableWikiPagesByPaths(rootDir, files, signal);
 }
 
 async function readQueryableWikiPagesByPaths(
   rootDir: string,
   files: string[],
+  signal?: AbortSignal,
 ): Promise<QueryableWikiPage[]> {
+  signal?.throwIfAborted();
   return await pMap(
     files,
     async (relativePath) => {
       const absolutePath = path.join(rootDir, relativePath);
-      const raw = await fs.readFile(absolutePath, "utf8");
+      const raw = await fs.readFile(absolutePath, { encoding: "utf8", signal });
       const summary = toWikiPageSummary({ absolutePath, relativePath, raw });
       return summary ? { ...summary, raw } : pMapSkip;
     },
-    { concurrency: QUERY_PAGE_READ_CONCURRENCY, stopOnError: true },
+    { concurrency: QUERY_PAGE_READ_CONCURRENCY, stopOnError: true, signal },
   );
 }
 
 async function readQueryDigestBundle(
   config: ResolvedMemoryWikiConfig,
+  signal?: AbortSignal,
 ): Promise<QueryDigestBundle | null> {
+  signal?.throwIfAborted();
   const snapshot = await loadMemoryWikiCompiledCache(config);
+  signal?.throwIfAborted();
   return snapshot ? { pages: snapshot.digest.pages, claims: snapshot.claims } : null;
 }
 
@@ -1378,8 +1388,10 @@ async function searchWikiCorpus(params: {
   maxResults: number;
   mode: WikiSearchMode;
   canReadPage: (page: QueryableWikiPage) => boolean;
+  signal?: AbortSignal;
 }): Promise<WikiSearchResult[]> {
-  const digest = await readQueryDigestBundle(params.config);
+  params.signal?.throwIfAborted();
+  const digest = await readQueryDigestBundle(params.config, params.signal);
   const rootDir = params.config.vault.path;
   const candidatePaths = digest
     ? buildDigestCandidatePaths({
@@ -1392,8 +1404,8 @@ async function searchWikiCorpus(params: {
   const seenPaths = new Set<string>();
   const candidatePages =
     candidatePaths.length > 0
-      ? await readQueryableWikiPagesByPaths(rootDir, candidatePaths)
-      : await readQueryableWikiPages(rootDir);
+      ? await readQueryableWikiPagesByPaths(rootDir, candidatePaths, params.signal)
+      : await readQueryableWikiPages(rootDir, params.signal);
   for (const page of candidatePages) {
     seenPaths.add(page.relativePath);
   }
@@ -1406,12 +1418,12 @@ async function searchWikiCorpus(params: {
     return results;
   }
 
-  const remainingPaths = (await listWikiMarkdownFiles(rootDir)).filter(
+  const remainingPaths = (await listWikiMarkdownFiles(rootDir, params.signal)).filter(
     (relativePath) => !seenPaths.has(relativePath),
   );
-  const remainingPages = (await readQueryableWikiPagesByPaths(rootDir, remainingPaths)).filter(
-    params.canReadPage,
-  );
+  const remainingPages = (
+    await readQueryableWikiPagesByPaths(rootDir, remainingPaths, params.signal)
+  ).filter(params.canReadPage);
   return [
     ...results,
     ...remainingPages
@@ -1454,7 +1466,9 @@ export async function searchMemoryWiki(params: {
   searchBackend?: WikiSearchBackend;
   searchCorpus?: WikiSearchCorpus;
   mode?: WikiSearchMode;
+  signal?: AbortSignal;
 }): Promise<WikiSearchResult[]> {
+  params.signal?.throwIfAborted();
   const effectiveConfig = applySearchOverrides(params.config, params);
   assertSessionVisibilityAppConfig({
     config: effectiveConfig,
@@ -1465,6 +1479,7 @@ export async function searchMemoryWiki(params: {
     operation: "wiki_search",
   });
   await initializeMemoryWikiVault(effectiveConfig);
+  params.signal?.throwIfAborted();
   const maxResults = normalizePositiveInteger(params.maxResults, 10);
   const mode = params.mode ?? "auto";
 
@@ -1475,6 +1490,7 @@ export async function searchMemoryWiki(params: {
         maxResults,
         mode,
         canReadPage: createWikiPageVisibilityFilter(params),
+        signal: params.signal,
       })
     : [];
 
@@ -1489,8 +1505,12 @@ export async function searchMemoryWiki(params: {
     throw buildMemoryManagerContractError("search");
   }
   let rawMemoryResults = sharedMemoryManager
-    ? await sharedMemoryManager.search(params.query, { maxResults })
+    ? await sharedMemoryManager.search(params.query, {
+        maxResults,
+        ...(params.signal ? { signal: params.signal } : {}),
+      })
     : [];
+  params.signal?.throwIfAborted();
   if (
     params.appConfig &&
     shouldEnforceSessionVisibility(params) &&

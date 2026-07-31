@@ -219,6 +219,17 @@ describe("getMemoryWikiPage", () => {
 });
 
 describe("searchMemoryWiki", () => {
+  it("fails immediately when its caller deadline is already aborted", async () => {
+    const { config } = await createQueryVault({ initialize: true });
+    const controller = new AbortController();
+    controller.abort(new Error("wiki search deadline reached"));
+
+    await expect(
+      searchMemoryWiki({ config, query: "alpha", signal: controller.signal }),
+    ).rejects.toThrow("wiki search deadline reached");
+    expect(getActiveMemorySearchManagerMock).not.toHaveBeenCalled();
+  });
+
   it("finds wiki pages by title and body", async () => {
     const { rootDir, config } = await createQueryVault({
       initialize: true,
@@ -532,6 +543,80 @@ describe("searchMemoryWiki", () => {
     });
 
     expect(routeResults[0]?.path).toBe("entities/brad.md");
+  });
+
+  it("aborts while exhaustive fallback is reading pages omitted from the compiled digest", async () => {
+    const { rootDir, config } = await createQueryVault({ initialize: true });
+    await fs.writeFile(
+      path.join(rootDir, "entities", "digest-alpha.md"),
+      renderWikiMarkdown({
+        frontmatter: {
+          pageType: "entity",
+          id: "entity.digest-alpha",
+          title: "Digest Alpha",
+        },
+        body: "# Digest Alpha\n\nalpha candidate from the compiled digest.\n",
+      }),
+      "utf8",
+    );
+    await compileMemoryWikiVault(config);
+
+    const latePagePath = path.join(rootDir, "entities", "late-alpha.md");
+    await fs.writeFile(
+      latePagePath,
+      renderWikiMarkdown({
+        frontmatter: {
+          pageType: "entity",
+          id: "entity.late-alpha",
+          title: "Late Alpha",
+        },
+        body: "# Late Alpha\n\nalpha result added after compilation.\n",
+      }),
+      "utf8",
+    );
+
+    const controller = new AbortController();
+    const abortError = new Error("wiki exhaustive page read cancelled");
+    const originalReadFile = fs.readFile.bind(fs);
+    let markLateReadStarted: (() => void) | undefined;
+    const lateReadStarted = new Promise<void>((resolve) => {
+      markLateReadStarted = resolve;
+    });
+    const readSpy = vi
+      .spyOn(fs, "readFile")
+      .mockImplementation(async (...args: Parameters<typeof fs.readFile>) => {
+        if (String(args[0]) !== latePagePath) {
+          return await originalReadFile(...args);
+        }
+        markLateReadStarted?.();
+        const options = args[1];
+        const signal =
+          options && typeof options === "object" && "signal" in options
+            ? options.signal
+            : undefined;
+        return await new Promise<never>((_resolve, reject) => {
+          signal?.addEventListener("abort", () => reject(signal.reason), { once: true });
+        });
+      });
+
+    try {
+      const searchPromise = searchMemoryWiki({
+        config,
+        query: "alpha",
+        maxResults: 2,
+        signal: controller.signal,
+      });
+      await lateReadStarted;
+      controller.abort(abortError);
+
+      await expect(searchPromise).rejects.toThrow("wiki exhaustive page read cancelled");
+      expect(readSpy).toHaveBeenCalledWith(
+        latePagePath,
+        expect.objectContaining({ signal: controller.signal }),
+      );
+    } finally {
+      readSpy.mockRestore();
+    }
   });
 
   it("uses body text instead of frontmatter for fallback snippets", async () => {

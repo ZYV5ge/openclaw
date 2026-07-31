@@ -12,6 +12,7 @@ type MemoryWikiWalkLimits = {
   maxEntries?: number;
   entryFilter?: RootWalkOptions["entryFilter"];
   onDirectoryError?: RootWalkOptions["onDirectoryError"];
+  signal?: AbortSignal;
 };
 
 export async function walkMemoryWikiDirectory(
@@ -21,6 +22,7 @@ export async function walkMemoryWikiDirectory(
 ): Promise<RootWalkEntry[]> {
   const entries: RootWalkEntry[] = [];
   try {
+    limits.signal?.throwIfAborted();
     for await (const entry of walkRootDirectory(rootDir, relativePath, {
       maxDepth: limits.maxDepth ?? MEMORY_WIKI_WALK_MAX_DEPTH,
       maxEntries: limits.maxEntries ?? MEMORY_WIKI_WALK_MAX_ENTRIES,
@@ -29,8 +31,10 @@ export async function walkMemoryWikiDirectory(
       ...(limits.entryFilter ? { entryFilter: limits.entryFilter } : {}),
       ...(limits.onDirectoryError ? { onDirectoryError: limits.onDirectoryError } : {}),
     })) {
+      limits.signal?.throwIfAborted();
       entries.push(entry);
     }
+    limits.signal?.throwIfAborted();
   } catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
     if (code === "not-file" || code === "not-found") {

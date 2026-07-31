@@ -38,6 +38,7 @@ describe("memory-wiki corpus supplement", () => {
     );
     const getAppConfig = vi.fn(() => appConfig);
     const supplement = createWikiCorpusSupplement({ resolveConfig, getAppConfig });
+    const searchController = new AbortController();
 
     await supplement.search({
       query: "support handbook",
@@ -45,6 +46,7 @@ describe("memory-wiki corpus supplement", () => {
       agentId: "support",
       agentSessionKey: "agent:support:main",
       sandboxed: true,
+      signal: searchController.signal,
     });
     await supplement.get({
       lookup: "marketing-plan",
@@ -68,6 +70,7 @@ describe("memory-wiki corpus supplement", () => {
       agentId: "support",
       agentSessionKey: "agent:support:main",
       sandboxed: true,
+      signal: searchController.signal,
       query: "support handbook",
       maxResults: 4,
       searchBackend: "local",
