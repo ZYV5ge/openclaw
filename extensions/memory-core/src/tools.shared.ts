@@ -63,6 +63,18 @@ type MemorySearchUnavailableOverrides = {
     }
 );
 
+export type MemorySearchCanonicalMigrationGuidance = {
+  warning: string;
+  action: string;
+};
+
+const CANONICAL_SESSION_MIGRATION_MESSAGE =
+  /\bstop the gateway and run openclaw doctor --fix\b/u;
+const CANONICAL_SESSION_MIGRATION_WARNING =
+  "Memory search is unavailable because the session catalog requires canonical-key migration.";
+const CANONICAL_SESSION_MIGRATION_ACTION =
+  "Stop the Gateway and run openclaw doctor --fix, then restart the Gateway and retry memory_search.";
+
 export const loadMemoryToolRuntime = createLazyRuntimeModule(() => import("./tools.runtime.js"));
 
 export const MemorySearchSchema = Type.Object({
@@ -160,6 +172,7 @@ export function buildMemorySearchUnavailableResult(
 ) {
   const reason = (error ?? "memory search unavailable").trim() || "memory search unavailable";
   const normalizedReason = normalizeLowercaseStringOrEmpty(reason);
+  const canonicalMigrationGuidance = resolveMemorySearchCanonicalMigrationGuidance(reason);
   const isQuotaError = /insufficient_quota|quota|429/.test(normalizedReason);
   const isTimeoutError = /\btimed out\b/.test(normalizedReason);
   const isMissingNodeSqlite = /missing node:sqlite|no such built-?in module: node:sqlite/.test(
@@ -167,22 +180,24 @@ export function buildMemorySearchUnavailableResult(
   );
   const warning =
     overrides?.warning ??
-    (isQuotaError
-      ? "Memory search is unavailable because the embedding provider quota is exhausted."
-      : isTimeoutError
-        ? "Memory search timed out before the search phase completed."
-        : isMissingNodeSqlite
-          ? "Memory search is unavailable because this OpenClaw Node runtime does not provide SQLite support."
-          : "Memory search is unavailable due to an embedding/provider error.");
+    (canonicalMigrationGuidance?.warning ??
+      (isQuotaError
+        ? "Memory search is unavailable because the embedding provider quota is exhausted."
+        : isTimeoutError
+          ? "Memory search timed out before the search phase completed."
+          : isMissingNodeSqlite
+            ? "Memory search is unavailable because this OpenClaw Node runtime does not provide SQLite support."
+            : "Memory search is unavailable due to an embedding/provider error."));
   const action =
     overrides?.action ??
-    (isQuotaError
-      ? "Top up or switch embedding provider, then retry memory_search."
-      : isTimeoutError
-        ? "Retry memory_search; if it persists, inspect memory search phase timing and backend health."
-        : isMissingNodeSqlite
-          ? "Run OpenClaw with a Node runtime that includes node:sqlite, then retry memory_search."
-          : "Check embedding provider configuration and retry memory_search.");
+    (canonicalMigrationGuidance?.action ??
+      (isQuotaError
+        ? "Top up or switch embedding provider, then retry memory_search."
+        : isTimeoutError
+          ? "Retry memory_search; if it persists, inspect memory search phase timing and backend health."
+          : isMissingNodeSqlite
+            ? "Run OpenClaw with a Node runtime that includes node:sqlite, then retry memory_search."
+            : "Check embedding provider configuration and retry memory_search."));
   return {
     results: [],
     disabled: true,
@@ -199,6 +214,19 @@ export function buildMemorySearchUnavailableResult(
       action,
       error: reason,
     },
+  };
+}
+
+export function resolveMemorySearchCanonicalMigrationGuidance(
+  error: string | undefined,
+): MemorySearchCanonicalMigrationGuidance | undefined {
+  const normalizedReason = normalizeLowercaseStringOrEmpty(error);
+  if (!CANONICAL_SESSION_MIGRATION_MESSAGE.test(normalizedReason)) {
+    return undefined;
+  }
+  return {
+    warning: CANONICAL_SESSION_MIGRATION_WARNING,
+    action: CANONICAL_SESSION_MIGRATION_ACTION,
   };
 }
 

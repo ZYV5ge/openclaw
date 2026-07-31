@@ -53,6 +53,7 @@ import {
   loadMemoryToolRuntime,
   MemoryGetSchema,
   MemorySearchSchema,
+  resolveMemorySearchCanonicalMigrationGuidance,
   searchMemoryCorpusSupplementsDetailed,
   type MemoryCorpusSupplementFailure,
   type MemoryCorpusSupplementSearchSummary,
@@ -1003,6 +1004,9 @@ export function createMemorySearchTool(options: {
               (failure): failure is MemorySearchPhaseFailure => failure !== undefined,
             );
             const [partialFailure] = partialFailures;
+            const canonicalMigrationGuidance = memoryFailure
+              ? resolveMemorySearchCanonicalMigrationGuidance(memoryFailure.error)
+              : undefined;
             deferMemoryFailureCooldownIfNeeded();
             return jsonResult({
               results,
@@ -1012,6 +1016,9 @@ export function createMemorySearchTool(options: {
               citations: citationsMode,
               mode: searchMode,
               debug: searchDebug,
+              ...(canonicalMigrationGuidance
+                ? { action: canonicalMigrationGuidance.action }
+                : {}),
               ...(partialFailures.length === 1 && partialFailure
                 ? {
                     partial: true,
