@@ -1960,6 +1960,27 @@ describe("official external plugin catalog", () => {
     });
   });
 
+  it("lists OpenCode Zen with its model and media install surfaces", () => {
+    const opencode = expectCatalogEntry("opencode");
+    const manifest = getOfficialExternalPluginCatalogManifest(opencode);
+
+    expect(resolveOfficialExternalPluginId(opencode)).toBe("opencode");
+    expect(resolveOfficialExternalPluginInstall(opencode)).toEqual({
+      clawhubSpec: "clawhub:@openclaw/opencode-provider",
+      npmSpec: "@openclaw/opencode-provider",
+      defaultChoice: "npm",
+      minHostVersion: ">=2026.7.2",
+    });
+    expect(manifest?.providers?.map((provider) => provider.id)).toEqual(["opencode"]);
+    expect(manifest?.contracts?.mediaUnderstandingProviders).toEqual(["opencode"]);
+    expect(manifest?.providerEndpoints).toEqual([
+      {
+        endpointClass: "opencode-native",
+        hostSuffixes: ["opencode.ai"],
+      },
+    ]);
+  });
+
   it("lists Synthetic as an official external provider", () => {
     const synthetic = expectCatalogEntry("synthetic");
 
@@ -2145,6 +2166,43 @@ describe("official external plugin catalog", () => {
       musicGenerationProviders: ["comfy"],
       videoGenerationProviders: ["comfy"],
     });
+  });
+
+  it("lists Mistral with its model and capability provider contracts", () => {
+    const mistral = expectCatalogEntry("mistral");
+    const manifest = getOfficialExternalPluginCatalogManifest(mistral);
+
+    expect(resolveOfficialExternalPluginId(mistral)).toBe("mistral");
+    expect(resolveOfficialExternalPluginInstall(mistral)).toEqual({
+      clawhubSpec: "clawhub:@openclaw/mistral-provider",
+      npmSpec: "@openclaw/mistral-provider",
+      defaultChoice: "npm",
+      minHostVersion: ">=2026.7.2",
+    });
+    expect(manifest?.providers).toEqual([
+      expect.objectContaining({
+        id: "mistral",
+        envVars: ["MISTRAL_API_KEY"],
+      }),
+    ]);
+    expect(manifest?.contracts).toMatchObject({
+      memoryEmbeddingProviders: ["mistral"],
+      mediaUnderstandingProviders: ["mistral"],
+      realtimeTranscriptionProviders: ["mistral"],
+    });
+  });
+
+  it("maps NovitaAI provider aliases and credentials to the external plugin", () => {
+    expect(
+      resolveOfficialExternalProviderPluginIds({
+        providerIds: new Set(["novita", "novita-ai", "novitaai"]),
+      }),
+    ).toEqual(["novita"]);
+    expect(
+      resolveOfficialExternalProviderPluginIdsForEnv({
+        NOVITA_API_KEY: "novita-key",
+      }),
+    ).toEqual(["novita"]);
   });
 
   it.each([
