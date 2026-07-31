@@ -355,6 +355,21 @@ describe("memory_search unavailable payloads", () => {
     });
   });
 
+  it("returns canonical session migration recovery metadata", () => {
+    const error =
+      "refusing non-canonical session key write agent:main:legacy; stop the Gateway and run openclaw doctor --fix";
+    const result = buildMemorySearchUnavailableResult(error);
+
+    expectUnavailableMemorySearchDetails(result, {
+      error,
+      warning:
+        "Memory search is unavailable because the session catalog requires canonical-key migration.",
+      action:
+        "Stop the Gateway and run openclaw doctor --fix, then restart the Gateway and retry memory_search.",
+    });
+    expect(result.warning).not.toContain("embedding/provider");
+  });
+
   it("returns explicit unavailable metadata for non-quota failures", async () => {
     setMemorySearchImpl(async () => {
       throw new Error("embedding provider timeout");

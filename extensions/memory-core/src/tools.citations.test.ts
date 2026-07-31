@@ -577,6 +577,46 @@ describe("memory tools", () => {
     expect(result.details).not.toMatchObject({ disabled: true, unavailable: true });
   });
 
+  it("keeps canonical session migration recovery guidance with partial wiki results", async () => {
+    const error =
+      "duplicate canonical session keys detected; stop the Gateway and run openclaw doctor --fix";
+    setMemorySearchImpl(async () => {
+      throw new Error(error);
+    });
+    registerMemoryCorpusSupplement("healthy-wiki", {
+      search: async () => [
+        {
+          corpus: "wiki",
+          path: "entities/healthy.md",
+          score: 4,
+          snippet: "Healthy wiki entry",
+        },
+      ],
+      get: async () => null,
+    });
+
+    const tool = createMemorySearchToolOrThrow();
+    const result = await tool.execute("call_all_canonical_migration_partial", {
+      query: "healthy",
+      corpus: "all",
+    });
+
+    expect(result.details).toMatchObject({
+      results: [{ corpus: "wiki", path: "entities/healthy.md" }],
+      partial: true,
+      warning: "Primary memory search failed; returning available wiki results.",
+      action:
+        "Stop the Gateway and run openclaw doctor --fix, then restart the Gateway and retry memory_search.",
+      failure: {
+        phase: "memory",
+        error,
+        timedOut: false,
+        elapsedMs: expect.any(Number),
+      },
+    });
+    expect(result.details).not.toMatchObject({ disabled: true, unavailable: true });
+  });
+
   it("reports each supplement when every registered supplement fails", async () => {
     registerMemoryCorpusSupplement("broken-wiki-a", {
       search: async () => {
