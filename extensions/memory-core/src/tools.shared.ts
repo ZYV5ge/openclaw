@@ -28,11 +28,15 @@ type MemoryToolOptions = {
   withLease?: PluginStateLeaseRunner;
 };
 
+export const MEMORY_SEARCH_CANONICAL_SESSION_MIGRATION_CODE =
+  "SESSION_CANONICAL_KEY_MIGRATION_REQUIRED";
+
 export type MemorySearchPhaseFailure = {
   phase: "memory" | "supplement";
   error: string;
   timedOut: boolean;
   elapsedMs: number;
+  code?: typeof MEMORY_SEARCH_CANONICAL_SESSION_MIGRATION_CODE;
   cooldown?: true;
   retryAfterMs?: number;
 };
@@ -68,8 +72,6 @@ export type MemorySearchCanonicalMigrationGuidance = {
   action: string;
 };
 
-const CANONICAL_SESSION_MIGRATION_MESSAGE =
-  /\bstop the gateway and run openclaw doctor --fix\b/u;
 const CANONICAL_SESSION_MIGRATION_WARNING =
   "Memory search is unavailable because the session catalog requires canonical-key migration.";
 const CANONICAL_SESSION_MIGRATION_ACTION =
@@ -172,7 +174,14 @@ export function buildMemorySearchUnavailableResult(
 ) {
   const reason = (error ?? "memory search unavailable").trim() || "memory search unavailable";
   const normalizedReason = normalizeLowercaseStringOrEmpty(reason);
-  const canonicalMigrationGuidance = resolveMemorySearchCanonicalMigrationGuidance(reason);
+  const memoryFailure = overrides?.failure
+    ? overrides.failure.phase === "memory"
+      ? overrides.failure
+      : undefined
+    : overrides?.failures?.find((failure) => failure.phase === "memory");
+  const canonicalMigrationGuidance = resolveMemorySearchCanonicalMigrationGuidance(
+    memoryFailure?.code,
+  );
   const isQuotaError = /insufficient_quota|quota|429/.test(normalizedReason);
   const isTimeoutError = /\btimed out\b/.test(normalizedReason);
   const isMissingNodeSqlite = /missing node:sqlite|no such built-?in module: node:sqlite/.test(
@@ -189,8 +198,8 @@ export function buildMemorySearchUnavailableResult(
             ? "Memory search is unavailable because this OpenClaw Node runtime does not provide SQLite support."
             : "Memory search is unavailable due to an embedding/provider error."));
   const action =
-    overrides?.action ??
-    (canonicalMigrationGuidance?.action ??
+    canonicalMigrationGuidance?.action ??
+    (overrides?.action ??
       (isQuotaError
         ? "Top up or switch embedding provider, then retry memory_search."
         : isTimeoutError
@@ -218,10 +227,9 @@ export function buildMemorySearchUnavailableResult(
 }
 
 export function resolveMemorySearchCanonicalMigrationGuidance(
-  error: string | undefined,
+  code: MemorySearchPhaseFailure["code"],
 ): MemorySearchCanonicalMigrationGuidance | undefined {
-  const normalizedReason = normalizeLowercaseStringOrEmpty(error);
-  if (!CANONICAL_SESSION_MIGRATION_MESSAGE.test(normalizedReason)) {
+  if (code !== MEMORY_SEARCH_CANONICAL_SESSION_MIGRATION_CODE) {
     return undefined;
   }
   return {
