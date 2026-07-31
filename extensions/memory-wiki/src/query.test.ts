@@ -2,13 +2,27 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "../api.js";
 import { compileMemoryWikiVault } from "./compile.js";
 import type { MemoryWikiPluginConfig } from "./config.js";
 import { renderWikiMarkdown } from "./markdown.js";
 import { getMemoryWikiPage, searchMemoryWiki } from "./query.js";
 import { createMemoryWikiTestHarness } from "./test-helpers.js";
+
+type ReadFile = typeof import("node:fs/promises").readFile;
+
+const fsMocks = vi.hoisted(() => ({
+  actualReadFile: undefined as ReadFile | undefined,
+  readFile: vi.fn<ReadFile>(),
+}));
+
+vi.mock("node:fs/promises", async () => {
+  const actual = await vi.importActual<typeof import("node:fs/promises")>("node:fs/promises");
+  fsMocks.actualReadFile = actual.readFile;
+  const patched = { ...actual, readFile: fsMocks.readFile };
+  return { ...patched, default: patched };
+});
 
 const {
   getActiveMemorySearchManagerMock,
@@ -47,6 +61,22 @@ const { createVault } = createMemoryWikiTestHarness();
 let suiteRoot = "";
 let caseIndex = 0;
 
+function getActualReadFile(): ReadFile {
+  const actualReadFile = fsMocks.actualReadFile;
+  if (!actualReadFile) {
+    throw new Error("actual node:fs/promises readFile is unavailable");
+  }
+  return actualReadFile;
+}
+
+function resetReadFileMock(): void {
+  fsMocks.readFile.mockReset();
+  fsMocks.readFile.mockImplementation(
+    ((...args: Parameters<ReadFile>) =>
+      Reflect.apply(getActualReadFile(), undefined, args)) as ReadFile,
+  );
+}
+
 function collectWikiResultPaths(results: readonly { corpus: string; path: string }[]): string[] {
   const paths: string[] = [];
   for (const result of results) {
@@ -69,12 +99,17 @@ function expectFields(value: unknown, expected: Record<string, unknown>): Record
 }
 
 beforeEach(() => {
+  resetReadFileMock();
   getActiveMemorySearchManagerMock.mockReset();
   getActiveMemorySearchManagerMock.mockResolvedValue({ manager: null, error: "unavailable" });
   loadCombinedSessionStoreForGatewayMock.mockReset();
   loadCombinedSessionStoreForGatewayMock.mockReturnValue({ storePath: "(test)", store: {} });
   resolveDefaultAgentIdMock.mockClear();
   resolveSessionAgentIdMock.mockClear();
+});
+
+afterEach(() => {
+  resetReadFileMock();
 });
 
 beforeAll(async () => {
@@ -577,16 +612,14 @@ describe("searchMemoryWiki", () => {
 
     const controller = new AbortController();
     const abortError = new Error("wiki exhaustive page read cancelled");
-    const originalReadFile = fs.readFile.bind(fs);
     let markLateReadStarted: (() => void) | undefined;
     const lateReadStarted = new Promise<void>((resolve) => {
       markLateReadStarted = resolve;
     });
-    const readSpy = vi
-      .spyOn(fs, "readFile")
-      .mockImplementation(async (...args: Parameters<typeof fs.readFile>) => {
+    fsMocks.readFile.mockImplementation(
+      (async (...args: Parameters<ReadFile>) => {
         if (String(args[0]) !== latePagePath) {
-          return await originalReadFile(...args);
+          return await Reflect.apply(getActualReadFile(), undefined, args);
         }
         markLateReadStarted?.();
         const options = args[1];
@@ -597,26 +630,23 @@ describe("searchMemoryWiki", () => {
         return await new Promise<never>((_resolve, reject) => {
           signal?.addEventListener("abort", () => reject(signal.reason), { once: true });
         });
-      });
+      }) as ReadFile,
+    );
 
-    try {
-      const searchPromise = searchMemoryWiki({
-        config,
-        query: "alpha",
-        maxResults: 2,
-        signal: controller.signal,
-      });
-      await lateReadStarted;
-      controller.abort(abortError);
+    const searchPromise = searchMemoryWiki({
+      config,
+      query: "alpha",
+      maxResults: 2,
+      signal: controller.signal,
+    });
+    await lateReadStarted;
+    controller.abort(abortError);
 
-      await expect(searchPromise).rejects.toThrow("wiki exhaustive page read cancelled");
-      expect(readSpy).toHaveBeenCalledWith(
-        latePagePath,
-        expect.objectContaining({ signal: controller.signal }),
-      );
-    } finally {
-      readSpy.mockRestore();
-    }
+    await expect(searchPromise).rejects.toThrow("wiki exhaustive page read cancelled");
+    expect(fsMocks.readFile).toHaveBeenCalledWith(
+      latePagePath,
+      expect.objectContaining({ signal: controller.signal }),
+    );
   });
 
   it("uses body text instead of frontmatter for fallback snippets", async () => {
