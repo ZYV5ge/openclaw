@@ -6,37 +6,69 @@ import {
 } from "./chat-queue.ts";
 import type { ChatHost } from "./chat-send-contract.ts";
 
+function sameComposerAttachments(
+  current: readonly ChatAttachment[],
+  snapshot: readonly ChatAttachment[],
+): boolean {
+  return (
+    current.length === snapshot.length &&
+    current.every((attachment, index) => {
+      const expected = snapshot[index];
+      return (
+        expected !== undefined &&
+        attachment.id === expected.id &&
+        attachment.mimeType === expected.mimeType &&
+        attachment.fileName === expected.fileName &&
+        attachment.sizeBytes === expected.sizeBytes
+      );
+    })
+  );
+}
+
 export function restoreComposerAfterFailedSend(
   host: ChatHost,
-  opts: {
-    previousAttachments?: ChatAttachment[];
-    previousDraft?: string;
-  },
+  opts: PendingComposerSnapshot,
 ) {
-  if (opts.previousDraft != null && !host.chatMessage.trim()) {
-    host.chatMessage = opts.previousDraft;
+  const restorePlan = pendingComposerRestorePlan(host, opts);
+  if (restorePlan.willRestoreDraft) {
+    host.chatMessage = opts.previousDraft ?? "";
   }
-  if (opts.previousAttachments?.length && host.chatAttachments.length === 0) {
-    host.chatAttachments = opts.previousAttachments;
+  if (restorePlan.willRestoreAttachments) {
+    host.chatAttachments = opts.previousAttachments ?? [];
+  }
+  if (restorePlan.complete && restorePlan.hasSnapshot) {
+    opts.releaseForRetry?.();
   }
 }
 
 type PendingComposerSnapshot = {
   previousAttachments?: ChatAttachment[];
   previousDraft?: string;
+  releaseForRetry?: () => void;
 };
 
 export function pendingComposerRestorePlan(host: ChatHost, snapshot: PendingComposerSnapshot) {
-  const willRestoreDraft = snapshot.previousDraft != null && !host.chatMessage.trim();
+  const hasDraftSnapshot = snapshot.previousDraft !== undefined;
+  const hasAttachmentSnapshot = snapshot.previousAttachments !== undefined;
+  const draftAlreadyRestored =
+    hasDraftSnapshot && host.chatMessage === (snapshot.previousDraft ?? "");
+  const willRestoreDraft =
+    hasDraftSnapshot && !draftAlreadyRestored && !host.chatMessage.trim();
+  const attachmentsAlreadyRestored =
+    hasAttachmentSnapshot &&
+    sameComposerAttachments(host.chatAttachments, snapshot.previousAttachments ?? []);
   const willRestoreAttachments = Boolean(
+    hasAttachmentSnapshot &&
+    !attachmentsAlreadyRestored &&
     snapshot.previousAttachments?.length &&
     host.chatAttachments.length === 0 &&
-    (willRestoreDraft || !host.chatMessage.trim()),
+    (draftAlreadyRestored || willRestoreDraft || !host.chatMessage.trim()),
   );
   return {
     complete:
-      (!snapshot.previousDraft?.trim() || willRestoreDraft) &&
-      (!snapshot.previousAttachments?.length || willRestoreAttachments),
+      (!hasDraftSnapshot || draftAlreadyRestored || willRestoreDraft) &&
+      (!hasAttachmentSnapshot || attachmentsAlreadyRestored || willRestoreAttachments),
+    hasSnapshot: hasDraftSnapshot || hasAttachmentSnapshot,
     willRestoreAttachments,
     willRestoreDraft,
   };
@@ -64,6 +96,9 @@ export function cancelPendingSendBeforeRequest(
     }
     if (willRestoreAttachments) {
       host.chatAttachments = opts.previousAttachments ?? [];
+    }
+    if (restorePlan.complete && restorePlan.hasSnapshot) {
+      opts.releaseForRetry?.();
     }
   }
   if (removed && !willRestoreAttachments) {

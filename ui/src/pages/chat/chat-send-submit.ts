@@ -41,7 +41,7 @@ import { recordChatSendTiming } from "./chat-send-timing.ts";
 import {
   cancelPendingSendBeforeRequest,
   chatOutboxDrainDependencies,
-  pendingComposerRestorePlan,
+  restoreComposerAfterFailedSend,
   sendChatMessageNow,
   withChatSubmissionGuard,
   withChatSubmitGuard,
@@ -74,6 +74,8 @@ type ChatSendOptions = {
   onLocalCommandSendRejected?: () => void;
   /** Stable identity for one logical user submission across handler re-entry. */
   submissionId?: string;
+  /** Ends the current composer identity only after a definite, fully restored failure. */
+  onSubmissionRetryable?: (submissionId: string) => void;
 };
 
 function isChatResetCommand(text: string) {
@@ -176,23 +178,35 @@ async function sendDetachedCommandMessage(
     previousDraft?: string;
     attachments?: ChatAttachment[];
     previousAttachments?: ChatAttachment[];
+    releaseForRetry?: () => void;
     runId?: string;
   },
 ) {
+  const rejection: { activeLeafChanged: boolean } = { activeLeafChanged: false };
   const ack = await sendChatMessageWithGeneratedRunId(
     host as unknown as ChatState,
     message,
     opts?.attachments,
-    { runId: opts?.runId },
+    {
+      onDefiniteRejection: () => {
+        rejection.activeLeafChanged = true;
+      },
+      runId: opts?.runId,
+    },
   );
   const ok = ack?.status === "ok" || ack?.status === "started" || ack?.status === "in_flight";
-  if (!ok && opts?.previousDraft != null) {
-    host.chatMessage = opts.previousDraft;
+  const terminalFailure = isTerminalFailureChatSendAck(ack);
+  const shouldReleaseForRetry = terminalFailure || rejection.activeLeafChanged;
+  if (!ok) {
+    restoreComposerAfterFailedSend(host, {
+      previousAttachments: opts?.previousAttachments,
+      previousDraft: opts?.previousDraft,
+      ...(shouldReleaseForRetry && opts?.releaseForRetry
+        ? { releaseForRetry: opts.releaseForRetry }
+        : {}),
+    });
   }
-  if (!ok && opts?.previousAttachments) {
-    host.chatAttachments = opts.previousAttachments;
-  }
-  if (isTerminalFailureChatSendAck(ack)) {
+  if (terminalFailure) {
     setChatError(host, formatTerminalChatSendAckError(ack, "detached"));
   }
   if (ok) {
@@ -232,6 +246,14 @@ async function handleSendChatSubmission(
   const hasAttachments = attachmentsToSend.length > 0;
   const skillWorkshopRevision = opts?.skillWorkshopRevision;
   const shouldInterpretChatCommands = !skillWorkshopRevision;
+  let releasedForRetry = false;
+  const releaseForRetry = () => {
+    if (releasedForRetry) {
+      return;
+    }
+    releasedForRetry = true;
+    opts?.onSubmissionRetryable?.(submissionId);
+  };
 
   if (!message && !hasAttachments) {
     return;
@@ -244,6 +266,7 @@ async function handleSendChatSubmission(
     (typeof globalThis.confirm !== "function" ||
       !globalThis.confirm("Start a new thread? This will reset the current chat."))
   ) {
+    releaseForRetry();
     return;
   }
 
@@ -293,9 +316,11 @@ async function handleSendChatSubmission(
           pendingSettings &&
           !(await waitForPendingChatSettings(host, submittedSessionKey, pendingSettings))
         ) {
+          releaseForRetry();
           return;
         }
         if (host.sessionKey !== submittedSessionKey) {
+          releaseForRetry();
           return;
         }
         const cleared =
@@ -309,6 +334,7 @@ async function handleSendChatSubmission(
           previousDraft: cleared.previousDraft,
           attachments: hasAttachments ? attachmentsToSend : undefined,
           previousAttachments: cleared.previousAttachments,
+          releaseForRetry,
           runId: submissionId,
         });
         void ack;
@@ -351,6 +377,7 @@ async function handleSendChatSubmission(
             if (messageOverride == null) {
               host.chatMessage = previousDraft;
               host.chatAttachments = attachmentsToSend;
+              releaseForRetry();
             }
             setChatError(host, OFFLINE_QUEUE_STORAGE_ERROR);
             return;
@@ -382,9 +409,11 @@ async function handleSendChatSubmission(
             pendingSettings &&
             !(await waitForPendingChatSettings(host, submittedSessionKey, pendingSettings))
           ) {
+            releaseForRetry();
             return;
           }
           if (host.sessionKey !== submittedSessionKey) {
+            releaseForRetry();
             return;
           }
         }
@@ -425,16 +454,11 @@ async function handleSendChatSubmission(
           (dispatchResult === "failed" || dispatchResult === "cancelled") &&
           messageOverride == null
         ) {
-          const restorePlan = pendingComposerRestorePlan(host, {
+          restoreComposerAfterFailedSend(host, {
             previousAttachments: attachmentsToSend,
             previousDraft,
+            releaseForRetry,
           });
-          if (restorePlan.willRestoreDraft) {
-            host.chatMessage = previousDraft;
-          }
-          if (restorePlan.willRestoreAttachments) {
-            host.chatAttachments = attachmentsToSend;
-          }
         }
       };
       if (waitsForPicker) {
@@ -454,6 +478,7 @@ async function handleSendChatSubmission(
       host.sessionKey !== submittedSessionKey ||
       !visibleSessionMatches(host, submittedSessionKey, submittedAgentId)
     ) {
+      releaseForRetry();
       return;
     }
   }
@@ -476,6 +501,7 @@ async function handleSendChatSubmission(
   );
   await withChatSubmitGuard(host, submitKey, async () => {
     if (host.sessionKey !== submittedSessionKey) {
+      releaseForRetry();
       return;
     }
     const cleared =
@@ -514,6 +540,7 @@ async function handleSendChatSubmission(
       cancelPendingSendBeforeRequest(host, queued, {
         previousDraft: cleared.previousDraft,
         previousAttachments: cleared.previousAttachments,
+        releaseForRetry,
       });
       setChatError(host, OFFLINE_QUEUE_STORAGE_ERROR);
       return;
@@ -534,6 +561,7 @@ async function handleSendChatSubmission(
         cancelPendingSendBeforeRequest(host, queued, {
           previousDraft: cleared.previousDraft,
           previousAttachments: cleared.previousAttachments,
+          releaseForRetry,
         });
       } else {
         updateQueuedMessageForSession(host, submittedSessionKey, queued.id, (item) => ({
@@ -554,6 +582,9 @@ async function handleSendChatSubmission(
         setChatError(host, OFFLINE_QUEUE_STORAGE_ERROR);
         return;
       }
+    }
+    if (historyState.chatLoading) {
+      await loadChatHistory(historyState);
     }
     if (
       host.sessionKey !== submittedSessionKey ||
@@ -626,6 +657,7 @@ async function handleSendChatSubmission(
         ...(expectedLeafEntryId !== undefined ? { expectedLeafEntryId } : {}),
         restoreAttachments: Boolean(messageOverride && opts?.restoreDraft),
         refreshSessions,
+        releaseForRetry,
         routingSessionKey: submittedSessionKey,
         storageMode: canSendFromMemory ? "memory" : "durable",
         submittedAtMs,

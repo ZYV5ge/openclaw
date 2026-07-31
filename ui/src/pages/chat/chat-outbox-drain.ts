@@ -38,6 +38,7 @@ export type QueuedChatSendOptions = {
   expectedLeafEntryId?: string | null;
   previousAttachments?: ChatAttachment[];
   previousDraft?: string;
+  releaseForRetry?: () => void;
   routingSessionKey?: string;
   storageMode?: QueuedChatStorageMode;
 };

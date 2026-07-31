@@ -1524,7 +1524,8 @@ describe("handleSendChat", () => {
     expect(host.sessionsResult).toBe(archivedSessions);
   });
 
-  it("marks terminal error ACK sends failed instead of accepting the queued message", async () => {
+  it("marks terminal error ACK sends failed and releases the restored submission", async () => {
+    const onSubmissionRetryable = vi.fn();
     const host = makeHost({
       requestHandlers: {
         "chat.send": (params: unknown) => {
@@ -1536,7 +1537,10 @@ describe("handleSendChat", () => {
       sessionKey: "agent:main",
     });
 
-    await handleSendChat(host);
+    await handleSendChat(host, undefined, {
+      submissionId: "terminal-error-submission",
+      onSubmissionRetryable,
+    });
 
     expect(host.chatMessages).toStrictEqual([]);
     expect(host.chatMessage).toBe("send before failing");
@@ -1548,6 +1552,7 @@ describe("handleSendChat", () => {
     });
     expect(host.lastError).toBe("Chat failed before the run started; try again.");
     expect(host.chatRunId).toBeNull();
+    expect(onSubmissionRetryable).toHaveBeenCalledWith("terminal-error-submission");
   });
 
   it.each(["error", "timeout"] as const)(
@@ -3021,6 +3026,99 @@ describe("handleSendChat", () => {
     expect(host.chatMessage).toBe("");
     expect(navigateChatInputHistory(host, "up")).toBe(true);
     expect(host.chatMessage).toBe("/approve approval-123 allow-once");
+  });
+
+  it("releases a detached approval after a terminal ACK so an explicit retry sends", async () => {
+    const sends: Record<string, unknown>[] = [];
+    const onSubmissionRetryable = vi.fn();
+    const host = makeHost({
+      requestHandlers: {
+        "chat.send": (params: unknown) => {
+          const payload = requireRecord(params, "detached approval retry payload");
+          sends.push(payload);
+          return sends.length === 1
+            ? { runId: payload.idempotencyKey, status: "error" }
+            : { runId: payload.idempotencyKey, status: "started" };
+        },
+      },
+      chatRunId: "run-main",
+      chatStream: "Waiting for approval...",
+      chatMessage: "/approve approval-123 allow-once",
+    });
+
+    await handleSendChat(host, undefined, {
+      submissionId: "approval-first",
+      onSubmissionRetryable,
+    });
+
+    expect(host.chatMessage).toBe("/approve approval-123 allow-once");
+    expect(onSubmissionRetryable).toHaveBeenCalledWith("approval-first");
+
+    await handleSendChat(host, undefined, {
+      submissionId: "approval-retry",
+      onSubmissionRetryable,
+    });
+
+    expect(sends).toHaveLength(2);
+    expect(sends.map((payload) => payload.idempotencyKey)).toEqual([
+      "approval-first",
+      "approval-retry",
+    ]);
+    expect(host.chatMessage).toBe("");
+    expect(onSubmissionRetryable).toHaveBeenCalledTimes(1);
+  });
+
+  it("releases a detached approval after an active-leaf rejection", async () => {
+    const onSubmissionRetryable = vi.fn();
+    const host = makeHost({
+      requestHandlers: {
+        "chat.send": () => {
+          throw new GatewayRequestError({
+            code: "INVALID_REQUEST",
+            message: "active branch changed; review and resend",
+            details: { reason: "active-leaf-changed" },
+          });
+        },
+        "chat.history": idleChatHistory(),
+        "sessions.branches.list": { branches: [] },
+      },
+      chatRunId: "run-main",
+      chatStream: "Waiting for approval...",
+      chatMessage: "/approve approval-123 allow-once",
+    });
+
+    await handleSendChat(host, undefined, {
+      submissionId: "approval-active-leaf",
+      onSubmissionRetryable,
+    });
+
+    expect(host.chatMessage).toBe("/approve approval-123 allow-once");
+    expect(onSubmissionRetryable).toHaveBeenCalledWith("approval-active-leaf");
+  });
+
+  it("keeps a detached approval lease across an ambiguous transport failure", async () => {
+    const onSubmissionRetryable = vi.fn();
+    const host = makeHost({
+      requestHandlers: {
+        "chat.send": () => {
+          throw new Error("connection closed before ACK");
+        },
+      },
+      chatRunId: "run-main",
+      chatStream: "Waiting for approval...",
+      chatMessage: "/approve approval-123 allow-once",
+    });
+    const submission = {
+      submissionId: "approval-ambiguous",
+      onSubmissionRetryable,
+    };
+
+    await handleSendChat(host, undefined, submission);
+    await handleSendChat(host, undefined, submission);
+
+    expect(host.request.mock.calls.filter(([method]) => method === "chat.send")).toHaveLength(1);
+    expect(host.chatMessage).toBe("/approve approval-123 allow-once");
+    expect(onSubmissionRetryable).not.toHaveBeenCalled();
   });
 
   it("routes /side through the same session companion path", async () => {
@@ -6486,7 +6584,7 @@ describe("handleSendChat", () => {
       {
         submissionId: "active-leaf-submission",
         onSubmissionRetryable,
-      } as never,
+      },
     );
     await waitForFast(() => {
       expect(host.request).toHaveBeenCalledWith("chat.history", {

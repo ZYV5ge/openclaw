@@ -11,7 +11,11 @@ import {
   type SlashCommandDef,
 } from "../../../lib/chat/commands.ts";
 import { exportChatMarkdown } from "../export.ts";
-import { commitComposerDraft, getChatComposerState } from "./chat-composer-state.ts";
+import {
+  commitComposerDraft,
+  getChatComposerState,
+  resolveComposerSubmission,
+} from "./chat-composer-state.ts";
 import type { ChatComposerProps, ChatComposerState } from "./chat-composer-types.ts";
 
 export function resetSlashMenuState(state: ChatComposerState): void {
@@ -149,8 +153,10 @@ export function selectSlashCommand(
   if (cmd.executeLocal && !cmd.args) {
     state.slashMenuOpen = false;
     resetSlashMenuState(state);
-    commitComposerDraft(props, `/${cmd.name}`);
-    props.onSend();
+    const draft = `/${cmd.name}`;
+    commitComposerDraft(props, draft);
+    const submission = resolveComposerSubmission(state, props, draft);
+    props.onSend(submission.id, submission.releaseForRetry);
   } else {
     commitComposerDraft(props, `/${cmd.name} `);
     closeSlashMenuIfNeeded(state, requestUpdate);
@@ -190,9 +196,11 @@ export function selectSlashArg(
   const cmdName = state.slashMenuCommand?.name ?? "";
   state.slashMenuOpen = false;
   resetSlashMenuState(state);
-  commitComposerDraft(props, `/${cmdName} ${arg}`);
+  const draft = `/${cmdName} ${arg}`;
+  commitComposerDraft(props, draft);
   if (run) {
-    props.onSend();
+    const submission = resolveComposerSubmission(state, props, draft);
+    props.onSend(submission.id, submission.releaseForRetry);
   }
   requestUpdate();
 }

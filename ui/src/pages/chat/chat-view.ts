@@ -215,7 +215,7 @@ export type ChatProps = {
   onRequestUpdate?: () => void;
   onHistoryKeydown?: (input: ChatInputHistoryKeyInput) => ChatInputHistoryKeyResult;
   onSlashIntent?: () => void | Promise<void>;
-  onSend: (submissionId?: string) => void;
+  onSend: (submissionId?: string, releaseForRetry?: () => void) => void;
   onCompact?: () => void | Promise<void>;
   onOpenSessionCheckpoints?: () => void | Promise<void>;
   onToggleRealtimeTalk?: () => void;

@@ -217,8 +217,21 @@ describe("renderChatComposer controls", () => {
     selectSlashCommand(command!, composerProps, vi.fn());
 
     const firstSubmissionId = onSend.mock.calls[0]?.[0];
+    const firstReleaseForRetry = onSend.mock.calls[0]?.[1];
     expect(firstSubmissionId).toEqual(expect.any(String));
+    expect(firstReleaseForRetry).toEqual(expect.any(Function));
     expect(onSend.mock.calls[1]?.[0]).toBe(firstSubmissionId);
+    expect(onSend.mock.calls[1]?.[1]).toBe(firstReleaseForRetry);
+
+    firstReleaseForRetry?.();
+    selectSlashCommand(command!, composerProps, vi.fn());
+    const retrySubmissionId = onSend.mock.calls[2]?.[0];
+    expect(retrySubmissionId).toEqual(expect.any(String));
+    expect(retrySubmissionId).not.toBe(firstSubmissionId);
+
+    firstReleaseForRetry?.();
+    selectSlashCommand(command!, composerProps, vi.fn());
+    expect(onSend.mock.calls[3]?.[0]).toBe(retrySubmissionId);
   });
 
   it("replaces the composer with the archived-session notice", () => {

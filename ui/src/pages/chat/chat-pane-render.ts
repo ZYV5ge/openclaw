@@ -50,6 +50,7 @@ import {
 } from "./chat-state-route.ts";
 import { renderChat, type ChatProps } from "./chat-view.ts";
 import { createBackgroundTasksProps } from "./components/chat-background-tasks.ts";
+import { invalidateComposerSubmission } from "./components/chat-composer-state.ts";
 import { renderChatControls } from "./components/chat-controls.ts";
 import { renderChatImageLightbox } from "./components/chat-image-lightbox.ts";
 import { chatPullRequestId, createPullRequestBranch } from "./components/chat-pull-requests.ts";
@@ -483,15 +484,19 @@ export class ChatPane extends ChatPaneHeader {
       readSignal: attachmentReadSignal,
       onPendingReadsChange: (delta) => attachmentReads.updatePending(attachmentReadSignal, delta),
       onAttachmentsChange: (next) => {
+        invalidateComposerSubmission(this.paneId);
         state.chatAttachments = next;
         state.requestUpdate?.();
       },
-      onSend: (submissionId) =>
+      onSend: (submissionId, releaseForRetry) =>
         catalogKey
-          ? void this.continueCatalogSession(catalogKey, submissionId)
+          ? void this.continueCatalogSession(catalogKey, submissionId, releaseForRetry)
           : suggestionViewer
             ? void this.addCurrentSessionSuggestion()
-            : void state.handleSendChat(undefined, { submissionId }),
+            : void state.handleSendChat(undefined, {
+                submissionId,
+                onSubmissionRetryable: () => releaseForRetry?.(),
+              }),
       onCompact: () => void state.handleSendChat("/compact"),
       onOpenSessionCheckpoints: () => {
         const search = new URLSearchParams({ session: state.sessionKey });

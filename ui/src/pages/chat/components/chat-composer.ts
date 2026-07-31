@@ -4,7 +4,6 @@ import { loadSettings, normalizeChatSendShortcut, patchSettings } from "../../..
 import "../../../components/tooltip.ts";
 import { t } from "../../../i18n/index.ts";
 import { areUiSessionKeysEquivalent } from "../../../lib/sessions/session-key.ts";
-import { generateUUID } from "../../../lib/uuid.ts";
 import { ComposerDictationController, insertComposerDictation } from "../composer-dictation.ts";
 import { discoverRealtimeTalkInputs } from "../realtime-talk-input.ts";
 import { isLargePastedTextAttachment } from "./chat-attachments.ts";
@@ -49,6 +48,7 @@ import {
   hasTerminalRunStatus,
   isCurrentSessionSubmittedProgress,
   markComposerInputIntent,
+  resolveComposerSubmission,
   suppressStaleSubmittedDraftReplay,
 } from "./chat-composer-state.ts";
 import type { ChatComposerProps, ChatComposerState } from "./chat-composer-types.ts";
@@ -122,33 +122,6 @@ function handleComposerMenuKeyDown<T>(
     default:
       return false;
   }
-}
-
-function composerSubmissionKey(
-  props: ChatComposerProps,
-  draftKey: string,
-  draft: string,
-): string {
-  const attachments = props.getAttachments?.() ?? props.attachments ?? [];
-  return JSON.stringify([
-    draftKey,
-    draft,
-    attachments.map((attachment) => [
-      attachment.id,
-      attachment.mimeType,
-      attachment.fileName ?? "",
-      attachment.sizeBytes ?? 0,
-    ]),
-  ]);
-}
-
-function resolveComposerSubmissionId(state: ChatComposerState, key: string): string {
-  if (state.composerSubmission?.key === key) {
-    return state.composerSubmission.id;
-  }
-  const id = generateUUID();
-  state.composerSubmission = { id, key };
-  return id;
 }
 
 export function renderChatComposer(props: ChatComposerProps) {
@@ -447,12 +420,8 @@ export function renderChatComposer(props: ChatComposerProps) {
       event.preventDefault();
       const target = event.target as HTMLTextAreaElement;
       commitComposerDraft(props, target.value);
-      props.onSend(
-        resolveComposerSubmissionId(
-          state,
-          composerSubmissionKey(props, draftKey, target.value),
-        ),
-      );
+      const submission = resolveComposerSubmission(state, props, target.value);
+      props.onSend(submission.id, submission.releaseForRetry);
       syncComposerDraftAfterSend(target);
     }
   };
@@ -539,9 +508,8 @@ export function renderChatComposer(props: ChatComposerProps) {
     }
     commitComposerDraft(props, draft);
     props.onTypingChange?.(false);
-    props.onSend(
-      resolveComposerSubmissionId(state, composerSubmissionKey(props, draftKey, draft)),
-    );
+    const submission = resolveComposerSubmission(state, props, draft);
+    props.onSend(submission.id, submission.releaseForRetry);
     syncComposerDraftAfterSend(state.composerTextarea);
   };
   const handleVoicePrimaryAction = () => {

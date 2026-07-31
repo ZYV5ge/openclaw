@@ -8,6 +8,7 @@ import {
   releaseChatAttachmentPayloads,
 } from "./attachment-payload-store.ts";
 import type { ChatHost } from "./chat-send-contract.ts";
+import { restoreComposerAfterFailedSend } from "./chat-send.ts";
 import { handleSendChat } from "./chat-send-submit.ts";
 
 const attachmentsToRelease: ChatAttachment[] = [];
@@ -86,6 +87,24 @@ describe("handleSendChat immediate local commands", () => {
       expect(host.chatQueue).toStrictEqual([]);
     },
   );
+
+  it("releases a failed command lease when staged attachments were already preserved", () => {
+    const attachment = createStagedAttachment("preserved-retry-att");
+    const host = createImmediateCommandHost("/export-session", attachment);
+    const releaseForRetry = vi.fn();
+    host.chatMessage = "";
+
+    restoreComposerAfterFailedSend(host, {
+      previousAttachments: [{ ...attachment }],
+      previousDraft: "/export-session",
+      releaseForRetry,
+    });
+
+    expect(host.chatMessage).toBe("/export-session");
+    expect(host.chatAttachments).toEqual([attachment]);
+    expect(getChatAttachmentDataUrl(host.chatAttachments[0]!)).toBe(attachmentDataUrl);
+    expect(releaseForRetry).toHaveBeenCalledOnce();
+  });
 
   it("does not duplicate staged attachments into both old and new session composers", async () => {
     const attachment = createStagedAttachment("new-session-att");

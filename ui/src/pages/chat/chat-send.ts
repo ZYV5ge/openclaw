@@ -1,6 +1,7 @@
 export {
   cancelPendingSendBeforeRequest,
   pendingComposerRestorePlan,
+  restoreComposerAfterFailedSend,
 } from "./chat-send-composer.ts";
 export {
   chatOutboxDrainDependencies,

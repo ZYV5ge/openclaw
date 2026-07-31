@@ -1,4 +1,5 @@
 import type { ChatQueueItem } from "../../../lib/chat/chat-types.ts";
+import { generateUUID } from "../../../lib/uuid.ts";
 import type { ChatRunUiStatus } from "../run-lifecycle.ts";
 import { adjustTextareaHeight } from "./chat-composer-dom.ts";
 import { clearGoalElapsedTimers } from "./chat-composer-goal.ts";
@@ -96,10 +97,54 @@ export function composerDraftKey(
   return `${props.currentAgentId}\u0000${props.sessionKey}`;
 }
 
+function composerSubmissionKey(props: ChatComposerProps, draft: string): string {
+  const attachments = props.getAttachments?.() ?? props.attachments ?? [];
+  return JSON.stringify([
+    composerDraftKey(props),
+    draft,
+    attachments.map((attachment) => [
+      attachment.id,
+      attachment.mimeType,
+      attachment.fileName ?? "",
+      attachment.sizeBytes ?? 0,
+    ]),
+  ]);
+}
+
+export function resolveComposerSubmission(
+  state: ChatComposerState,
+  props: ChatComposerProps,
+  draft: string,
+): { id: string; releaseForRetry: () => void } {
+  const key = composerSubmissionKey(props, draft);
+  if (state.composerSubmission?.key === key) {
+    return state.composerSubmission;
+  }
+  const submission: NonNullable<ChatComposerState["composerSubmission"]> = {
+    id: generateUUID(),
+    key,
+    releaseForRetry: () => {
+      if (state.composerSubmission === submission) {
+        state.composerSubmission = null;
+      }
+    },
+  };
+  state.composerSubmission = submission;
+  return submission;
+}
+
+export function invalidateComposerSubmission(paneId: string): void {
+  const state = composerStates.get(paneId);
+  if (state) {
+    state.composerSubmission = null;
+  }
+}
+
 export function commitComposerDraft(props: ChatComposerProps, value: string): void {
   if (props.getDraft?.() === value || props.draft === value) {
     return;
   }
+  invalidateComposerSubmission(props.paneId);
   props.onDraftChange(value);
 }
 
