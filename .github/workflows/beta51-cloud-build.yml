@@ -118,7 +118,7 @@ jobs:
       - name: Check workflow and focused formatting
         env:
           TDD_PHASE: ${{ inputs.phase }}
-        SUITE: ${{ inputs.suite }}
+          SUITE: ${{ inputs.suite }}
         run: |
           set -euo pipefail
           node scripts/check-workflows.mjs
