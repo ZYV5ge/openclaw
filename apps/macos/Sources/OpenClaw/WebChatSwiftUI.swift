@@ -890,6 +890,7 @@ private struct MacChatSurface: View {
                     viewModel: self.viewModel,
                     showsSessionSwitcher: true,
                     userAccent: self.userAccent,
+                    displayOptions: self.displayOptions,
                     emptyAssistantIntro: Self.emptyAssistantIntro,
                     emptyAssistantPrompts: Self.emptyAssistantPrompts,
                     talkControl: self.talkControl,
@@ -991,7 +992,7 @@ private struct MacChatSurface: View {
             hasTalkControl: true,
             hasSpeech: true,
             hasVoiceNoteControl: true,
-            displayOptions: self.isFullWindow ? self.displayOptions : [])
+            displayOptions: self.displayOptions)
     }
     #endif
 }
