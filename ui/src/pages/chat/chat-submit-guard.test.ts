@@ -18,6 +18,27 @@ function createHost(): ChatHost {
 }
 
 describe("withChatSubmitGuard", () => {
+  it("publishes a logical submission before starting it synchronously", async () => {
+    const calls: string[] = [];
+    const host = createHost();
+    let reentry: Promise<string> | undefined;
+
+    const first = withChatSubmissionGuard(host, "logical-sync", async () => {
+      calls.push("original");
+      reentry = withChatSubmissionGuard(host, "logical-sync", async () => {
+        calls.push("duplicate");
+        return "duplicate";
+      });
+      return "original";
+    });
+
+    expect(calls).toEqual(["original"]);
+    expect(reentry).toBe(first);
+    await expect(first).resolves.toBe("original");
+    await expect(reentry).resolves.toBe("original");
+    expect(calls).toEqual(["original"]);
+  });
+
   it("runs three distinct same-key submissions in fair FIFO order", async () => {
     const gate = createDeferred<void>();
     const order: string[] = [];
@@ -28,6 +49,8 @@ describe("withChatSubmitGuard", () => {
       await gate.promise;
       order.push("first:end");
     });
+    expect(order).toEqual(["first:start"]);
+
     const second = withChatSubmitGuard(host, "same-key", async () => {
       order.push("second");
     });
@@ -35,7 +58,6 @@ describe("withChatSubmitGuard", () => {
       order.push("third");
     });
 
-    await Promise.resolve();
     expect(order).toEqual(["first:start"]);
     gate.resolve();
     await Promise.all([first, second, third]);

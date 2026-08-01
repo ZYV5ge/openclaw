@@ -1337,16 +1337,17 @@ describe("handleSendChat", () => {
       sessionKey: "agent:main",
     });
 
-    const send = handleSendChat(host);
-    const duplicate = handleSendChat(host);
+    const submissionId = "redirect-submission";
+    const send = handleSendChat(host, undefined, { submissionId });
+    const duplicate = handleSendChat(host, undefined, { submissionId });
+    expect(duplicate).toBe(send);
     expect(await raceWithMacrotask(send)).toBe("pending");
-    await duplicate;
     expect(host.request).not.toHaveBeenCalled();
     expect(host.chatMessage).toBe("/redirect start over");
 
     host.chatMessage = "new draft";
     settingsPatch.resolve(true);
-    await send;
+    await Promise.all([send, duplicate]);
 
     expect(host.request).toHaveBeenCalledWith("sessions.steer", {
       key: "agent:main",
