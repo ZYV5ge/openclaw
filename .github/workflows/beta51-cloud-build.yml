@@ -126,8 +126,14 @@ jobs:
           set -euo pipefail
           node scripts/check-workflows.mjs
           if [[ "$TDD_PHASE" == "red" ]]; then
-            node_modules/.bin/oxfmt extensions/google/web-search-provider.test.ts
-            git --no-pager diff -- extensions/google/web-search-provider.test.ts
+            node_modules/.bin/oxfmt \
+              extensions/google/web-search-provider.test.ts \
+              ui/src/pages/chat/chat-submit-guard.test.ts \
+              ui/src/pages/chat/chat-send.test.ts
+            git --no-pager diff -- \
+              extensions/google/web-search-provider.test.ts \
+              ui/src/pages/chat/chat-submit-guard.test.ts \
+              ui/src/pages/chat/chat-send.test.ts
           fi
           node_modules/.bin/oxfmt --check \
             extensions/google/src/gemini-web-search-provider.ts \
