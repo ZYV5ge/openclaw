@@ -477,11 +477,7 @@ export function transitionMainSessionRecovery(
     case "claim_foreground": {
       if (
         entry.sessionId === command.sessionId &&
-        hasOrphanedMainRestartRecoveryFences(
-          entry,
-          command.sessionKey,
-          command.lifecycleGeneration,
-        )
+        hasOrphanedMainRestartRecoveryFences(entry, command.sessionKey, command.lifecycleGeneration)
       ) {
         Object.assign(entry, buildMainSessionRecoveryClearPatch(entry));
         return { kind: "applied" };
