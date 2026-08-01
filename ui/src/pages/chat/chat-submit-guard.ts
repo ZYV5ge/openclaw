@@ -19,20 +19,34 @@ function pruneRecentSubmissions(
   }
 }
 
+function runAsPromise<T>(run: () => Promise<T>): Promise<T> {
+  try {
+    return Promise.resolve(run());
+  } catch (error) {
+    return Promise.reject(error);
+  }
+}
+
 export function withChatSubmitGuard<T>(
   host: ChatHost,
   key: string,
   run: () => Promise<T>,
 ): Promise<T> {
   const guards = (host.chatSubmitGuards ??= new Map<string, Promise<void>>());
-  const predecessor = guards.get(key) ?? Promise.resolve();
-  const task = predecessor.catch(() => undefined).then(run);
-  const tail = task.then(
-    () => undefined,
-    () => undefined,
-  );
-
+  const predecessor = guards.get(key);
+  let releaseTail!: () => void;
+  const tail = new Promise<void>((resolve) => {
+    releaseTail = resolve;
+  });
   guards.set(key, tail);
+
+  const task = predecessor
+    ? predecessor.then(
+        () => runAsPromise(run),
+        () => runAsPromise(run),
+      )
+    : runAsPromise(run);
+  void task.then(releaseTail, releaseTail);
   void tail.then(() => {
     if (guards.get(key) === tail) {
       guards.delete(key);
@@ -41,29 +55,39 @@ export function withChatSubmitGuard<T>(
   return task;
 }
 
-export async function withChatSubmissionGuard<T>(
+export function withChatSubmissionGuard<T>(
   host: ChatHost,
   submissionId: string,
   run: () => Promise<T>,
 ): Promise<T> {
   const id = submissionId.trim();
   if (!id) {
-    throw new Error("Chat submission id is required.");
+    return Promise.reject(new Error("Chat submission id is required."));
   }
 
   const submissions = (host.chatSubmissionGuards ??= new Map());
   const existing = submissions.get(id);
   if (existing) {
-    return (await existing.promise) as T;
+    return existing.promise as Promise<T>;
   }
 
-  const promise = Promise.resolve().then(run);
-  const entry = { promise, settled: false };
-  submissions.set(id, entry);
-  try {
-    return await promise;
-  } finally {
-    entry.settled = true;
-    pruneRecentSubmissions(submissions, id);
-  }
+  let resolveSubmission!: (value: T | PromiseLike<T>) => void;
+  let rejectSubmission!: (reason?: unknown) => void;
+  const promise = new Promise<T>((resolve, reject) => {
+    resolveSubmission = resolve;
+    rejectSubmission = reject;
+  });
+  submissions.set(id, { promise, settled: false });
+
+  const task = runAsPromise(run);
+  void task.then(resolveSubmission, rejectSubmission);
+  const markSettled = () => {
+    const current = submissions.get(id);
+    if (current?.promise === promise) {
+      submissions.set(id, { promise, settled: true });
+      pruneRecentSubmissions(submissions, id);
+    }
+  };
+  void promise.then(markSettled, markSettled);
+  return promise;
 }
