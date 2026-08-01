@@ -663,6 +663,65 @@ describe("resolveTelegramInboundBody", () => {
     expect(result?.effectiveWasMentioned).toBe(true);
   });
 
+  it("ignores leading commands addressed to another bot when mentions are optional", async () => {
+    const command = "/status@other_bot";
+
+    const result = await resolveTelegramBody({
+      cfg: { channels: { telegram: {} } } as never,
+      msg: {
+        message_id: 9,
+        date: 1_700_000_009,
+        chat: { id: -1001234567890, type: "supergroup", title: "Test Group" },
+        from: { id: 46, first_name: "Eve" },
+        text: command,
+        entities: [{ type: "bot_command", offset: 0, length: command.length }],
+      } as never,
+      isGroup: true,
+      chatId: -1001234567890,
+      senderId: "46",
+      senderUsername: "",
+      groupConfig: { requireMention: false } as never,
+      requireMention: false,
+      logger: { info: vi.fn() },
+    });
+
+    expect(result).toBeNull();
+  });
+
+  it("keeps a message when only a later command targets another bot", async () => {
+    const ownCommand = "/status@bot";
+    const otherCommand = "/help@other_bot";
+    const text = `${ownCommand} ${otherCommand}`;
+
+    const result = await resolveTelegramBody({
+      cfg: { channels: { telegram: {} } } as never,
+      msg: {
+        message_id: 10,
+        date: 1_700_000_010,
+        chat: { id: -1001234567890, type: "supergroup", title: "Test Group" },
+        from: { id: 46, first_name: "Eve" },
+        text,
+        entities: [
+          { type: "bot_command", offset: 0, length: ownCommand.length },
+          {
+            type: "bot_command",
+            offset: ownCommand.length + 1,
+            length: otherCommand.length,
+          },
+        ],
+      } as never,
+      isGroup: true,
+      chatId: -1001234567890,
+      senderId: "46",
+      senderUsername: "",
+      groupConfig: { requireMention: false } as never,
+      requireMention: false,
+      logger: { info: vi.fn() },
+    });
+
+    expect(result?.rawBody).toBe(text);
+  });
+
   it("does not transcribe group audio for unauthorized senders", async () => {
     transcribeFirstAudioMock.mockReset();
     const logger = { info: vi.fn() };

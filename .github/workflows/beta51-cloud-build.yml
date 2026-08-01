@@ -16,6 +16,7 @@ on:
           - gemini-schema
           - beta6-sqlite
           - beta6-updater
+          - beta6-telegram
       phase:
         description: TDD evidence phase; does not alter the test command
         required: true
@@ -128,7 +129,10 @@ jobs:
             src/state/openclaw-state-db-startup-checkpoint.ts \
             src/state/openclaw-state-db.test.ts \
             src/cli/update-cli/update-command-service.ts \
-            src/cli/update-cli/update-command.test.ts
+            src/cli/update-cli/update-command.test.ts \
+            extensions/telegram/src/bot/body-helpers.ts \
+            extensions/telegram/src/bot-message-context.body.ts \
+            extensions/telegram/src/bot-message-context.body.test.ts
 
       - name: Run fixed focused suite
         env:
@@ -145,6 +149,9 @@ jobs:
               ;;
             beta6-updater)
               node scripts/run-vitest.mjs run --config test/vitest/vitest.cli.config.ts src/cli/update-cli/update-command.test.ts
+              ;;
+            beta6-telegram)
+              node scripts/run-vitest.mjs run --config test/vitest/vitest.extension-telegram.config.ts telegram/src/bot-message-context.body.test.ts
               ;;
             *)
               echo "::error::Unsupported fixed suite: $SUITE"
