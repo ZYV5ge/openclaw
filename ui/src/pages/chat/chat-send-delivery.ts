@@ -341,9 +341,7 @@ async function sendQueuedChatMessage(
           runId,
           sessionKey,
           agentId: prepared.agentId,
-          ...(expectedLeafEntryId !== undefined
-            ? { expectedLeafEntryId }
-            : {}),
+          ...(expectedLeafEntryId !== undefined ? { expectedLeafEntryId } : {}),
           ...(prepared.replyToId ? { replyToId: prepared.replyToId } : {}),
         });
     updateChatSendAckTiming(host, runId, ack, sendingItem, requestStartedAtMs);
@@ -641,8 +639,7 @@ export async function deliverChatQueueItem(
       host.sessionKey === routingSessionKey &&
       visibleSessionMatches(host, routingSessionKey, admittedItem.agentId);
     const waitsForAuthoritativeLeaf =
-      sendOptions.bindDisplayedLeafEntryId === true &&
-      (host as unknown as ChatState).chatLoading;
+      sendOptions.bindDisplayedLeafEntryId === true && (host as unknown as ChatState).chatLoading;
     if (
       drainResult === undefined &&
       !waitsForAuthoritativeLeaf &&

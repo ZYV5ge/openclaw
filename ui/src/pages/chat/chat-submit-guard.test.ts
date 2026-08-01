@@ -23,29 +23,17 @@ describe("withChatSubmitGuard", () => {
     const order: string[] = [];
     const host = createHost();
 
-    const first = withChatSubmitGuard(
-      host,
-      "same-key",
-      async () => {
-        order.push("first:start");
-        await gate.promise;
-        order.push("first:end");
-      },
-    );
-    const second = withChatSubmitGuard(
-      host,
-      "same-key",
-      async () => {
-        order.push("second");
-      },
-    );
-    const third = withChatSubmitGuard(
-      host,
-      "same-key",
-      async () => {
-        order.push("third");
-      },
-    );
+    const first = withChatSubmitGuard(host, "same-key", async () => {
+      order.push("first:start");
+      await gate.promise;
+      order.push("first:end");
+    });
+    const second = withChatSubmitGuard(host, "same-key", async () => {
+      order.push("second");
+    });
+    const third = withChatSubmitGuard(host, "same-key", async () => {
+      order.push("third");
+    });
 
     await Promise.resolve();
     expect(order).toEqual(["first:start"]);
@@ -71,9 +59,7 @@ describe("withChatSubmitGuard", () => {
 
     gate.resolve();
     await Promise.all([first, reentry]);
-    await expect(
-      withChatSubmissionGuard(host, "logical-submission", run),
-    ).resolves.toBeUndefined();
+    await expect(withChatSubmissionGuard(host, "logical-submission", run)).resolves.toBeUndefined();
 
     expect(calls).toEqual(["original"]);
   });
@@ -83,29 +69,17 @@ describe("withChatSubmitGuard", () => {
     const order: string[] = [];
     const host = createHost();
 
-    const first = withChatSubmitGuard(
-      host,
-      "same-key",
-      async () => {
-        order.push("first");
-        await gate.promise;
-        throw new Error("first failed");
-      },
-    );
-    const second = withChatSubmitGuard(
-      host,
-      "same-key",
-      async () => {
-        order.push("second");
-      },
-    );
-    const third = withChatSubmitGuard(
-      host,
-      "same-key",
-      async () => {
-        order.push("third");
-      },
-    );
+    const first = withChatSubmitGuard(host, "same-key", async () => {
+      order.push("first");
+      await gate.promise;
+      throw new Error("first failed");
+    });
+    const second = withChatSubmitGuard(host, "same-key", async () => {
+      order.push("second");
+    });
+    const third = withChatSubmitGuard(host, "same-key", async () => {
+      order.push("third");
+    });
 
     gate.resolve();
     const settled = await Promise.allSettled([first, second, third]);

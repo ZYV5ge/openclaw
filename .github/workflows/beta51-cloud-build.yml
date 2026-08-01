@@ -128,34 +128,12 @@ jobs:
           if [[ "$TDD_PHASE" == "red" ]]; then
             node_modules/.bin/oxfmt \
               extensions/google/web-search-provider.test.ts \
-              ui/src/pages/chat/chat-composer.test.ts \
-              ui/src/pages/chat/chat-outbox-drain.ts \
-              ui/src/pages/chat/chat-pane-render.ts \
-              ui/src/pages/chat/chat-send-contract.ts \
-              ui/src/pages/chat/chat-send-delivery.ts \
-              ui/src/pages/chat/chat-send-submit.ts \
-              ui/src/pages/chat/chat-send.test.ts \
               ui/src/pages/chat/chat-submit-guard.test.ts \
-              ui/src/pages/chat/chat-submit-guard.ts \
-              ui/src/pages/chat/chat-view.ts \
-              ui/src/pages/chat/components/chat-composer-slash-menu.ts \
-              ui/src/pages/chat/components/chat-composer-types.ts \
-              ui/src/pages/chat/components/chat-composer.ts
+              ui/src/pages/chat/chat-send.test.ts
             git --no-pager diff -- \
               extensions/google/web-search-provider.test.ts \
-              ui/src/pages/chat/chat-composer.test.ts \
-              ui/src/pages/chat/chat-outbox-drain.ts \
-              ui/src/pages/chat/chat-pane-render.ts \
-              ui/src/pages/chat/chat-send-contract.ts \
-              ui/src/pages/chat/chat-send-delivery.ts \
-              ui/src/pages/chat/chat-send-submit.ts \
-              ui/src/pages/chat/chat-send.test.ts \
               ui/src/pages/chat/chat-submit-guard.test.ts \
-              ui/src/pages/chat/chat-submit-guard.ts \
-              ui/src/pages/chat/chat-view.ts \
-              ui/src/pages/chat/components/chat-composer-slash-menu.ts \
-              ui/src/pages/chat/components/chat-composer-types.ts \
-              ui/src/pages/chat/components/chat-composer.ts
+              ui/src/pages/chat/chat-send.test.ts
           fi
           node_modules/.bin/oxfmt --check \
             extensions/google/src/gemini-web-search-provider.ts \
