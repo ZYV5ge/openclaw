@@ -395,10 +395,12 @@ describe("executeAgentTurn: terminal failures", () => {
       return true;
     });
     state.runEmbeddedAgentMock.mockRejectedValueOnce(
-      new SessionWriteLockStaleError({
-        lockPath: "sqlite:session-write:agent:main:main",
-        owner: "replacement gateway",
-        staleReasons: ["lease-lost"],
+      Object.assign(new Error("wrapped runner failure"), {
+        cause: new SessionWriteLockStaleError({
+          lockPath: "sqlite:session-write:agent:main:main",
+          owner: "replacement gateway",
+          staleReasons: ["lease-lost"],
+        }),
       }),
     );
     const confirmRestartRecoveryArmedAfterLeaseLoss = vi.fn(async () => true);
@@ -473,6 +475,34 @@ describe("executeAgentTurn: terminal failures", () => {
       expect(result.payload.text).not.toBe(SILENT_REPLY_TOKEN);
     }
     expect(confirmRestartRecoveryArmedAfterLeaseLoss).not.toHaveBeenCalled();
+    expect(abortForRestart).not.toHaveBeenCalled();
+    expect(failMock).toHaveBeenCalledOnce();
+  });
+
+  it("keeps normal failure handling when lease-loss handoff is not confirmed", async () => {
+    const { replyOperation, failMock } = createMockReplyOperation();
+    const abortForRestart = vi.spyOn(replyOperation, "abortForRestart");
+    state.runEmbeddedAgentMock.mockRejectedValueOnce(
+      new SessionWriteLockStaleError({
+        lockPath: "sqlite:session-write:agent:main:main",
+        owner: "unconfirmed replacement gateway",
+        staleReasons: ["lease-lost"],
+      }),
+    );
+    const confirmRestartRecoveryArmedAfterLeaseLoss = vi.fn(async () => false);
+
+    const executeAgentTurn = await getExecuteAgentTurnForTest();
+    const result = await executeAgentTurn({
+      ...createMinimalRunAgentTurnParams({ replyOperation }),
+      confirmRestartRecoveryArmedAfterLeaseLoss,
+      isRestartRecoveryArmed: () => false,
+    });
+
+    expect(result.kind).toBe("final");
+    if (result.kind === "final") {
+      expect(result.payload.text).not.toBe(SILENT_REPLY_TOKEN);
+    }
+    expect(confirmRestartRecoveryArmedAfterLeaseLoss).toHaveBeenCalledOnce();
     expect(abortForRestart).not.toHaveBeenCalled();
     expect(failMock).toHaveBeenCalledOnce();
   });

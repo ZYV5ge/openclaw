@@ -121,12 +121,8 @@ jobs:
           set -euo pipefail
           node scripts/check-workflows.mjs
           if [[ "$TDD_PHASE" == "red" ]]; then
-            node_modules/.bin/oxfmt \
-              extensions/google/web-search-provider.test.ts \
-              src/auto-reply/reply/restart-recovery-claim.test.ts
-            git --no-pager diff -- \
-              extensions/google/web-search-provider.test.ts \
-              src/auto-reply/reply/restart-recovery-claim.test.ts
+            node_modules/.bin/oxfmt extensions/google/web-search-provider.test.ts
+            git --no-pager diff -- extensions/google/web-search-provider.test.ts
           fi
           node_modules/.bin/oxfmt --check \
             extensions/google/src/gemini-web-search-provider.ts \
@@ -162,14 +158,20 @@ jobs:
               node scripts/run-vitest.mjs run --config test/vitest/vitest.extension-telegram.config.ts telegram/src/bot-message-context.body.test.ts
               ;;
             beta6-restart-handoff)
+              unit_status=0
               node scripts/run-vitest.mjs run \
                 --config test/vitest/vitest.auto-reply-reply.config.ts \
                 src/auto-reply/reply/restart-recovery-claim.test.ts \
-                src/auto-reply/reply/agent-runner-execution-terminal-failures.test.ts
+                src/auto-reply/reply/agent-runner-execution-terminal-failures.test.ts || unit_status=$?
+              e2e_status=0
               OPENCLAW_E2E_WORKERS=1 node scripts/run-vitest.mjs run \
                 --config test/vitest/vitest.e2e.config.ts \
                 src/auto-reply/reply/agent-runner.runreplyagent.e2e.test.ts \
-                -t "preserves an adopted restart claim when the replacement takes the SQLite lease"
+                -t "preserves an adopted restart claim when the replacement takes the SQLite lease" || e2e_status=$?
+              if (( unit_status != 0 || e2e_status != 0 )); then
+                echo "::error::restart handoff unit status=$unit_status e2e status=$e2e_status"
+                exit 1
+              fi
               ;;
             *)
               echo "::error::Unsupported fixed suite: $SUITE"

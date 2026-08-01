@@ -9,12 +9,12 @@ import {
 } from "../../config/sessions/session-accessor.js";
 import { resolveSqliteReadScope } from "../../config/sessions/session-accessor.sqlite-scope.js";
 import type { InternalSessionEntry, SessionEntry } from "../../config/sessions/types.js";
-import { openOpenClawAgentDatabase } from "../../state/openclaw-agent-db.js";
 import { createUserTurnTranscriptRecorder } from "../../sessions/user-turn-transcript.js";
 import type {
   UserTurnTranscriptRecorder,
   UserTurnTranscriptTarget,
 } from "../../sessions/user-turn-transcript.types.js";
+import { openOpenClawAgentDatabase } from "../../state/openclaw-agent-db.js";
 import { createReplyRestartRecoveryClaimController } from "./restart-recovery-claim.js";
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
@@ -381,5 +381,4 @@ describe("createReplyRestartRecoveryClaimController", () => {
     expect(persisted?.restartRecoveryDeliveryRunId).toBeUndefined();
     expect(persisted?.restartRecoveryDeliverySourceRunId).toBeUndefined();
   });
-
 });
