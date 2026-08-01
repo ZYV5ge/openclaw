@@ -144,7 +144,7 @@ jobs:
               node scripts/run-vitest.mjs run --config test/vitest/vitest.unit-src.config.ts src/state/openclaw-state-db.test.ts
               ;;
             beta6-updater)
-              node scripts/run-vitest.mjs run --config test/vitest/vitest.unit-src.config.ts src/cli/update-cli/update-command.test.ts
+              node scripts/run-vitest.mjs run --config test/vitest/vitest.cli.config.ts src/cli/update-cli/update-command.test.ts
               ;;
             *)
               echo "::error::Unsupported fixed suite: $SUITE"
