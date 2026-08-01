@@ -127,31 +127,34 @@ describe("google web search provider", () => {
   it.each([
     ["country", "us", "unsupported_country"],
     ["language", "en", "unsupported_language"],
-  ])("keeps crafted unsupported %s filters rejected at runtime", async (filter, value, error) => {
-    const mockFetch = installGeminiFetch();
-    const tool = createGeminiWebSearchProvider().createTool({
-      config: {
-        plugins: {
-          entries: {
-            google: {
-              config: {
-                webSearch: { apiKey: "AIza-plugin-test" },
+  ])(
+    "keeps crafted unsupported %s filters rejected at runtime",
+    async (filter, value, error) => {
+      const mockFetch = installGeminiFetch();
+      const tool = createGeminiWebSearchProvider().createTool({
+        config: {
+          plugins: {
+            entries: {
+              google: {
+                config: {
+                  webSearch: { apiKey: "AIza-plugin-test" },
+                },
               },
             },
           },
         },
-      },
-      searchConfig: { provider: "gemini" },
-    });
-    if (!tool) {
-      throw new Error("Expected tool definition");
-    }
+        searchConfig: { provider: "gemini" },
+      });
+      if (!tool) {
+        throw new Error("Expected tool definition");
+      }
 
-    await expect(
-      tool.execute({ query: "OpenClaw docs", [filter]: value }),
-    ).resolves.toMatchObject({ error });
-    expect(mockFetch).not.toHaveBeenCalled();
-  });
+      await expect(
+        tool.execute({ query: "OpenClaw docs", [filter]: value }),
+      ).resolves.toMatchObject({ error });
+      expect(mockFetch).not.toHaveBeenCalled();
+    },
+  );
 
   it("points missing-key users to fetch/browser alternatives", async () => {
     await withEnvAsync({ GEMINI_API_KEY: undefined }, async () => {
