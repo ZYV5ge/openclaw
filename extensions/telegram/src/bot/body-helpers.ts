@@ -327,6 +327,27 @@ export function hasBotMention(msg: Message, botUsername: string) {
   return false;
 }
 
+export function hasLeadingBotCommandAddressedToOtherBot(
+  msg: Message,
+  botUsername: string,
+): boolean {
+  const { text, entities } = getTelegramTextParts(msg);
+  const normalizedBotUsername = normalizeLowercaseStringOrEmpty(botUsername).replace(/^@/u, "");
+  if (!normalizedBotUsername) {
+    return false;
+  }
+  const leadingOffset = text.search(/\S/u);
+  const leadingCommand = entities.find(
+    (entity) => entity.type === "bot_command" && entity.offset === leadingOffset,
+  );
+  if (!leadingCommand) {
+    return false;
+  }
+  const command = text.slice(leadingCommand.offset, leadingCommand.offset + leadingCommand.length);
+  const target = command.match(/^\/[^@\s]+@([a-z0-9_]+)$/iu)?.[1];
+  return Boolean(target && target.toLowerCase() !== normalizedBotUsername);
+}
+
 export function hasBotMentionInText(text: string, botUsername: string): boolean {
   return hasStandaloneTelegramMention(
     normalizeLowercaseStringOrEmpty(text),
