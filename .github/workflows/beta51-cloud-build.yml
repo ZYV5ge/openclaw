@@ -138,7 +138,7 @@ jobs:
               node scripts/run-vitest.mjs run                 --config test/vitest/vitest.extension-providers.config.ts                 google/web-search-provider.test.ts
               ;;
             beta6-sqlite)
-              node scripts/run-vitest.mjs run --config test/vitest/vitest.unit-src.config.ts state/openclaw-state-db.test.ts
+              node scripts/run-vitest.mjs run --config test/vitest/vitest.unit-src.config.ts src/state/openclaw-state-db.test.ts
               ;;
             *)
               echo "::error::Unsupported fixed suite: $SUITE"
