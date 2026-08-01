@@ -714,6 +714,7 @@ describe("resolveTelegramInboundBody", () => {
       chatId: -1001234567890,
       senderId: "46",
       senderUsername: "",
+      effectiveGroupAllow: normalizeAllowFrom(["46"]),
       groupConfig: { requireMention: false } as never,
       requireMention: false,
       logger: { info: vi.fn() },
