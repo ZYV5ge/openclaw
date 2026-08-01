@@ -165,8 +165,7 @@ function hasTerminalOnlyMainRestartRecoveryAggregate(
   }
   const terminalRunIds = new Set(entry.restartRecoveryTerminalRunIds ?? []);
   return runs.every(
-    (run) =>
-      run.lifecycleGeneration !== lifecycleGeneration && terminalRunIds.has(run.runId),
+    (run) => run.lifecycleGeneration !== lifecycleGeneration && terminalRunIds.has(run.runId),
   );
 }
 

@@ -118,16 +118,12 @@ jobs:
       - name: Check workflow and focused formatting
         env:
           TDD_PHASE: ${{ inputs.phase }}
-          SUITE: ${{ inputs.suite }}
         run: |
           set -euo pipefail
           node scripts/check-workflows.mjs
           if [[ "$TDD_PHASE" == "red" ]]; then
             node_modules/.bin/oxfmt extensions/google/web-search-provider.test.ts
             git --no-pager diff -- extensions/google/web-search-provider.test.ts
-          elif [[ "$TDD_PHASE" == "green" && "$SUITE" == "beta6-terminal-recovery-residue" ]]; then
-            node_modules/.bin/oxfmt src/agents/main-session-recovery-state.ts
-            git --no-pager diff -- src/agents/main-session-recovery-state.ts
           fi
           node_modules/.bin/oxfmt --check \
             extensions/google/src/gemini-web-search-provider.ts \
@@ -191,8 +187,12 @@ jobs:
             beta6-terminal-recovery-residue)
               node scripts/run-vitest.mjs run \
                 --config test/vitest/vitest.agents-core.config.ts \
-                src/agents/main-session-recovery-store.test.ts \
-                src/agents/main-session-recovery-state.test.ts \
+                src/agents/main-session-recovery-store.test.ts
+              node scripts/run-vitest.mjs run \
+                --config test/vitest/vitest.agents-core.config.ts \
+                src/agents/main-session-recovery-state.test.ts
+              node scripts/run-vitest.mjs run \
+                --config test/vitest/vitest.agents-core.config.ts \
                 src/agents/main-session-recovery-run-ownership.test.ts
               ;;
             *)
