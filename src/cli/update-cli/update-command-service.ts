@@ -783,11 +783,15 @@ export function stripGatewayServiceMarkerEnv(env: NodeJS.ProcessEnv): NodeJS.Pro
   return resolvedEnv;
 }
 
-function resolveUpdatedInstallCommandEnv(
-  env: NodeJS.ProcessEnv,
-  invocationCwd?: string,
-): NodeJS.ProcessEnv {
-  return disableUpdatedPackageCompileCacheEnv(resolveServiceRefreshEnv(env, invocationCwd));
+export function resolveUpdatedInstallCommandEnv(params?: {
+  processEnv?: NodeJS.ProcessEnv;
+  serviceEnv?: NodeJS.ProcessEnv;
+  invocationCwd?: string;
+}): NodeJS.ProcessEnv {
+  const selectedEnv = params?.serviceEnv ?? params?.processEnv ?? process.env;
+  return disableUpdatedPackageCompileCacheEnv(
+    resolveServiceRefreshEnv(selectedEnv, params?.invocationCwd),
+  );
 }
 
 export function resolvePostInstallDoctorEnv(params?: {
@@ -855,7 +859,11 @@ async function refreshGatewayServiceEnv(params: {
       [params.nodeRunner ?? resolveNodeRunner(), entrypoint, ...args],
       {
         cwd: params.result.root,
-        env: resolveUpdatedInstallCommandEnv(params.env ?? process.env, params.invocationCwd),
+        env: resolveUpdatedInstallCommandEnv({
+          processEnv: process.env,
+          serviceEnv: params.env,
+          invocationCwd: params.invocationCwd,
+        }),
         timeoutMs: SERVICE_REFRESH_TIMEOUT_MS,
       },
     );
@@ -899,7 +907,11 @@ async function runUpdatedInstallGatewayRestart(params: {
     [params.nodeRunner ?? resolveNodeRunner(), entrypoint, ...args],
     {
       cwd: params.result.root,
-      env: resolveUpdatedInstallCommandEnv(params.env ?? process.env, params.invocationCwd),
+      env: resolveUpdatedInstallCommandEnv({
+        processEnv: process.env,
+        serviceEnv: params.env,
+        invocationCwd: params.invocationCwd,
+      }),
       // Restart health owns migration-aware readiness. Keep only the caller's bounded update
       // budget outside it so the former fixed 60-second watchdog cannot preempt that wait.
       timeoutMs: params.timeoutMs,
