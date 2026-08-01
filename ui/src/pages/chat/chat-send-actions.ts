@@ -42,7 +42,6 @@ export async function sendChatMessageWithGeneratedRunId(
   attachments?: ChatAttachment[],
   options: {
     canApplyError?: () => boolean;
-    onDefiniteRejection?: (reason: "active-leaf-changed") => void;
     queueMode?: QueueMode;
     runId?: string;
   } = {},
@@ -73,16 +72,14 @@ export async function sendChatMessageWithGeneratedRunId(
       ...(options.queueMode ? { queueMode: options.queueMode } : {}),
     });
   } catch (err) {
-    const activeLeafChanged = isActiveLeafChangedError(err);
-    if (activeLeafChanged) {
-      options.onDefiniteRejection?.("active-leaf-changed");
-    }
     if (canApplyError()) {
       setChatError(
         state,
-        activeLeafChanged ? t("chat.sendErrors.activeLeafChanged") : formatConnectError(err),
+        isActiveLeafChangedError(err)
+          ? t("chat.sendErrors.activeLeafChanged")
+          : formatConnectError(err),
       );
-      if (activeLeafChanged) {
+      if (isActiveLeafChangedError(err)) {
         void Promise.all([loadChatHistory(state), loadChatBranches(state)]);
       }
     }

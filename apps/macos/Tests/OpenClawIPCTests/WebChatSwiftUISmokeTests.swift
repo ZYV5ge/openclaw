@@ -155,6 +155,7 @@ struct WebChatSwiftUISmokeTests {
         #expect(window.toolbarStyle == .unified)
         #expect(window.titlebarSeparatorStyle == .none)
         #expect(window.isMovableByWindowBackground)
+        #expect(window.isRestorable == false)
         #expect(window.title == "Studio — OpenClaw")
         window.title = "main"
         #expect(window.title == "Studio — OpenClaw")
@@ -171,33 +172,12 @@ struct WebChatSwiftUISmokeTests {
         controller.close()
     }
 
-    @Test func `panel controller preserves independent assistant trace preferences`() throws {
-        let reasoningKey = OpenClawChatWindowShell.assistantReasoningDefaultsKey
-        let toolActivityKey = OpenClawChatWindowShell.assistantToolActivityDefaultsKey
-        let legacyKey = OpenClawChatWindowShell.assistantTraceDefaultsKey
-        let previousValues = [legacyKey, reasoningKey, toolActivityKey].map {
-            ($0, UserDefaults.standard.object(forKey: $0))
-        }
-        UserDefaults.standard.removeObject(forKey: legacyKey)
-        UserDefaults.standard.set(false, forKey: reasoningKey)
-        UserDefaults.standard.set(true, forKey: toolActivityKey)
-        defer {
-            for (key, value) in previousValues {
-                if let value {
-                    UserDefaults.standard.set(value, forKey: key)
-                } else {
-                    UserDefaults.standard.removeObject(forKey: key)
-                }
-            }
-        }
+    @Test func `panel controller present and close`() {
         let anchor = { NSRect(x: 200, y: 400, width: 40, height: 40) }
         let controller = WebChatSwiftUIWindowController(
             sessionKey: "main",
             presentation: .panel(anchorProvider: anchor),
             transport: TestTransport())
-        let capabilities = try #require(controller._testChatCapabilities)
-
-        #expect(capabilities.displayOptions == .toolActivity)
         controller.presentAnchored(anchorProvider: anchor)
         controller.close()
     }

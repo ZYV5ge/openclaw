@@ -7,9 +7,7 @@ import type { QuestionPrompt } from "../../app/question-prompt.ts";
 import { loadSettings, patchSettings } from "../../app/settings.ts";
 import { icons } from "../../components/icons.ts";
 import { i18n, t } from "../../i18n/index.ts";
-import { SLASH_COMMANDS } from "../../lib/chat/commands.ts";
 import { renderChatComposer, resetChatComposerState } from "./components/chat-composer.ts";
-import { selectSlashCommand } from "./components/chat-composer-slash-menu.ts";
 import * as realtimeTalkInput from "./realtime-talk-input.ts";
 
 const discoverRealtimeTalkInputsMock = vi.fn();
@@ -196,42 +194,6 @@ describe("renderChatComposer controls", () => {
 
     const online = renderComposer({ queuedOutboxCount: 3 });
     expect(online.container.querySelector(".agent-chat__offline-hint")).toBeNull();
-  });
-
-  it("reuses one submission identity when a slash selection handler reenters", () => {
-    let draft = "/compact";
-    const onSend = vi.fn();
-    const composerProps = props({
-      paneId: "slash-reentry",
-      draft,
-      getDraft: () => draft,
-      onDraftChange: (next) => {
-        draft = next;
-      },
-      onSend,
-    });
-    const command = SLASH_COMMANDS.find((candidate) => candidate.name === "compact");
-    expect(command).toBeDefined();
-
-    selectSlashCommand(command!, composerProps, vi.fn());
-    selectSlashCommand(command!, composerProps, vi.fn());
-
-    const firstSubmissionId = onSend.mock.calls[0]?.[0];
-    const firstReleaseForRetry = onSend.mock.calls[0]?.[1];
-    expect(firstSubmissionId).toEqual(expect.any(String));
-    expect(firstReleaseForRetry).toEqual(expect.any(Function));
-    expect(onSend.mock.calls[1]?.[0]).toBe(firstSubmissionId);
-    expect(onSend.mock.calls[1]?.[1]).toBe(firstReleaseForRetry);
-
-    firstReleaseForRetry?.();
-    selectSlashCommand(command!, composerProps, vi.fn());
-    const retrySubmissionId = onSend.mock.calls[2]?.[0];
-    expect(retrySubmissionId).toEqual(expect.any(String));
-    expect(retrySubmissionId).not.toBe(firstSubmissionId);
-
-    firstReleaseForRetry?.();
-    selectSlashCommand(command!, composerProps, vi.fn());
-    expect(onSend.mock.calls[3]?.[0]).toBe(retrySubmissionId);
   });
 
   it("replaces the composer with the archived-session notice", () => {

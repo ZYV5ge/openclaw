@@ -2,27 +2,13 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "../api.js";
 import { compileMemoryWikiVault } from "./compile.js";
 import type { MemoryWikiPluginConfig } from "./config.js";
 import { renderWikiMarkdown } from "./markdown.js";
-import { getMemoryWikiPage, readQueryableWikiPages, searchMemoryWiki } from "./query.js";
+import { getMemoryWikiPage, searchMemoryWiki } from "./query.js";
 import { createMemoryWikiTestHarness } from "./test-helpers.js";
-
-type ReadFile = typeof import("node:fs/promises").readFile;
-
-const fsMocks = vi.hoisted(() => ({
-  actualReadFile: undefined as ReadFile | undefined,
-  readFile: vi.fn<ReadFile>(),
-}));
-
-vi.mock("node:fs/promises", async () => {
-  const actual = await vi.importActual<typeof import("node:fs/promises")>("node:fs/promises");
-  fsMocks.actualReadFile = actual.readFile;
-  const patched = { ...actual, readFile: fsMocks.readFile };
-  return { ...patched, default: patched };
-});
 
 const {
   getActiveMemorySearchManagerMock,
@@ -61,22 +47,6 @@ const { createVault } = createMemoryWikiTestHarness();
 let suiteRoot = "";
 let caseIndex = 0;
 
-function getActualReadFile(): ReadFile {
-  const actualReadFile = fsMocks.actualReadFile;
-  if (!actualReadFile) {
-    throw new Error("actual node:fs/promises readFile is unavailable");
-  }
-  return actualReadFile;
-}
-
-function resetReadFileMock(): void {
-  fsMocks.readFile.mockReset();
-  fsMocks.readFile.mockImplementation(
-    ((...args: Parameters<ReadFile>) =>
-      Reflect.apply(getActualReadFile(), undefined, args)) as ReadFile,
-  );
-}
-
 function collectWikiResultPaths(results: readonly { corpus: string; path: string }[]): string[] {
   const paths: string[] = [];
   for (const result of results) {
@@ -99,17 +69,12 @@ function expectFields(value: unknown, expected: Record<string, unknown>): Record
 }
 
 beforeEach(() => {
-  resetReadFileMock();
   getActiveMemorySearchManagerMock.mockReset();
   getActiveMemorySearchManagerMock.mockResolvedValue({ manager: null, error: "unavailable" });
   loadCombinedSessionStoreForGatewayMock.mockReset();
   loadCombinedSessionStoreForGatewayMock.mockReturnValue({ storePath: "(test)", store: {} });
   resolveDefaultAgentIdMock.mockClear();
   resolveSessionAgentIdMock.mockClear();
-});
-
-afterEach(() => {
-  resetReadFileMock();
 });
 
 beforeAll(async () => {
@@ -254,17 +219,6 @@ describe("getMemoryWikiPage", () => {
 });
 
 describe("searchMemoryWiki", () => {
-  it("fails immediately when its caller deadline is already aborted", async () => {
-    const { config } = await createQueryVault({ initialize: true });
-    const controller = new AbortController();
-    controller.abort(new Error("wiki search deadline reached"));
-
-    await expect(
-      searchMemoryWiki({ config, query: "alpha", signal: controller.signal }),
-    ).rejects.toThrow("wiki search deadline reached");
-    expect(getActiveMemorySearchManagerMock).not.toHaveBeenCalled();
-  });
-
   it("finds wiki pages by title and body", async () => {
     const { rootDir, config } = await createQueryVault({
       initialize: true,
@@ -578,111 +532,6 @@ describe("searchMemoryWiki", () => {
     });
 
     expect(routeResults[0]?.path).toBe("entities/brad.md");
-  });
-
-  it("passes the caller signal to exhaustive fallback page reads", async () => {
-    const { rootDir, config } = await createQueryVault({ initialize: true });
-    await fs.writeFile(
-      path.join(rootDir, "entities", "digest-alpha.md"),
-      renderWikiMarkdown({
-        frontmatter: {
-          pageType: "entity",
-          id: "entity.digest-alpha",
-          title: "Digest Alpha",
-        },
-        body: "# Digest Alpha\n\nalpha candidate from the compiled digest.\n",
-      }),
-      "utf8",
-    );
-    await compileMemoryWikiVault(config);
-
-    const latePagePath = path.join(rootDir, "entities", "late-alpha.md");
-    await fs.writeFile(
-      latePagePath,
-      renderWikiMarkdown({
-        frontmatter: {
-          pageType: "entity",
-          id: "entity.late-alpha",
-          title: "Late Alpha",
-        },
-        body: "# Late Alpha\n\nalpha result added after compilation.\n",
-      }),
-      "utf8",
-    );
-
-    const controller = new AbortController();
-    const results = await searchMemoryWiki({
-      config,
-      query: "alpha",
-      maxResults: 2,
-      signal: controller.signal,
-    });
-
-    expect(collectWikiResultPaths(results)).toEqual([
-      "entities/digest-alpha.md",
-      "entities/late-alpha.md",
-    ]);
-    expect(fsMocks.readFile).toHaveBeenCalledWith(
-      latePagePath,
-      expect.objectContaining({ signal: controller.signal }),
-    );
-  });
-
-  it("aborts while reading queryable wiki pages", async () => {
-    const { rootDir } = await createQueryVault({ initialize: true });
-    const blockedPagePath = path.join(rootDir, "entities", "blocked-alpha.md");
-    await fs.writeFile(
-      blockedPagePath,
-      renderWikiMarkdown({
-        frontmatter: {
-          pageType: "entity",
-          id: "entity.blocked-alpha",
-          title: "Blocked Alpha",
-        },
-        body: "# Blocked Alpha\n\nalpha page read should honor cancellation.\n",
-      }),
-      "utf8",
-    );
-
-    const controller = new AbortController();
-    const abortError = new Error("wiki queryable page read cancelled");
-    let markBlockedReadStarted: (() => void) | undefined;
-    const blockedReadStarted = new Promise<void>((resolve) => {
-      markBlockedReadStarted = resolve;
-    });
-    fsMocks.readFile.mockImplementation(
-      (async (...args: Parameters<ReadFile>) => {
-        if (String(args[0]) !== blockedPagePath) {
-          return await Reflect.apply(getActualReadFile(), undefined, args);
-        }
-        markBlockedReadStarted?.();
-        const options = args[1];
-        const signal =
-          options && typeof options === "object" && "signal" in options
-            ? options.signal
-            : undefined;
-        if (!signal) {
-          throw new Error("expected queryable page read signal");
-        }
-        return await new Promise<never>((_resolve, reject) => {
-          signal.addEventListener("abort", () => reject(signal.reason), { once: true });
-        });
-      }) as ReadFile,
-    );
-
-    const readPromise = readQueryableWikiPages(rootDir, controller.signal);
-    const observedBlockedRead = await Promise.race([
-      blockedReadStarted.then(() => true),
-      readPromise.then(() => false),
-    ]);
-    expect(observedBlockedRead).toBe(true);
-    controller.abort(abortError);
-
-    await expect(readPromise).rejects.toThrow("wiki queryable page read cancelled");
-    expect(fsMocks.readFile).toHaveBeenCalledWith(
-      blockedPagePath,
-      expect.objectContaining({ signal: controller.signal }),
-    );
   });
 
   it("uses body text instead of frontmatter for fallback snippets", async () => {

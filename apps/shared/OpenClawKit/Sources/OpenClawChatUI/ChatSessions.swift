@@ -568,14 +568,7 @@ public enum OpenClawChatSessionListOrganizer {
         let query = search.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         guard !query.isEmpty else { return sessions }
         return sessions.filter { session in
-            for field in [
-                session.displayName,
-                session.label,
-                session.subject,
-                session.sessionId,
-                session.category,
-                session.key,
-            ] {
+            for field in [session.displayName, session.label, session.subject, session.sessionId, session.key] {
                 if let field, field.lowercased().contains(query) {
                     return true
                 }

@@ -731,9 +731,7 @@ export async function handleControlUiAssistantMediaRequest(
     const byteResponse = resolveByteResponse({
       file: opened.stat,
       method: req.method,
-      rangeHeader: req.headers.range,
-      ifRangeHeader: req.headers["if-range"],
-      ifNoneMatchHeader: req.headers["if-none-match"],
+      request: req,
     });
     writeByteHeaders(res, byteResponse);
     await byteStream.pipe(byteResponse, req.method);
@@ -831,6 +829,8 @@ export async function handleControlUiAvatarRequest(
     res.setHeader("Cache-Control", "no-cache");
     if (req.method === "HEAD") {
       res.statusCode = 200;
+      // The pinned descriptor exposes GET's exact byte count without reading the avatar.
+      res.setHeader("Content-Length", String(projection.openedFile.stat.size));
       res.end();
       return true;
     }
@@ -885,7 +885,7 @@ function resolveSafeControlUiFile(
   rootReal: string,
   filePath: string,
   rejectHardlinks: boolean,
-): { path: string; fd: number } | null {
+): { path: string; fd: number; size: number } | null {
   const opened = openRootFileSync({
     absolutePath: filePath,
     rootPath: rootReal,
@@ -902,7 +902,7 @@ function resolveSafeControlUiFile(
       fallback: () => null,
     });
   }
-  return { path: opened.path, fd: opened.fd };
+  return { path: opened.path, fd: opened.fd, size: opened.stat.size };
 }
 
 function isSafeRelativePath(relPath: string) {
@@ -1214,6 +1214,7 @@ export async function handleControlUiHttpRequest(
         respondHeadForControlUiFile(res, representation.contentPath, {
           immutable: immutableAsset,
           encoding: representation.encoding,
+          contentLength: representation.bodyFile.size,
         });
         return true;
       } finally {

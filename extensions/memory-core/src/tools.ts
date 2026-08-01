@@ -1,5 +1,5 @@
 // Memory Core plugin module implements tools behavior.
-import { extractErrorCode, formatErrorMessage } from "openclaw/plugin-sdk/error-runtime";
+import { formatErrorMessage } from "openclaw/plugin-sdk/error-runtime";
 import {
   stripMemoryAnnotationCarriers,
   type MemoryReadResult,
@@ -49,16 +49,10 @@ import {
   createMemoryTool,
   getMemoryCorpusSupplementResult,
   getMemoryManagerContextWithPurpose,
-  hasMemoryCorpusSupplements,
   loadMemoryToolRuntime,
-  MEMORY_SEARCH_CANONICAL_SESSION_MIGRATION_CODE,
   MemoryGetSchema,
   MemorySearchSchema,
-  resolveMemorySearchCanonicalMigrationGuidance,
-  searchMemoryCorpusSupplementsDetailed,
-  type MemoryCorpusSupplementFailure,
-  type MemoryCorpusSupplementSearchSummary,
-  type MemorySearchPhaseFailure,
+  searchMemoryCorpusSupplements,
 } from "./tools.shared.js";
 
 type MemorySearchToolResult =
@@ -71,14 +65,10 @@ type MemoryManagerSearchOptions = NonNullable<
 > &
   MemorySearchDeadlineControlOptions;
 type QmdRuntimeDebug = NonNullable<MemorySearchRuntimeDebug["qmd"]>;
-type MemorySearchToolCooldownFailure = Pick<MemorySearchPhaseFailure, "error" | "code">;
 
 const MEMORY_SEARCH_TOOL_COOLDOWN_MS = 60_000;
 
-const memorySearchToolCooldowns = new Map<
-  string,
-  MemorySearchToolCooldownFailure & { until: number }
->();
+const memorySearchToolCooldowns = new Map<string, { until: number; error: string }>();
 
 /**
  * Validate the model-authored corpus argument against the tool's closed enum.
@@ -141,33 +131,22 @@ function resolveMemorySearchToolCooldownKey(options: {
   return options.agentId ?? options.agentSessionKey ?? "default";
 }
 
-function readMemorySearchToolCooldown(
-  key: string,
-): (MemorySearchToolCooldownFailure & { retryAfterMs: number }) | undefined {
+function readMemorySearchToolCooldown(key: string): { error: string } | undefined {
   const entry = memorySearchToolCooldowns.get(key);
   if (!entry) {
     return undefined;
   }
-  const now = Date.now();
-  if (entry.until <= now) {
+  if (entry.until <= Date.now()) {
     memorySearchToolCooldowns.delete(key);
     return undefined;
   }
-  return {
-    error: entry.error,
-    ...(entry.code ? { code: entry.code } : {}),
-    retryAfterMs: entry.until - now,
-  };
+  return { error: entry.error };
 }
 
-function recordMemorySearchToolCooldown(
-  key: string,
-  failure: MemorySearchToolCooldownFailure,
-): void {
+function recordMemorySearchToolCooldown(key: string, error: string): void {
   memorySearchToolCooldowns.set(key, {
     until: Date.now() + MEMORY_SEARCH_TOOL_COOLDOWN_MS,
-    error: failure.error,
-    ...(failure.code ? { code: failure.code } : {}),
+    error,
   });
 }
 
@@ -219,11 +198,10 @@ function resolvePausedMemoryIndexIdentityReason(status: { custom?: unknown }): s
     : "memory index identity is missing or mismatched";
 }
 
-function buildPausedMemoryIndexUnavailableResult(failure: MemorySearchPhaseFailure) {
-  return buildMemorySearchUnavailableResult(failure.error, {
+function buildPausedMemoryIndexUnavailableResult(reason: string) {
+  return buildMemorySearchUnavailableResult(reason, {
     warning: PAUSED_MEMORY_INDEX_WARNING,
     action: PAUSED_MEMORY_INDEX_ACTION,
-    failure,
   });
 }
 
@@ -528,75 +506,22 @@ export function createMemorySearchTool(options: {
         });
         const cooldown =
           requestedCorpus === "wiki" ? undefined : readMemorySearchToolCooldown(cooldownKey);
-        const executeStartedAt = Date.now();
+        let activeUnavailablePhase: "memory" | "supplement" | undefined;
         let failedUnavailablePhase: "memory" | "supplement" | undefined;
-        let pendingMemorySearchCooldownFailure: MemorySearchPhaseFailure | undefined;
-        type SearchPhaseOutcome<T> =
-          | { ok: true; value: T; elapsedMs: number }
-          | { ok: false; failure: MemorySearchPhaseFailure };
-        const createPhaseFailure = (
-          phase: MemorySearchPhaseFailure["phase"],
-          cause: unknown,
-          elapsedMs = 0,
-        ): MemorySearchPhaseFailure => {
-          const error = formatErrorMessage(cause);
-          const code = extractErrorCode(cause);
-          return {
-            phase,
-            error,
-            timedOut: /\btimed out\b/i.test(error),
-            elapsedMs,
-            ...(code === MEMORY_SEARCH_CANONICAL_SESSION_MIGRATION_CODE
-              ? { code: MEMORY_SEARCH_CANONICAL_SESSION_MIGRATION_CODE }
-              : {}),
-          };
-        };
-        const createSupplementPhaseFailure = (
-          failures: readonly MemoryCorpusSupplementFailure[],
-        ): MemorySearchPhaseFailure | undefined => {
-          if (failures.length === 0) {
-            return undefined;
-          }
-          const error = `Memory corpus supplements partially failed (${failures
-            .map((failure) => `${failure.pluginId}: ${failure.error}`)
-            .join("; ")})`;
-          return {
-            phase: "supplement",
-            error,
-            timedOut: failures.some((failure) => failure.timedOut),
-            elapsedMs: Math.max(...failures.map((failure) => failure.elapsedMs)),
-          };
-        };
-        const createCooldownFailure = (
-          activeCooldown: NonNullable<typeof cooldown>,
-        ): MemorySearchPhaseFailure => ({
-          ...createPhaseFailure("memory", activeCooldown.error),
-          ...(activeCooldown.code ? { code: activeCooldown.code } : {}),
-          cooldown: true,
-          retryAfterMs: activeCooldown.retryAfterMs,
-        });
-        const captureSearchPhase = async <T>(
-          phase: MemorySearchPhaseFailure["phase"],
+        const runUnavailablePhase = async <T>(
+          phase: "memory" | "supplement",
           task: () => Promise<T>,
-        ): Promise<SearchPhaseOutcome<T>> => {
-          const startedAt = Date.now();
+        ): Promise<T> => {
+          activeUnavailablePhase = phase;
           try {
-            const value = await task();
-            return {
-              ok: true,
-              value,
-              elapsedMs: Math.max(0, Date.now() - startedAt),
-            };
+            return await task();
           } catch (error) {
             failedUnavailablePhase = phase;
-            return {
-              ok: false,
-              failure: createPhaseFailure(
-                phase,
-                error,
-                Math.max(0, Date.now() - startedAt),
-              ),
-            };
+            throw error;
+          } finally {
+            if (activeUnavailablePhase === phase) {
+              activeUnavailablePhase = undefined;
+            }
           }
         };
         const runWithDefaultDeadline = async <T>(
@@ -613,48 +538,10 @@ export function createMemorySearchTool(options: {
         const runMemorySearchTool = async () => {
           const toolStartedAt = Date.now();
           const shouldQuerySupplements = requestedCorpus === "wiki" || requestedCorpus === "all";
-          const hasRegisteredSupplements = shouldQuerySupplements && hasMemoryCorpusSupplements();
           const shouldQueryMemory = requestedCorpus !== "wiki" && !cooldown;
-          const supplementSearchPromise: Promise<
-            SearchPhaseOutcome<MemoryCorpusSupplementSearchSummary>
-          > = hasRegisteredSupplements
-            ? captureSearchPhase(
-                "supplement",
-                async () =>
-                  await searchMemoryCorpusSupplementsDetailed({
-                    query,
-                    maxResults,
-                    agentId,
-                    agentSessionKey: options.agentSessionKey,
-                    sandboxed: options.sandboxed,
-                    corpus: requestedCorpus,
-                    signal: callerSignal,
-                    runSupplement: async ({ search }) =>
-                      await runWithDefaultDeadline(async (signal) => await search(signal)),
-                  }),
-              )
-            : Promise.resolve({
-                ok: true,
-                value: {
-                  results: [],
-                  failures: [],
-                },
-                elapsedMs: 0,
-              });
           if (cooldown && !shouldQuerySupplements) {
-            return jsonResult(
-              buildMemorySearchUnavailableResult(cooldown.error, {
-                failure: createCooldownFailure(cooldown),
-              }),
-            );
+            return jsonResult(buildMemorySearchUnavailableResult(cooldown.error));
           }
-          let memoryFailure = cooldown ? createCooldownFailure(cooldown) : undefined;
-          let memoryFailureNeedsCooldown = false;
-          const deferMemoryFailureCooldownIfNeeded = () => {
-            if (memoryFailure && memoryFailureNeedsCooldown) {
-              pendingMemorySearchCooldownFailure = memoryFailure;
-            }
-          };
           const memoryManagerPurpose = options.oneShotCliRun ? "cli" : undefined;
           const memoryManagersToClose = new Set<ActiveMemoryManagerContext["manager"]>();
           let cleanupStarted = false;
@@ -671,8 +558,8 @@ export function createMemorySearchTool(options: {
             return context;
           };
           try {
-            const memorySetupOutcome = shouldQueryMemory
-              ? await captureSearchPhase(
+            const memorySetup = shouldQueryMemory
+              ? await runUnavailablePhase(
                   "memory",
                   async () =>
                     await runWithDefaultDeadline(async () => {
@@ -691,30 +578,13 @@ export function createMemorySearchTool(options: {
                     }),
                 )
               : null;
-            if (memorySetupOutcome && !memorySetupOutcome.ok) {
-              memoryFailure = memorySetupOutcome.failure;
-              memoryFailureNeedsCooldown = true;
-            }
-            const memorySetup = memorySetupOutcome?.ok ? memorySetupOutcome.value : null;
             const memory = memorySetup?.context ?? null;
-            if (shouldQueryMemory && memory && "error" in memory) {
-              const message = memory.error ?? "memory search unavailable";
-              memoryFailure = createPhaseFailure(
-                "memory",
-                message,
-                memorySetupOutcome?.ok ? memorySetupOutcome.elapsedMs : 0,
+            if (shouldQueryMemory && memory && "error" in memory && !shouldQuerySupplements) {
+              recordMemorySearchToolCooldown(
+                cooldownKey,
+                memory.error ?? "memory search unavailable",
               );
-              memoryFailureNeedsCooldown = true;
-            }
-            if (memoryFailure) {
-              if (!shouldQuerySupplements) {
-                deferMemoryFailureCooldownIfNeeded();
-                return jsonResult(
-                  buildMemorySearchUnavailableResult(memoryFailure.error, {
-                    failure: memoryFailure,
-                  }),
-                );
-              }
+              return jsonResult(buildMemorySearchUnavailableResult(memory.error));
             }
 
             const citationsMode = resolveMemoryCitationsMode(cfg);
@@ -758,7 +628,7 @@ export function createMemorySearchTool(options: {
                 }
               | undefined;
             if (shouldQueryMemory && memorySetup && memory && !("error" in memory)) {
-              const memorySearchOutcome = await captureSearchPhase("memory", async () => {
+              await runUnavailablePhase("memory", async () => {
                 let activeMemory = memory;
                 const runtimeDebug: MemorySearchRuntimeDebug[] = [];
                 const qmdSearchModeOverride = resolveActiveMemoryQmdSearchModeOverride(
@@ -843,8 +713,6 @@ export function createMemorySearchTool(options: {
                 pausedIndexIdentityReason =
                   resolvePausedMemoryIndexIdentityReason(statusBeforeRetry);
                 if (pausedIndexIdentityReason) {
-                  // Raw hits are not trusted until status validation succeeds.
-                  // surfacedMemoryResults is assigned only below this guard.
                   return;
                 }
                 // One-shot CLI managers have no background lifecycle, so keep their bootstrap
@@ -858,17 +726,13 @@ export function createMemorySearchTool(options: {
                   await runWithDefaultDeadline(async () => {
                     // Sync may join shared/background manager maintenance and has
                     // no request-cancellation contract. Bound only this tool's wait.
-                    await activeMemory.manager.sync?.({
-                      reason: "search",
-                      force: statusBeforeRetry.backend === "qmd" && options.oneShotCliRun === true,
-                    });
+                    await activeMemory.manager.sync?.({ reason: "search", force: true });
                   });
                   rawResults = await searchActiveMemory();
                   pausedIndexIdentityReason = resolvePausedMemoryIndexIdentityReason(
                     activeMemory.manager.status(),
                   );
                   if (pausedIndexIdentityReason) {
-                    // Keep retry hits out of the surfaced buffer for the same reason.
                     return;
                   }
                 }
@@ -942,65 +806,29 @@ export function createMemorySearchTool(options: {
                   hits: rawResults.length,
                 };
               });
-              if (!memorySearchOutcome.ok) {
-                memoryFailure = memorySearchOutcome.failure;
-                memoryFailureNeedsCooldown = true;
-              }
               if (pausedIndexIdentityReason) {
-                const pausedFailure = createPhaseFailure(
-                  "memory",
-                  pausedIndexIdentityReason,
-                  memorySearchOutcome.ok ? memorySearchOutcome.elapsedMs : 0,
+                return jsonResult(
+                  buildPausedMemoryIndexUnavailableResult(pausedIndexIdentityReason),
                 );
-                if (!shouldQuerySupplements) {
-                  return jsonResult(buildPausedMemoryIndexUnavailableResult(pausedFailure));
-                }
-                memoryFailure = pausedFailure;
-                memoryFailureNeedsCooldown = false;
               }
             }
-            const supplementOutcome = await supplementSearchPromise;
-            const supplementSummary = supplementOutcome.ok
-              ? supplementOutcome.value
-              : {
-                  results: [],
-                  failures: [],
-                };
-            const supplementFailure = supplementOutcome.ok
-              ? createSupplementPhaseFailure(supplementSummary.failures)
-              : supplementOutcome.failure;
-            const supplementResults = supplementSummary.results;
-            if (memoryFailure && !hasRegisteredSupplements) {
-              deferMemoryFailureCooldownIfNeeded();
-              return jsonResult(
-                buildMemorySearchUnavailableResult(memoryFailure.error, {
-                  failure: memoryFailure,
-                }),
-              );
-            }
-            if (!supplementOutcome.ok && requestedCorpus === "wiki") {
-              return jsonResult(
-                buildMemorySearchUnavailableResult(supplementOutcome.failure.error, {
-                  warning: "Wiki supplement search is unavailable or timed out.",
-                  action: "Retry memory_search; if it persists, inspect the memory-wiki vault.",
-                  failure: supplementOutcome.failure,
-                }),
-              );
-            }
-            if (memoryFailure && !supplementOutcome.ok) {
-              deferMemoryFailureCooldownIfNeeded();
-              return jsonResult(
-                buildMemorySearchUnavailableResult(
-                  `memory: ${memoryFailure.error}; supplement: ${supplementOutcome.failure.error}`,
-                  {
-                    warning: "Memory and wiki supplement searches are both unavailable.",
-                    action:
-                      "Retry memory_search and inspect the failed memory and supplement phases.",
-                    failures: [memoryFailure, supplementOutcome.failure],
-                  },
-                ),
-              );
-            }
+            const supplementResults = shouldQuerySupplements
+              ? await runUnavailablePhase(
+                  "supplement",
+                  async () =>
+                    await runWithDefaultDeadline(
+                      async () =>
+                        await searchMemoryCorpusSupplements({
+                          query,
+                          maxResults,
+                          agentId,
+                          agentSessionKey: options.agentSessionKey,
+                          sandboxed: options.sandboxed,
+                          corpus: requestedCorpus,
+                        }),
+                    ),
+                )
+              : [];
             // Wiki and memory scores use incomparable scales, so corpus=all first
             // balances candidate selection and then backfills any unused slots.
             const effectiveMax = Math.max(1, maxResults ?? 10);
@@ -1018,14 +846,6 @@ export function createMemorySearchTool(options: {
                 outsideSearchMs: Math.max(0, finalToolMs - searchDebug.searchMs),
               };
             }
-            const partialFailures = [memoryFailure, supplementFailure].filter(
-              (failure): failure is MemorySearchPhaseFailure => failure !== undefined,
-            );
-            const [partialFailure] = partialFailures;
-            const canonicalMigrationGuidance = memoryFailure
-              ? resolveMemorySearchCanonicalMigrationGuidance(memoryFailure.code)
-              : undefined;
-            deferMemoryFailureCooldownIfNeeded();
             return jsonResult({
               results,
               provider,
@@ -1034,26 +854,6 @@ export function createMemorySearchTool(options: {
               citations: citationsMode,
               mode: searchMode,
               debug: searchDebug,
-              ...(canonicalMigrationGuidance
-                ? { action: canonicalMigrationGuidance.action }
-                : {}),
-              ...(partialFailures.length === 1 && partialFailure
-                ? {
-                    partial: true,
-                    warning:
-                      partialFailure.phase === "memory"
-                        ? "Primary memory search failed; returning available wiki results."
-                        : "Some wiki supplement searches failed; returning available results.",
-                    failure: partialFailure,
-                  }
-                : partialFailures.length > 1
-                  ? {
-                      partial: true,
-                      warning:
-                        "Primary memory search and some wiki supplements failed; returning available results.",
-                      failures: partialFailures,
-                    }
-                  : {}),
             });
           } finally {
             cleanupStarted = true;
@@ -1065,27 +865,20 @@ export function createMemorySearchTool(options: {
           if (callerSignal?.aborted) {
             throw resolveMemorySearchAbortError(callerSignal);
           }
-          if (pendingMemorySearchCooldownFailure) {
-            recordMemorySearchToolCooldown(cooldownKey, pendingMemorySearchCooldownFailure);
-          }
           return result;
         } catch (error) {
           if (callerSignal?.aborted) {
             throw resolveMemorySearchAbortError(callerSignal);
           }
-          const unavailablePhase = failedUnavailablePhase;
+          const unavailablePhase = failedUnavailablePhase ?? activeUnavailablePhase;
           const shouldRecordCooldown =
             requestedCorpus !== "wiki" &&
             (requestedCorpus !== "all" || unavailablePhase === "memory");
-          const failure = createPhaseFailure(
-            unavailablePhase ?? (requestedCorpus === "wiki" ? "supplement" : "memory"),
-            error,
-            Math.max(0, Date.now() - executeStartedAt),
-          );
+          const message = formatErrorMessage(error);
           if (shouldRecordCooldown) {
-            recordMemorySearchToolCooldown(cooldownKey, failure);
+            recordMemorySearchToolCooldown(cooldownKey, message);
           }
-          return jsonResult(buildMemorySearchUnavailableResult(failure.error, { failure }));
+          return jsonResult(buildMemorySearchUnavailableResult(message));
         }
       },
   });

@@ -307,7 +307,7 @@ struct ChatSessionSidebarModelTests {
         #expect(sections.flatMap(\.nodes).map(\.session.key) == ["agent:main:research"])
     }
 
-    @Test(arguments: ["holiday", "KYOTO", "session-123", "team planning", "  HoLiDaY  "])
+    @Test(arguments: ["holiday", "KYOTO", "session-123", "  HoLiDaY  "])
     func `sidebar search matches every canonical gateway session field`(_ query: String) {
         let matching = self.entry(
             key: "agent:main:roadmap",
@@ -315,8 +315,7 @@ struct ChatSessionSidebarModelTests {
             label: "Summer holiday",
             subject: "Kyoto itinerary",
             sessionId: "session-123",
-            updatedAt: 200,
-            category: "Team Planning")
+            updatedAt: 200)
         let other = self.entry(
             key: "agent:main:other",
             displayName: "Unrelated",
@@ -631,7 +630,7 @@ struct ChatSessionSidebarModelTests {
                     agentId: "work",
                     runId: "run-work",
                     revision: 3,
-                    updatedAt: 1000,
+                    updatedAt: 1_000,
                     headline: "Replayed work status",
                     health: "on-track")),
             to: foreign,

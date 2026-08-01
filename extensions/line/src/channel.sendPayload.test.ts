@@ -1,9 +1,11 @@
 // Line tests cover channel.sendPayload plugin behavior.
 import { expectDefined } from "@openclaw/normalization-core";
+import { isChannelPartialDeliveryError } from "openclaw/plugin-sdk/channel-inbound";
 import {
   verifyChannelMessageAdapterCapabilityProofs,
   verifyChannelMessageReceiveAckPolicyAdapterProofs,
 } from "openclaw/plugin-sdk/channel-outbound";
+import { chunkMarkdownText as chunkMarkdownTextForLine } from "openclaw/plugin-sdk/reply-runtime";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { OpenClawConfig, PluginRuntime } from "../api.js";
 import { linePlugin } from "./channel.js";
@@ -138,6 +140,116 @@ function createRuntime(): { runtime: PluginRuntime; mocks: LineRuntimeMocks } {
 }
 
 describe("line outbound sendPayload", () => {
+  it.each([
+    { name: "without quick replies", quickReplies: [] as string[] },
+    { name: "with final quick replies", quickReplies: ["Continue"] },
+  ])("sends oversized tables in their source position $name", async ({ quickReplies }) => {
+    const { runtime, mocks } = createRuntime();
+    setLineRuntime(runtime);
+    mocks.resolveTextChunkLimit.mockReturnValue(5000);
+    mocks.chunkMarkdownText.mockImplementation((text: string) =>
+      chunkMarkdownTextForLine(text, 5000),
+    );
+    const markdown = `First\n\n| Small | Value |\n|---|---|\n| Kept | card |\n\nBetween\n\n| Name | Value |\n|---|---|\n| Large | ${"x".repeat(30_000)} |\n\nAfter\n\n\`\`\`js\nconsole.log("still a card")\n\`\`\``;
+
+    await lineOutboundAdapter.sendPayload!({
+      to: "line:user:ordered",
+      text: markdown,
+      payload: {
+        text: markdown,
+        ...(quickReplies.length > 0 ? { channelData: { line: { quickReplies } } } : {}),
+      },
+      accountId: "default",
+      cfg: { channels: { line: {} } } as OpenClawConfig,
+    });
+
+    const messages = [
+      ...mocks.pushFlexMessage.mock.calls.map((args, index) => ({
+        position: mocks.pushFlexMessage.mock.invocationCallOrder[index],
+        type: args[1] === "Code" ? "code-card" : "valid-table-card",
+      })),
+      ...mocks.pushMessageLine.mock.calls.map((args, index) => ({
+        position: mocks.pushMessageLine.mock.invocationCallOrder[index],
+        type: String(args[1]).includes("Large") ? "oversized-table-text" : "text",
+      })),
+      ...mocks.pushMessagesLine.mock.calls.flatMap((args, index) =>
+        args[1].map((message: { type: string; altText?: string }) => ({
+          position: mocks.pushMessagesLine.mock.invocationCallOrder[index],
+          type: message.altText === "Code" ? "code-card" : message.type,
+        })),
+      ),
+    ]
+      .toSorted((left, right) => left.position - right.position)
+      .map((message) => message.type)
+      .filter((type) => type !== "text");
+
+    expect(messages).toEqual(["valid-table-card", "oversized-table-text", "code-card"]);
+    expect(mocks.pushMessageLine.mock.calls.every((args) => String(args[1]).length <= 5000)).toBe(
+      true,
+    );
+    if (quickReplies.length > 0) {
+      expect(mocks.pushMessagesLine).toHaveBeenCalledExactlyOnceWith(
+        "line:user:ordered",
+        [expect.objectContaining({ altText: "Code", quickReply: { items: quickReplies } })],
+        expect.any(Object),
+      );
+      expect(mocks.pushTextMessageWithQuickReplies).not.toHaveBeenCalled();
+    }
+  });
+
+  it.each([
+    { name: "empty", text: "" },
+    { name: "whitespace-only", text: "   " },
+  ])("rejects a $name payload instead of fabricating a delivery", async ({ text }) => {
+    const { runtime, mocks } = createRuntime();
+    setLineRuntime(runtime);
+
+    await expect(
+      lineOutboundAdapter.sendPayload!({
+        to: "line:user:U123",
+        text,
+        payload: { text },
+        accountId: "default",
+        cfg: { channels: { line: {} } } as OpenClawConfig,
+      }),
+    ).rejects.toThrow("Message must be non-empty for LINE sends");
+    expect(mocks.pushMessageLine).not.toHaveBeenCalled();
+    expect(mocks.pushMessagesLine).not.toHaveBeenCalled();
+  });
+
+  it("preserves the finalized receipt when its delivery observer rejects", async () => {
+    const { runtime } = createRuntime();
+    setLineRuntime(runtime);
+    const onDeliveryResult = vi.fn(async () => {
+      throw new Error("delivery observer unavailable");
+    });
+
+    let caught: unknown;
+    try {
+      await lineOutboundAdapter.sendPayload!({
+        to: "line:user:U123",
+        text: "Hello",
+        payload: { text: "Hello" },
+        accountId: "default",
+        cfg: { channels: { line: {} } } as OpenClawConfig,
+        onDeliveryResult,
+      });
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(isChannelPartialDeliveryError(caught)).toBe(true);
+    if (!isChannelPartialDeliveryError(caught)) {
+      throw new Error("expected a partial LINE delivery error");
+    }
+    expect(caught.deliveryResult).toMatchObject({
+      messageIds: ["m-text"],
+      receipt: { primaryPlatformMessageId: "m-text" },
+      visibleReplySent: true,
+    });
+    expect(onDeliveryResult).toHaveBeenCalledOnce();
+  });
+
   it("returns the provider receipt for a Flex-only legacy text send", async () => {
     const { runtime, mocks } = createRuntime();
     setLineRuntime(runtime);
@@ -363,7 +475,7 @@ describe("line outbound sendPayload", () => {
     });
   });
 
-  it("attaches quick replies when no text chunks are present", async () => {
+  it("attaches quick replies while preserving the provider's full Flex alternative-text limit", async () => {
     const { runtime, mocks } = createRuntime();
     setLineRuntime(runtime);
     const cfg = { channels: { line: {} } } as OpenClawConfig;

@@ -48,7 +48,6 @@ import {
   hasTerminalRunStatus,
   isCurrentSessionSubmittedProgress,
   markComposerInputIntent,
-  resolveComposerSubmission,
   suppressStaleSubmittedDraftReplay,
 } from "./chat-composer-state.ts";
 import type { ChatComposerProps, ChatComposerState } from "./chat-composer-types.ts";
@@ -399,9 +398,6 @@ export function renderChatComposer(props: ChatComposerProps) {
         if (result.preventDefault) {
           event.preventDefault();
         }
-        // History navigation is an explicit new draft lifecycle even when it
-        // restores text identical to the most recently submitted prompt.
-        state.composerSubmission = null;
         // History navigation updates the renderer-owned draft outside a
         // reactive property; commit it before placing the caret in the DOM.
         requestUpdate();
@@ -420,8 +416,7 @@ export function renderChatComposer(props: ChatComposerProps) {
       event.preventDefault();
       const target = event.target as HTMLTextAreaElement;
       commitComposerDraft(props, target.value);
-      const submission = resolveComposerSubmission(state, props, target.value);
-      props.onSend(submission.id, submission.releaseForRetry);
+      props.onSend();
       syncComposerDraftAfterSend(target);
     }
   };
@@ -442,7 +437,6 @@ export function renderChatComposer(props: ChatComposerProps) {
     requestUpdate();
   };
   const handleBeforeInput = (event: InputEvent) => {
-    state.composerSubmission = null;
     if (!state.composerComposing && !event.isComposing) {
       markComposerInputIntent(state, composerDraftKey(props));
     }
@@ -485,7 +479,6 @@ export function renderChatComposer(props: ChatComposerProps) {
     );
   };
   const handleCompositionEnd = (event: CompositionEvent) => {
-    state.composerSubmission = null;
     state.composerComposing = false;
     if (state.composingDraft?.key === draftKey) {
       state.composingDraft = null;
@@ -508,8 +501,7 @@ export function renderChatComposer(props: ChatComposerProps) {
     }
     commitComposerDraft(props, draft);
     props.onTypingChange?.(false);
-    const submission = resolveComposerSubmission(state, props, draft);
-    props.onSend(submission.id, submission.releaseForRetry);
+    props.onSend();
     syncComposerDraftAfterSend(state.composerTextarea);
   };
   const handleVoicePrimaryAction = () => {
@@ -589,7 +581,6 @@ export function renderChatComposer(props: ChatComposerProps) {
     enabled: props.composerHoldToRecord !== false,
     realtimeTalkActive: props.realtimeTalkActive === true,
     onCommit: (transcript: string) => {
-      state.composerSubmission = null;
       const target = state.composerTextarea;
       const selection = state.dictationSelection ?? {
         start: target?.selectionStart ?? visibleDraft.length,

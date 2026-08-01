@@ -13,10 +13,8 @@ import {
   areUiSessionKeysEquivalent,
   parseAgentSessionKey,
 } from "../../lib/sessions/session-key.ts";
-import { generateUUID } from "../../lib/uuid.ts";
 import { replaceChatAttachmentsFromEditor } from "./attachment-payload-store.ts";
 import type { ChatHistoryPagination } from "./chat-history-pagination.ts";
-import type { ChatPageHost } from "./chat-state-host.ts";
 import {
   loadChatHistory,
   loadOlderChatHistoryPage,
@@ -42,57 +40,8 @@ import {
   type ChatSessionScrollPosition,
 } from "./scroll.ts";
 
-type CatalogAdoption = {
-  state: ChatPageHost;
-  sessionKey: string;
-  isCurrent: () => boolean;
-};
-
-type CatalogAdoptionFlight = {
-  adoptedSessionKey: string | null;
-  key: CatalogSessionKey;
-  promise: Promise<CatalogAdoption | null>;
-  sourceCatalogGeneration: number;
-  sourceSessionKey: string;
-  token: symbol;
-};
-
-type CatalogSubmissionGuardEntry = {
-  promise: Promise<void>;
-  settled: boolean;
-};
-
-const MAX_RECENT_CATALOG_SUBMISSIONS = 256;
-
-function sameCatalogSessionKey(a: CatalogSessionKey, b: CatalogSessionKey): boolean {
-  return a.catalogId === b.catalogId && a.hostId === b.hostId && a.threadId === b.threadId;
-}
-
-function pruneCatalogSubmissionGuards(
-  guards: Map<string, CatalogSubmissionGuardEntry>,
-): Map<string, CatalogSubmissionGuardEntry> {
-  let excess = guards.size - MAX_RECENT_CATALOG_SUBMISSIONS;
-  if (excess <= 0) {
-    return guards;
-  }
-  const next = new Map(guards);
-  for (const [id, entry] of next) {
-    if (!entry.settled) {
-      continue;
-    }
-    next.delete(id);
-    excess -= 1;
-    if (excess <= 0) {
-      break;
-    }
-  }
-  return next;
-}
-
 export abstract class ChatPaneHistory extends ChatPaneSession {
-  private catalogAdoptionFlight: CatalogAdoptionFlight | null = null;
-  private catalogSendTail: Promise<void> = Promise.resolve();
-  private catalogSubmissionGuards = new Map<string, CatalogSubmissionGuardEntry>();
+  private activeCatalogContinuation: symbol | null = null;
 
   protected hasOlderMessages(): boolean {
     const state = this.state;
@@ -463,169 +412,81 @@ export abstract class ChatPaneHistory extends ChatPaneSession {
     }
   }
 
-  private getOrStartCatalogAdoption(key: CatalogSessionKey): Promise<CatalogAdoption | null> {
+  protected async continueCatalogSession(key: CatalogSessionKey) {
     const scope = this.captureConnectionScope();
     const state = scope?.state;
     const client = scope?.client;
-    if (!scope || !state || !client || !this.catalogSession?.canContinue) {
-      return Promise.resolve(null);
+    const draft = state?.chatMessage.trim();
+    if (!scope || !state || !client || !draft || !this.catalogSession?.canContinue) {
+      return;
     }
     const sourceSessionKey = state.sessionKey;
     const sourceCatalogGeneration = this.catalogLoadGeneration;
-    const existing = this.catalogAdoptionFlight;
-    const sourceStillMatches =
-      existing?.sourceSessionKey === sourceSessionKey &&
-      existing.sourceCatalogGeneration === sourceCatalogGeneration;
-    const sourceMatchesAdoptedSession = existing?.adoptedSessionKey === sourceSessionKey;
-    if (
-      existing &&
-      sameCatalogSessionKey(existing.key, key) &&
-      (sourceStillMatches || sourceMatchesAdoptedSession)
-    ) {
-      return existing.promise;
-    }
-
-    const token = Symbol("catalog-adoption");
+    const continuation = Symbol("catalog-continuation");
+    let adoptedSessionKey: string | null = null;
+    let adoptedCatalogGeneration: number | null = null;
+    this.activeCatalogContinuation = continuation;
     state.chatSending = true;
     state.requestUpdate();
-    const releaseCatalogSending = () => {
-      if (
-        this.catalogAdoptionFlight?.token !== token ||
-        state.chatSendingScopeKey != null ||
-        !state.chatSending
-      ) {
+    const releaseStaleContinuation = () => {
+      if (this.activeCatalogContinuation !== continuation) {
+        return;
+      }
+      this.activeCatalogContinuation = null;
+      if (state.chatSendingScopeKey != null || !state.chatSending) {
         return;
       }
       state.chatSending = false;
       state.requestUpdate();
     };
-    let adoptedSessionKey: string | null = null;
-    const promise = Promise.resolve().then(async (): Promise<CatalogAdoption | null> => {
-      try {
-        const result = await client.request<SessionsCatalogContinueResult>(
-          "sessions.catalog.continue",
-          key,
-        );
-        if (
-          this.catalogAdoptionFlight?.token !== token ||
-          !this.isConnectionScopeCurrent(scope) ||
-          this.catalogLoadGeneration !== sourceCatalogGeneration ||
-          state.sessionKey !== sourceSessionKey
-        ) {
-          releaseCatalogSending();
-          return null;
-        }
-        adoptedSessionKey = result.sessionKey;
-        const activeFlight = this.catalogAdoptionFlight;
-        if (activeFlight?.token === token) {
-          this.catalogAdoptionFlight = {
-            ...activeFlight,
-            adoptedSessionKey: result.sessionKey,
-          };
-        }
-        announceCatalogSessionContinued({ ...key, sessionKey: result.sessionKey });
-        this.switchPaneSession(result.sessionKey);
-        this.onPaneSessionChange?.(this.paneId, result.sessionKey);
-        return {
-          state,
-          sessionKey: result.sessionKey,
-          isCurrent: () =>
-            this.isConnectionScopeCurrent(scope) &&
-            this.state === state &&
-            state.sessionKey === result.sessionKey,
-        };
-      } catch (error) {
-        const errorBelongsToCurrentSession =
-          this.catalogAdoptionFlight?.token === token &&
-          this.isConnectionScopeCurrent(scope) &&
-          (state.sessionKey === sourceSessionKey ||
-            (adoptedSessionKey !== null && state.sessionKey === adoptedSessionKey));
-        if (errorBelongsToCurrentSession) {
-          state.lastError = error instanceof Error ? error.message : String(error);
-          state.chatSending = false;
-          state.requestUpdate();
-        } else {
-          releaseCatalogSending();
-        }
-        return null;
+    try {
+      const result = await client.request<SessionsCatalogContinueResult>(
+        "sessions.catalog.continue",
+        key,
+      );
+      // A catalog adoption must not navigate or send into a pane that switched
+      // sessions or reconnected while its original continuation was in flight.
+      if (
+        this.activeCatalogContinuation !== continuation ||
+        !this.isConnectionScopeCurrent(scope) ||
+        this.catalogLoadGeneration !== sourceCatalogGeneration ||
+        state.sessionKey !== sourceSessionKey
+      ) {
+        releaseStaleContinuation();
+        return;
       }
-    });
-    this.catalogAdoptionFlight = {
-      adoptedSessionKey: null,
-      key,
-      promise,
-      sourceCatalogGeneration,
-      sourceSessionKey,
-      token,
-    };
-    void promise.then((adoption) => {
-      if (adoption === null && this.catalogAdoptionFlight?.token === token) {
-        this.catalogAdoptionFlight = null;
+      adoptedSessionKey = result.sessionKey;
+      announceCatalogSessionContinued({ ...key, sessionKey: result.sessionKey });
+      // Make the adopted session authoritative before routing; otherwise the
+      // outgoing catalog pane can immediately restore the previous chat URL.
+      this.switchPaneSession(result.sessionKey);
+      adoptedCatalogGeneration = this.catalogLoadGeneration;
+      this.onPaneSessionChange?.(this.paneId, result.sessionKey);
+      state.handleChatDraftChange(draft);
+      await state.handleSendChat();
+      if (this.activeCatalogContinuation === continuation) {
+        this.activeCatalogContinuation = null;
       }
-    });
-    return promise;
-  }
-
-  protected async continueCatalogSession(
-    key: CatalogSessionKey,
-    submissionId?: string,
-    releaseForRetry?: () => void,
-  ) {
-    const state = this.state;
-    const draft = state?.chatMessage.trim();
-    if (!state || !draft || !this.catalogSession?.canContinue) {
-      return;
+    } catch (error) {
+      if (
+        this.activeCatalogContinuation !== continuation ||
+        !this.isConnectionScopeCurrent(scope) ||
+        (adoptedSessionKey === null
+          ? this.catalogLoadGeneration !== sourceCatalogGeneration ||
+            state.sessionKey !== sourceSessionKey
+          : adoptedCatalogGeneration === null
+            ? state.sessionKey !== sourceSessionKey && state.sessionKey !== adoptedSessionKey
+            : this.catalogLoadGeneration !== adoptedCatalogGeneration ||
+              state.sessionKey !== adoptedSessionKey)
+      ) {
+        releaseStaleContinuation();
+        return;
+      }
+      this.activeCatalogContinuation = null;
+      state.lastError = error instanceof Error ? error.message : String(error);
+      state.chatSending = false;
+      state.requestUpdate();
     }
-    const id = submissionId?.trim() || generateUUID();
-    const existing = this.catalogSubmissionGuards.get(id);
-    if (existing) {
-      return existing.promise;
-    }
-
-    const adoption = this.getOrStartCatalogAdoption(key);
-    const prior = this.catalogSendTail;
-    const task = prior.catch(() => undefined).then(async () => {
-      const adopted = await adoption;
-      if (!adopted) {
-        releaseForRetry?.();
-        return;
-      }
-      if (!adopted.isCurrent()) {
-        releaseForRetry?.();
-        return;
-      }
-      try {
-        await adopted.state.handleSendChat(draft, {
-          submissionId: id,
-          ...(releaseForRetry
-            ? { onSubmissionRetryable: () => releaseForRetry() }
-            : {}),
-        });
-      } catch (error) {
-        releaseForRetry?.();
-        if (!adopted.isCurrent()) {
-          return;
-        }
-        adopted.state.lastError = error instanceof Error ? error.message : String(error);
-        adopted.state.chatSending = false;
-        adopted.state.requestUpdate();
-      }
-    });
-    const entry: CatalogSubmissionGuardEntry = { promise: task, settled: false };
-    this.catalogSubmissionGuards = new Map(this.catalogSubmissionGuards).set(id, entry);
-    this.catalogSendTail = task.catch(() => undefined);
-    const markSettled = () => {
-      if (this.catalogSubmissionGuards.get(id) !== entry) {
-        return;
-      }
-      const settled = new Map(this.catalogSubmissionGuards).set(id, {
-        ...entry,
-        settled: true,
-      });
-      this.catalogSubmissionGuards = pruneCatalogSubmissionGuards(settled);
-    };
-    void task.then(markSettled, markSettled);
-    return task;
   }
 
   protected async rewindToMessage(entryId: string): Promise<boolean> {

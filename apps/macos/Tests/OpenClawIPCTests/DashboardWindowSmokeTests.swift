@@ -1,7 +1,6 @@
 import AppKit
 import Foundation
 import Testing
-import WebKit
 @testable import OpenClaw
 
 private actor DashboardRouteAuthGate {
@@ -56,6 +55,7 @@ struct DashboardWindowSmokeTests {
         controller.show()
         #expect(controller.window?.styleMask.contains(.titled) == true)
         #expect(controller.window?.styleMask.contains(.closable) == true)
+        #expect(controller.window?.isRestorable == false)
         #expect(controller.window?.contentViewController != nil)
         #expect(controller.window?.standardWindowButton(.closeButton) != nil)
         // The empty unified toolbar is what grows the titlebar to 52pt so the
@@ -914,69 +914,6 @@ struct DashboardWindowSmokeTests {
         #expect(!DashboardWindowController._testJavaScriptConfirmResult(
             for: .alertSecondButtonReturn))
         #expect(!DashboardWindowController._testJavaScriptConfirmResult(for: .cancel))
-    }
-
-    @Test func `dashboard implements every javascript dialog delegate bridge`() throws {
-        let url = try #require(URL(string: "http://127.0.0.1:18789/control/"))
-        let controller = DashboardWindowController(
-            url: url,
-            auth: DashboardWindowAuth(gatewayUrl: nil, token: nil, password: nil))
-
-        #expect(controller.responds(to: NSSelectorFromString(
-            "webView:runJavaScriptAlertPanelWithMessage:initiatedByFrame:completionHandler:")))
-        #expect(controller.responds(to: NSSelectorFromString(
-            "webView:runJavaScriptConfirmPanelWithMessage:initiatedByFrame:completionHandler:")))
-        #expect(controller.responds(to: NSSelectorFromString(
-            "webView:runJavaScriptTextInputPanelWithPrompt:defaultText:initiatedByFrame:completionHandler:")))
-        #expect(!controller._testOwnsJavaScriptControlUIDialog(WKWebView()))
-
-        try controller._testOpenLinkBrowser(#require(URL(string: "https://docs.openclaw.ai/")))
-        #expect(!controller._testLinkBrowserOwnsJavaScriptControlUIDialog)
-    }
-
-    @Test func `dashboard alert and prompt accept only trusted main control frames`() throws {
-        let dashboard = try #require(URL(string: "http://127.0.0.1:18789/control/"))
-        let trusted = try #require(URL(string: "http://127.0.0.1:18789/control/chat"))
-        let embeddedExternal = try #require(URL(string: "https://clickclack.ai/embed/channel/demo"))
-        let wrongPath = try #require(URL(string: "http://127.0.0.1:18789/control-room"))
-
-        #expect(DashboardWindowController.shouldAllowJavaScriptControlUIDialog(
-            from: trusted,
-            isMainFrame: true,
-            dashboardURL: dashboard))
-        #expect(!DashboardWindowController.shouldAllowJavaScriptControlUIDialog(
-            from: trusted,
-            isMainFrame: false,
-            dashboardURL: dashboard))
-        #expect(!DashboardWindowController.shouldAllowJavaScriptControlUIDialog(
-            from: embeddedExternal,
-            isMainFrame: false,
-            dashboardURL: dashboard))
-        #expect(!DashboardWindowController.shouldAllowJavaScriptControlUIDialog(
-            from: wrongPath,
-            isMainFrame: true,
-            dashboardURL: dashboard))
-    }
-
-    @Test func `dashboard javascript alert and prompt preserve host text and prompt result`() {
-        let alert = DashboardWindowController._testJavaScriptAlert(
-            message: "The preserved worktree could not be removed.",
-            host: "127.0.0.1")
-        let prompt = DashboardWindowController._testJavaScriptPromptAlert(
-            prompt: "Rename session",
-            defaultText: "Daily notes",
-            host: "127.0.0.1")
-
-        #expect(alert.informativeText.contains("127.0.0.1 is asking:"))
-        #expect(alert.buttons.map(\.title) == ["OK"])
-        #expect(prompt.alert.informativeText.contains("Rename session"))
-        #expect(prompt.textField.stringValue == "Daily notes")
-        #expect(DashboardWindowController._testJavaScriptPromptResult(
-            for: .alertFirstButtonReturn,
-            text: "Renamed") == "Renamed")
-        #expect(DashboardWindowController._testJavaScriptPromptResult(
-            for: .alertSecondButtonReturn,
-            text: "Renamed") == nil)
     }
 
     @Test func `dashboard failure state opens in dashboard window`() throws {

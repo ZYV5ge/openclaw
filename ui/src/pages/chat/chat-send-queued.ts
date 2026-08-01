@@ -122,7 +122,6 @@ export async function sendQueuedChatMessage(
         cancelPendingSendBeforeRequest(host, queued, {
           previousDraft: opts.previousDraft,
           previousAttachments: opts.previousAttachments,
-          releaseForRetry: opts.releaseForRetry,
         });
       } else {
         updateQueuedSendItem(host, storageMode, queueSessionKey, id, (item) => ({
@@ -205,7 +204,6 @@ export async function sendQueuedChatMessage(
         cancelPendingSendBeforeRequest(host, waiting ?? prepared, {
           previousDraft: opts?.previousDraft,
           previousAttachments: opts?.previousAttachments,
-          releaseForRetry: opts?.releaseForRetry,
         });
       } else {
         updateQueuedSendItem(host, storageMode, sessionKey, id, (item) => ({
@@ -470,7 +468,6 @@ export async function sendQueuedChatMessage(
           cancelPendingSendBeforeRequest(host, prepared, {
             previousDraft: opts?.previousDraft,
             previousAttachments: opts?.previousAttachments,
-            releaseForRetry: opts?.releaseForRetry,
           });
         } else {
           updateQueuedSendItem(host, storageMode, sessionKey, id, (item) => ({
@@ -515,7 +512,6 @@ export async function sendQueuedChatMessage(
           cancelPendingSendBeforeRequest(host, waiting ?? prepared, {
             previousDraft: opts?.previousDraft,
             previousAttachments: opts?.previousAttachments,
-            releaseForRetry: opts?.releaseForRetry,
           });
         } else {
           // The request may have reached the Gateway. Retain its run id so a
@@ -583,7 +579,6 @@ export async function sendChatMessageNow(
     expectedLeafEntryId?: string | null;
     restoreAttachments?: boolean;
     refreshSessions?: boolean;
-    releaseForRetry?: () => void;
     routingSessionKey?: string;
     storageMode?: QueuedChatStorageMode;
     submittedAtMs?: number;
@@ -608,7 +603,6 @@ export async function sendChatMessageNow(
     cancelPendingSendBeforeRequest(host, queued, {
       previousDraft: opts?.previousDraft,
       previousAttachments: opts?.previousAttachments,
-      releaseForRetry: opts?.releaseForRetry,
     });
     setChatError(host, OFFLINE_QUEUE_STORAGE_ERROR);
     return "failed";
@@ -622,7 +616,6 @@ export async function sendChatMessageNow(
       {
         previousDraft: opts?.previousDraft,
         previousAttachments: opts?.previousAttachments,
-        releaseForRetry: opts?.releaseForRetry,
         ...(opts?.expectedLeafEntryId !== undefined
           ? { expectedLeafEntryId: opts.expectedLeafEntryId }
           : {}),
@@ -647,7 +640,6 @@ export async function sendChatMessageNow(
       {
         previousDraft: opts?.previousDraft,
         previousAttachments: opts?.previousAttachments,
-        releaseForRetry: opts?.releaseForRetry,
         ...(opts?.expectedLeafEntryId !== undefined
           ? { expectedLeafEntryId: opts.expectedLeafEntryId }
           : {}),

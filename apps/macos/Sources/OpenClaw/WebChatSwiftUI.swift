@@ -890,7 +890,6 @@ private struct MacChatSurface: View {
                     viewModel: self.viewModel,
                     showsSessionSwitcher: true,
                     userAccent: self.userAccent,
-                    displayOptions: self.displayOptions,
                     emptyAssistantIntro: Self.emptyAssistantIntro,
                     emptyAssistantPrompts: Self.emptyAssistantPrompts,
                     talkControl: self.talkControl,
@@ -992,7 +991,7 @@ private struct MacChatSurface: View {
             hasTalkControl: true,
             hasSpeech: true,
             hasVoiceNoteControl: true,
-            displayOptions: self.displayOptions)
+            displayOptions: self.isFullWindow ? self.displayOptions : [])
     }
     #endif
 }
@@ -1411,6 +1410,7 @@ final class WebChatSwiftUIWindowController: NSObject, NSWindowDelegate {
             (contentViewController as? NSHostingController<MacChatSurface>)?
                 .sceneBridgingOptions = [.toolbars]
             window.isReleasedWhenClosed = false
+            window.isRestorable = false
             // Keep the SwiftUI toolbar controls, but merge their unified row
             // with the traffic lights instead of stacking it below a title band.
             window.titleVisibility = .hidden

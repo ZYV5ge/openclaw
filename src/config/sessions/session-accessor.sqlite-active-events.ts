@@ -133,7 +133,7 @@ function readProjectionSnapshot(
   };
 }
 
-export function withCurrentProjectionSnapshot<T>(
+function withCurrentProjectionSnapshot<T>(
   scope: SessionTranscriptReadScope,
   read: (projection: CurrentProjection) => T,
 ): T {

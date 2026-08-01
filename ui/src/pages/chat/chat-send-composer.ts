@@ -1,74 +1,186 @@
 import type { ChatAttachment, ChatQueueItem } from "../../lib/chat/chat-types.ts";
+import { visibleSessionMatches } from "../../lib/sessions/index.ts";
 import { releaseChatAttachmentPayloads } from "./attachment-payload-store.ts";
+import {
+  captureChatComposerMemoryFallbackOwnership,
+  clearChatComposerMemoryFallback,
+  ownsChatComposerMemoryFallback,
+  retainChatComposerMemoryFallback,
+  type ChatComposerMemoryFallbackOwnership,
+} from "./chat-composer-memory-fallback.ts";
 import {
   excludeComposerAttachments,
   removeVisibleOrScopedQueuedMessageWithoutReleasing,
 } from "./chat-queue.ts";
 import type { ChatHost } from "./chat-send-contract.ts";
+import type { ChatPageHost } from "./chat-state-host.ts";
+import type { StoredChatOutboxScope } from "./composer-persistence.ts";
 
-function sameComposerAttachments(
-  current: readonly ChatAttachment[],
-  snapshot: readonly ChatAttachment[],
+export type ChatCommandComposerRecovery = {
+  client: ChatHost["client"];
+  composer?: {
+    attachments: ChatAttachment[];
+    draft: string;
+    fallbackOwnership?: ChatComposerMemoryFallbackOwnership;
+  };
+  connectionEpoch: ChatHost["connectionEpoch"];
+  scope: StoredChatOutboxScope;
+};
+
+function chatCommandRecoveryHost(host: ChatHost): ChatPageHost | undefined {
+  return "chatComposerFallbackByScope" in host &&
+    typeof host.chatComposerFallbackByScope === "object" &&
+    host.chatComposerFallbackByScope !== null
+    ? (host as ChatPageHost)
+    : undefined;
+}
+
+export function captureChatCommandComposerRecovery(
+  host: ChatHost,
+  scope: StoredChatOutboxScope,
+  composer?: { draft: string; attachments: ChatAttachment[] },
+): ChatCommandComposerRecovery {
+  const fallbackHost = chatCommandRecoveryHost(host);
+  return {
+    client: host.client,
+    ...(composer
+      ? {
+          composer: {
+            ...composer,
+            ...(fallbackHost
+              ? {
+                  fallbackOwnership: captureChatComposerMemoryFallbackOwnership(
+                    fallbackHost,
+                    scope,
+                    {
+                      message: composer.draft,
+                      attachments: composer.attachments,
+                    },
+                  ),
+                }
+              : {}),
+          },
+        }
+      : {}),
+    connectionEpoch: host.connectionEpoch,
+    scope,
+  };
+}
+
+export function submittedCommandConnectionIsCurrent(
+  host: ChatHost,
+  recovery: ChatCommandComposerRecovery,
+): boolean {
+  return host.client === recovery.client && host.connectionEpoch === recovery.connectionEpoch;
+}
+
+export function submittedCommandScopeIsVisible(
+  host: ChatHost,
+  recovery: ChatCommandComposerRecovery,
 ): boolean {
   return (
-    current.length === snapshot.length &&
-    current.every((attachment, index) => {
-      const expected = snapshot[index];
-      return (
-        expected !== undefined &&
-        attachment.id === expected.id &&
-        attachment.mimeType === expected.mimeType &&
-        attachment.fileName === expected.fileName &&
-        attachment.sizeBytes === expected.sizeBytes
-      );
-    })
+    submittedCommandConnectionIsCurrent(host, recovery) &&
+    visibleSessionMatches(host, recovery.scope.sessionKey, recovery.scope.agentId)
   );
+}
+
+export function clearOwnedCommandComposerFallback(
+  host: ChatHost,
+  recovery: ChatCommandComposerRecovery,
+): boolean {
+  const ownership = recovery.composer?.fallbackOwnership;
+  const fallbackHost = chatCommandRecoveryHost(host);
+  return fallbackHost ? clearChatComposerMemoryFallback(fallbackHost, ownership) : false;
+}
+
+export function commandComposerFallbackRetainsAttachments(
+  host: ChatHost,
+  recovery: ChatCommandComposerRecovery,
+): boolean {
+  const ownership = recovery.composer?.fallbackOwnership;
+  const fallbackHost = chatCommandRecoveryHost(host);
+  return Boolean(
+    ownership && fallbackHost && ownsChatComposerMemoryFallback(fallbackHost, ownership),
+  );
+}
+
+export function restoreFailedCommandComposer(
+  host: ChatHost,
+  recovery: ChatCommandComposerRecovery,
+): boolean {
+  const composer = recovery.composer;
+  if (!composer) {
+    return true;
+  }
+  const fallbackHost = chatCommandRecoveryHost(host);
+  if (!submittedCommandConnectionIsCurrent(host, recovery)) {
+    return (
+      composer.attachments.length === 0 || commandComposerFallbackRetainsAttachments(host, recovery)
+    );
+  }
+  if (!submittedCommandScopeIsVisible(host, recovery)) {
+    if (!fallbackHost) {
+      return composer.attachments.length === 0;
+    }
+    const ownership = retainChatComposerMemoryFallback(fallbackHost, recovery.scope, {
+      message: composer.draft,
+      attachments: composer.attachments,
+    });
+    composer.fallbackOwnership = ownership;
+    return composer.attachments.length === 0 || ownership !== undefined;
+  }
+  if (host.chatAttachments.length > 0) {
+    clearOwnedCommandComposerFallback(host, recovery);
+    return composer.attachments.length === 0;
+  }
+  const restorePlan = pendingComposerRestorePlan(host, {
+    previousAttachments: composer.attachments,
+    previousDraft: composer.draft,
+  });
+  if (restorePlan.willRestoreDraft) {
+    host.chatMessage = composer.draft;
+  }
+  if (restorePlan.willRestoreAttachments) {
+    host.chatAttachments = composer.attachments;
+  }
+  const retained = composer.attachments.length === 0 || restorePlan.willRestoreAttachments;
+  if (!restorePlan.complete) {
+    clearOwnedCommandComposerFallback(host, recovery);
+  }
+  return retained;
 }
 
 export function restoreComposerAfterFailedSend(
   host: ChatHost,
-  opts: PendingComposerSnapshot,
+  opts: {
+    previousAttachments?: ChatAttachment[];
+    previousDraft?: string;
+  },
 ) {
-  const restorePlan = pendingComposerRestorePlan(host, opts);
-  if (restorePlan.willRestoreDraft) {
-    host.chatMessage = opts.previousDraft ?? "";
+  if (opts.previousDraft != null && !host.chatMessage.trim()) {
+    host.chatMessage = opts.previousDraft;
   }
-  if (restorePlan.willRestoreAttachments) {
-    host.chatAttachments = opts.previousAttachments ?? [];
-  }
-  if (restorePlan.complete && restorePlan.hasSnapshot) {
-    opts.releaseForRetry?.();
+  if (opts.previousAttachments?.length && host.chatAttachments.length === 0) {
+    host.chatAttachments = opts.previousAttachments;
   }
 }
 
 type PendingComposerSnapshot = {
   previousAttachments?: ChatAttachment[];
   previousDraft?: string;
-  releaseForRetry?: () => void;
 };
 
 export function pendingComposerRestorePlan(host: ChatHost, snapshot: PendingComposerSnapshot) {
-  const hasDraftSnapshot = snapshot.previousDraft !== undefined;
-  const hasAttachmentSnapshot = snapshot.previousAttachments !== undefined;
-  const draftAlreadyRestored =
-    hasDraftSnapshot && host.chatMessage === (snapshot.previousDraft ?? "");
-  const willRestoreDraft =
-    hasDraftSnapshot && !draftAlreadyRestored && !host.chatMessage.trim();
-  const attachmentsAlreadyRestored =
-    hasAttachmentSnapshot &&
-    sameComposerAttachments(host.chatAttachments, snapshot.previousAttachments ?? []);
+  const willRestoreDraft = snapshot.previousDraft != null && !host.chatMessage.trim();
   const willRestoreAttachments = Boolean(
-    hasAttachmentSnapshot &&
-    !attachmentsAlreadyRestored &&
     snapshot.previousAttachments?.length &&
     host.chatAttachments.length === 0 &&
-    (draftAlreadyRestored || willRestoreDraft || !host.chatMessage.trim()),
+    (willRestoreDraft || !host.chatMessage.trim()),
   );
   return {
     complete:
-      (!hasDraftSnapshot || draftAlreadyRestored || willRestoreDraft) &&
-      (!hasAttachmentSnapshot || attachmentsAlreadyRestored || willRestoreAttachments),
-    hasSnapshot: hasDraftSnapshot || hasAttachmentSnapshot,
+      (!snapshot.previousDraft?.trim() || willRestoreDraft) &&
+      (!snapshot.previousAttachments?.length || willRestoreAttachments),
     willRestoreAttachments,
     willRestoreDraft,
   };
@@ -96,9 +208,6 @@ export function cancelPendingSendBeforeRequest(
     }
     if (willRestoreAttachments) {
       host.chatAttachments = opts.previousAttachments ?? [];
-    }
-    if (restorePlan.complete && restorePlan.hasSnapshot) {
-      opts.releaseForRetry?.();
     }
   }
   if (removed && !willRestoreAttachments) {

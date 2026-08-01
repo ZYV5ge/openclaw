@@ -1,6 +1,5 @@
 // Memory Core plugin module implements tools.shared behavior.
 import { optionalFiniteNumberSchema, stringEnum } from "openclaw/plugin-sdk/channel-actions";
-import { formatErrorMessage } from "openclaw/plugin-sdk/error-runtime";
 import { createLazyRuntimeModule } from "openclaw/plugin-sdk/lazy-runtime";
 import {
   listMemoryCorpusSupplements,
@@ -27,55 +26,6 @@ type MemoryToolOptions = {
   acquireLocalService?: MemoryCoreAcquireLocalService;
   withLease?: PluginStateLeaseRunner;
 };
-
-export const MEMORY_SEARCH_CANONICAL_SESSION_MIGRATION_CODE =
-  "SESSION_CANONICAL_KEY_MIGRATION_REQUIRED";
-
-export type MemorySearchPhaseFailure = {
-  phase: "memory" | "supplement";
-  error: string;
-  timedOut: boolean;
-  elapsedMs: number;
-  code?: typeof MEMORY_SEARCH_CANONICAL_SESSION_MIGRATION_CODE;
-  cooldown?: true;
-  retryAfterMs?: number;
-};
-
-export type MemoryCorpusSupplementFailure = {
-  pluginId: string;
-  error: string;
-  timedOut: boolean;
-  elapsedMs: number;
-};
-
-export type MemoryCorpusSupplementSearchSummary = {
-  results: MemoryCorpusSearchResult[];
-  failures: MemoryCorpusSupplementFailure[];
-};
-
-type MemorySearchUnavailableOverrides = {
-  warning?: string;
-  action?: string;
-} & (
-  | {
-      failure?: MemorySearchPhaseFailure;
-      failures?: never;
-    }
-  | {
-      failure?: never;
-      failures?: readonly MemorySearchPhaseFailure[];
-    }
-);
-
-export type MemorySearchCanonicalMigrationGuidance = {
-  warning: string;
-  action: string;
-};
-
-const CANONICAL_SESSION_MIGRATION_WARNING =
-  "Memory search is unavailable because the session catalog requires canonical-key migration.";
-const CANONICAL_SESSION_MIGRATION_ACTION =
-  "Stop the Gateway and run openclaw doctor --fix, then restart the Gateway and retry memory_search.";
 
 export const loadMemoryToolRuntime = createLazyRuntimeModule(() => import("./tools.runtime.js"));
 
@@ -170,43 +120,31 @@ export function createMemoryTool(params: {
 
 export function buildMemorySearchUnavailableResult(
   error: string | undefined,
-  overrides?: MemorySearchUnavailableOverrides,
+  overrides?: {
+    warning?: string;
+    action?: string;
+  },
 ) {
   const reason = (error ?? "memory search unavailable").trim() || "memory search unavailable";
   const normalizedReason = normalizeLowercaseStringOrEmpty(reason);
-  const memoryFailure = overrides?.failure
-    ? overrides.failure.phase === "memory"
-      ? overrides.failure
-      : undefined
-    : overrides?.failures?.find((failure) => failure.phase === "memory");
-  const canonicalMigrationGuidance = resolveMemorySearchCanonicalMigrationGuidance(
-    memoryFailure?.code,
-  );
   const isQuotaError = /insufficient_quota|quota|429/.test(normalizedReason);
-  const isTimeoutError = /\btimed out\b/.test(normalizedReason);
   const isMissingNodeSqlite = /missing node:sqlite|no such built-?in module: node:sqlite/.test(
     normalizedReason,
   );
   const warning =
     overrides?.warning ??
-    (canonicalMigrationGuidance?.warning ??
-      (isQuotaError
-        ? "Memory search is unavailable because the embedding provider quota is exhausted."
-        : isTimeoutError
-          ? "Memory search timed out before the search phase completed."
-          : isMissingNodeSqlite
-            ? "Memory search is unavailable because this OpenClaw Node runtime does not provide SQLite support."
-            : "Memory search is unavailable due to an embedding/provider error."));
+    (isQuotaError
+      ? "Memory search is unavailable because the embedding provider quota is exhausted."
+      : isMissingNodeSqlite
+        ? "Memory search is unavailable because this OpenClaw Node runtime does not provide SQLite support."
+        : "Memory search is unavailable due to an embedding/provider error.");
   const action =
-    canonicalMigrationGuidance?.action ??
-    (overrides?.action ??
-      (isQuotaError
-        ? "Top up or switch embedding provider, then retry memory_search."
-        : isTimeoutError
-          ? "Retry memory_search; if it persists, inspect memory search phase timing and backend health."
-          : isMissingNodeSqlite
-            ? "Run OpenClaw with a Node runtime that includes node:sqlite, then retry memory_search."
-            : "Check embedding provider configuration and retry memory_search."));
+    overrides?.action ??
+    (isQuotaError
+      ? "Top up or switch embedding provider, then retry memory_search."
+      : isMissingNodeSqlite
+        ? "Run OpenClaw with a Node runtime that includes node:sqlite, then retry memory_search."
+        : "Check embedding provider configuration and retry memory_search.");
   return {
     results: [],
     disabled: true,
@@ -214,10 +152,6 @@ export function buildMemorySearchUnavailableResult(
     error: reason,
     warning,
     action,
-    ...(overrides?.failure ? { failure: { ...overrides.failure } } : {}),
-    ...(overrides?.failures
-      ? { failures: overrides.failures.map((failure) => ({ ...failure })) }
-      : {}),
     debug: {
       warning,
       action,
@@ -226,50 +160,26 @@ export function buildMemorySearchUnavailableResult(
   };
 }
 
-export function resolveMemorySearchCanonicalMigrationGuidance(
-  code: MemorySearchPhaseFailure["code"],
-): MemorySearchCanonicalMigrationGuidance | undefined {
-  if (code !== MEMORY_SEARCH_CANONICAL_SESSION_MIGRATION_CODE) {
-    return undefined;
-  }
-  return {
-    warning: CANONICAL_SESSION_MIGRATION_WARNING,
-    action: CANONICAL_SESSION_MIGRATION_ACTION,
-  };
-}
-
-type SearchMemoryCorpusSupplementsParams = {
+export async function searchMemoryCorpusSupplements(params: {
   query: string;
   maxResults?: number;
   agentId?: string;
   agentSessionKey?: string;
   sandboxed?: boolean;
   corpus?: "memory" | "wiki" | "all" | "sessions";
-  signal?: AbortSignal;
-};
-
-type SearchMemoryCorpusSupplementsDetailedParams = SearchMemoryCorpusSupplementsParams & {
-  runSupplement?: (params: {
-    pluginId: string;
-    search: (signal?: AbortSignal) => Promise<MemoryCorpusSearchResult[]>;
-  }) => Promise<MemoryCorpusSearchResult[]>;
-};
-
-type MemoryCorpusSupplementSearchOutcome =
-  | {
-      ok: true;
-      results: MemoryCorpusSearchResult[];
-    }
-  | {
-      ok: false;
-      reason: unknown;
-      failure: MemoryCorpusSupplementFailure;
-    };
-
-function sortAndLimitSupplementResults(
-  results: MemoryCorpusSearchResult[],
-  maxResults: number | undefined,
-): MemoryCorpusSearchResult[] {
+}): Promise<MemoryCorpusSearchResult[]> {
+  if (params.corpus === "memory" || params.corpus === "sessions") {
+    return [];
+  }
+  const supplements = listMemoryCorpusSupplements();
+  if (supplements.length === 0) {
+    return [];
+  }
+  const results = (
+    await Promise.all(
+      supplements.map(async (registration) => await registration.supplement.search(params)),
+    )
+  ).flat();
   return results
     .toSorted((left, right) => {
       if (left.score !== right.score) {
@@ -277,95 +187,7 @@ function sortAndLimitSupplementResults(
       }
       return left.path.localeCompare(right.path);
     })
-    .slice(0, Math.max(1, maxResults ?? 10));
-}
-
-export async function searchMemoryCorpusSupplementsDetailed(
-  params: SearchMemoryCorpusSupplementsDetailedParams,
-): Promise<MemoryCorpusSupplementSearchSummary> {
-  params.signal?.throwIfAborted();
-  if (params.corpus === "memory" || params.corpus === "sessions") {
-    return { results: [], failures: [] };
-  }
-  const supplements = listMemoryCorpusSupplements();
-  if (supplements.length === 0) {
-    return { results: [], failures: [] };
-  }
-  const outcomes: MemoryCorpusSupplementSearchOutcome[] = await Promise.all(
-    supplements.map(async (registration) => {
-      const startedAt = Date.now();
-      const search = async (signal = params.signal) => {
-        const supplementParams = {
-          query: params.query,
-          maxResults: params.maxResults,
-          agentId: params.agentId,
-          agentSessionKey: params.agentSessionKey,
-          sandboxed: params.sandboxed,
-          corpus: params.corpus,
-          signal,
-        };
-        return await registration.supplement.search(supplementParams);
-      };
-      try {
-        const results = params.runSupplement
-          ? await params.runSupplement({ pluginId: registration.pluginId, search })
-          : await search();
-        return {
-          ok: true as const,
-          results,
-        };
-      } catch (error) {
-        const message = formatErrorMessage(error);
-        return {
-          ok: false as const,
-          reason: error,
-          failure: {
-            pluginId: registration.pluginId,
-            error: message,
-            timedOut: /\btimed out\b/i.test(message),
-            elapsedMs: Math.max(0, Date.now() - startedAt),
-          },
-        };
-      }
-    }),
-  );
-  params.signal?.throwIfAborted();
-  const successfulOutcomes = outcomes.filter(
-    (outcome): outcome is Extract<MemoryCorpusSupplementSearchOutcome, { ok: true }> => outcome.ok,
-  );
-  const failedOutcomes = outcomes.filter(
-    (outcome): outcome is Extract<MemoryCorpusSupplementSearchOutcome, { ok: false }> =>
-      !outcome.ok,
-  );
-  if (successfulOutcomes.length === 0) {
-    const singleFailure = failedOutcomes.length === 1 ? failedOutcomes[0] : undefined;
-    if (singleFailure && !singleFailure.ok) {
-      throw singleFailure.reason;
-    }
-    throw new Error(
-      `All memory corpus supplements failed (${failedOutcomes
-        .map((outcome) => `${outcome.failure.pluginId}: ${outcome.failure.error}`)
-        .join("; ")})`,
-    );
-  }
-  return {
-    results: sortAndLimitSupplementResults(
-      successfulOutcomes.flatMap((outcome) => outcome.results),
-      params.maxResults,
-    ),
-    failures: failedOutcomes.map((outcome) => ({ ...outcome.failure })),
-  };
-}
-
-export async function searchMemoryCorpusSupplements(
-  params: SearchMemoryCorpusSupplementsParams,
-): Promise<MemoryCorpusSearchResult[]> {
-  const summary = await searchMemoryCorpusSupplementsDetailed(params);
-  return summary.results;
-}
-
-export function hasMemoryCorpusSupplements(): boolean {
-  return listMemoryCorpusSupplements().length > 0;
+    .slice(0, Math.max(1, params.maxResults ?? 10));
 }
 
 export async function getMemoryCorpusSupplementResult(params: {

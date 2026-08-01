@@ -8,15 +8,14 @@ import type {
 import { parseSlashCommand } from "../../lib/chat/commands.ts";
 import { extractCompanionCommandQuestion } from "../../lib/chat/companion-question.ts";
 import { resolveCurrentUserIdentity } from "../../lib/chat/current-user-identity.ts";
-import { scopedAgentIdForSession, visibleSessionMatches } from "../../lib/sessions/index.ts";
-import { generateUUID } from "../../lib/uuid.ts";
+import { visibleSessionMatches } from "../../lib/sessions/index.ts";
 import { normalizeLowercaseStringOrEmpty } from "../../lib/string-coerce.ts";
 import {
   getChatAttachmentDataUrl,
   releaseChatAttachmentPayloads,
 } from "./attachment-payload-store.ts";
 import { dispatchChatSlashCommand, shouldQueueLocalSlashCommand } from "./chat-commands.ts";
-import { loadChatHistory, type ChatState } from "./chat-history.ts";
+import type { ChatState } from "./chat-history.ts";
 import { scheduleStoredChatOutboxDrain } from "./chat-outbox-drain.ts";
 import {
   admitQueuedMessageForSession,
@@ -28,6 +27,15 @@ import {
 } from "./chat-queue.ts";
 import { isTerminalFailureChatSendAck } from "./chat-send-ack.ts";
 import { sendChatMessageWithGeneratedRunId, steerSendDependencies } from "./chat-send-actions.ts";
+import {
+  captureChatCommandComposerRecovery,
+  clearOwnedCommandComposerFallback,
+  commandComposerFallbackRetainsAttachments,
+  restoreFailedCommandComposer,
+  submittedCommandConnectionIsCurrent,
+  submittedCommandScopeIsVisible,
+  type ChatCommandComposerRecovery,
+} from "./chat-send-composer.ts";
 import type { ChatHost } from "./chat-send-contract.ts";
 import {
   canSendVolatileQueueItem,
@@ -41,13 +49,15 @@ import { recordChatSendTiming } from "./chat-send-timing.ts";
 import {
   cancelPendingSendBeforeRequest,
   chatOutboxDrainDependencies,
-  restoreComposerAfterFailedSend,
   sendChatMessageNow,
-  withChatSubmissionGuard,
   withChatSubmitGuard,
 } from "./chat-send.ts";
 import { getPendingChatPickerPatch } from "./chat-session.ts";
-import { INTERRUPTED_SETTINGS_WAIT_ERROR, listStoredChatOutboxes } from "./composer-persistence.ts";
+import {
+  INTERRUPTED_SETTINGS_WAIT_ERROR,
+  listStoredChatOutboxes,
+  resolveStoredChatOutboxScope,
+} from "./composer-persistence.ts";
 import {
   recordNonTranscriptInputHistory,
   resetChatInputHistoryNavigation,
@@ -72,10 +82,6 @@ type ChatSendOptions = {
   /** Lets request-scoped UI actions recover when their local slash command
    * fails before the Gateway accepts it. */
   onLocalCommandSendRejected?: () => void;
-  /** Stable identity for one logical user submission across handler re-entry. */
-  submissionId?: string;
-  /** Ends the current composer identity only after a definite, fully restored failure. */
-  onSubmissionRetryable?: (submissionId: string) => void;
 };
 
 function isChatResetCommand(text: string) {
@@ -110,14 +116,12 @@ function attachmentSubmitSignature(attachment: ChatAttachment): string {
 
 function chatSubmitKey(
   host: ChatHost,
-  submissionId: string,
   kind: "detached" | "local" | "message",
   message: string,
   attachments: ChatAttachment[],
   skillWorkshopRevision?: ChatQueueSkillWorkshopRevision,
 ): string {
   return JSON.stringify([
-    submissionId,
     kind,
     host.sessionKey,
     message.trim(),
@@ -174,47 +178,42 @@ function snapshotChatAttachments(attachments: readonly ChatAttachment[]): ChatAt
 async function sendDetachedCommandMessage(
   host: ChatHost,
   message: string,
-  opts?: {
-    previousDraft?: string;
+  opts: {
     attachments?: ChatAttachment[];
-    previousAttachments?: ChatAttachment[];
-    releaseForRetry?: () => void;
+    recovery: ChatCommandComposerRecovery;
     runId?: string;
   },
 ) {
-  const rejection: { activeLeafChanged: boolean } = { activeLeafChanged: false };
   const ack = await sendChatMessageWithGeneratedRunId(
     host as unknown as ChatState,
     message,
     opts?.attachments,
     {
-      onDefiniteRejection: () => {
-        rejection.activeLeafChanged = true;
-      },
-      runId: opts?.runId,
+      canApplyError: () => submittedCommandScopeIsVisible(host, opts.recovery),
+      runId: opts.runId,
     },
   );
   const ok = ack?.status === "ok" || ack?.status === "started" || ack?.status === "in_flight";
-  const terminalFailure = isTerminalFailureChatSendAck(ack);
-  const shouldReleaseForRetry = terminalFailure || rejection.activeLeafChanged;
-  if (!ok) {
-    restoreComposerAfterFailedSend(host, {
-      previousAttachments: opts?.previousAttachments,
-      previousDraft: opts?.previousDraft,
-      ...(shouldReleaseForRetry && opts?.releaseForRetry
-        ? { releaseForRetry: opts.releaseForRetry }
-        : {}),
-    });
+  if (!ok && !restoreFailedCommandComposer(host, opts.recovery)) {
+    releaseChatAttachmentPayloads(excludeComposerAttachments(host, opts.attachments));
   }
-  if (terminalFailure) {
+  if (isTerminalFailureChatSendAck(ack) && submittedCommandScopeIsVisible(host, opts.recovery)) {
     setChatError(host, formatTerminalChatSendAckError(ack, "detached"));
   }
   if (ok) {
-    setLastActiveSessionKey(
-      host as unknown as Parameters<typeof setLastActiveSessionKey>[0],
-      host.sessionKey,
-    );
-    releaseChatAttachmentPayloads(excludeComposerAttachments(host, opts?.attachments));
+    const submittedScopeIsVisible = submittedCommandScopeIsVisible(host, opts.recovery);
+    if (submittedCommandConnectionIsCurrent(host, opts.recovery)) {
+      clearOwnedCommandComposerFallback(host, opts.recovery);
+    }
+    if (submittedScopeIsVisible) {
+      setLastActiveSessionKey(
+        host as unknown as Parameters<typeof setLastActiveSessionKey>[0],
+        host.sessionKey,
+      );
+    }
+    if (!commandComposerFallbackRetainsAttachments(host, opts.recovery)) {
+      releaseChatAttachmentPayloads(excludeComposerAttachments(host, opts.attachments));
+    }
   }
   return ack;
 }
@@ -224,36 +223,16 @@ export async function handleSendChat(
   messageOverride?: string,
   opts?: ChatSendOptions,
 ) {
-  const submissionId = opts?.submissionId?.trim() || generateUUID();
-  return withChatSubmissionGuard(host, submissionId, () =>
-    handleSendChatSubmission(host, submissionId, messageOverride, opts),
-  );
-}
-
-async function handleSendChatSubmission(
-  host: ChatHost,
-  submissionId: string,
-  messageOverride?: string,
-  opts?: ChatSendOptions,
-) {
   const previousDraft = host.chatMessage;
   const message = (messageOverride ?? host.chatMessage).trim();
   const submittedAtMs = controlUiNowMs();
   const submittedSessionKey = host.sessionKey;
-  const submittedAgentId = scopedAgentIdForSession(host, submittedSessionKey);
+  const expectedLeafEntryId = resolveDisplayedLeafEntryId(host as unknown as ChatState);
   const attachments = host.chatAttachments ?? [];
   const attachmentsToSend = messageOverride == null ? snapshotChatAttachments(attachments) : [];
   const hasAttachments = attachmentsToSend.length > 0;
   const skillWorkshopRevision = opts?.skillWorkshopRevision;
   const shouldInterpretChatCommands = !skillWorkshopRevision;
-  let releasedForRetry = false;
-  const releaseForRetry = () => {
-    if (releasedForRetry) {
-      return;
-    }
-    releasedForRetry = true;
-    opts?.onSubmissionRetryable?.(submissionId);
-  };
 
   if (!message && !hasAttachments) {
     return;
@@ -266,7 +245,6 @@ async function handleSendChatSubmission(
     (typeof globalThis.confirm !== "function" ||
       !globalThis.confirm("Start a new thread? This will reset the current chat."))
   ) {
-    releaseForRetry();
     return;
   }
 
@@ -292,7 +270,7 @@ async function handleSendChatSubmission(
       if (!question) {
         return;
       }
-      const submitKey = chatSubmitKey(host, submissionId, "local", message, []);
+      const submitKey = chatSubmitKey(host, "local", message, []);
       await withChatSubmitGuard(host, submitKey, async () => {
         if (messageOverride == null) {
           recordNonTranscriptInputHistory(host, message);
@@ -309,18 +287,16 @@ async function handleSendChatSubmission(
     // the approval command cannot queue behind the run that is waiting for it.
     const shouldSendDetachedCommand = parsed?.command.key === "approve" && isChatBusy(host);
     if (shouldSendDetachedCommand) {
-      const submitKey = chatSubmitKey(host, submissionId, "detached", message, attachmentsToSend);
+      const submitKey = chatSubmitKey(host, "detached", message, attachmentsToSend);
       await withChatSubmitGuard(host, submitKey, async () => {
         const pendingSettings = getPendingChatPickerPatch(host, submittedSessionKey);
         if (
           pendingSettings &&
           !(await waitForPendingChatSettings(host, submittedSessionKey, pendingSettings))
         ) {
-          releaseForRetry();
           return;
         }
         if (host.sessionKey !== submittedSessionKey) {
-          releaseForRetry();
           return;
         }
         const cleared =
@@ -330,12 +306,19 @@ async function handleSendChatSubmission(
         if (messageOverride == null) {
           recordNonTranscriptInputHistory(host, message);
         }
+        const recoveryScope = resolveStoredChatOutboxScope(host, submittedSessionKey);
         const ack = await sendDetachedCommandMessage(host, message, {
-          previousDraft: cleared.previousDraft,
           attachments: hasAttachments ? attachmentsToSend : undefined,
-          previousAttachments: cleared.previousAttachments,
-          releaseForRetry,
-          runId: submissionId,
+          recovery: captureChatCommandComposerRecovery(
+            host,
+            recoveryScope,
+            cleared.previousDraft === undefined
+              ? undefined
+              : {
+                  draft: cleared.previousDraft,
+                  attachments: cleared.previousAttachments ?? [],
+                },
+          ),
         });
         void ack;
       });
@@ -348,7 +331,7 @@ async function handleSendChatSubmission(
     if (parsed?.command.executeLocal && !forwardModelCommand) {
       const shouldQueueCommand = shouldQueueLocalSlashCommand(parsed.command.key);
       if (shouldQueueCommand) {
-        const submitKey = chatSubmitKey(host, submissionId, "local", message, attachmentsToSend);
+        const submitKey = chatSubmitKey(host, "local", message, attachmentsToSend);
         await withChatSubmitGuard(host, submitKey, async () => {
           if (messageOverride == null) {
             recordNonTranscriptInputHistory(host, message);
@@ -377,7 +360,6 @@ async function handleSendChatSubmission(
             if (messageOverride == null) {
               host.chatMessage = previousDraft;
               host.chatAttachments = attachmentsToSend;
-              releaseForRetry();
             }
             setChatError(host, OFFLINE_QUEUE_STORAGE_ERROR);
             return;
@@ -409,24 +391,31 @@ async function handleSendChatSubmission(
             pendingSettings &&
             !(await waitForPendingChatSettings(host, submittedSessionKey, pendingSettings))
           ) {
-            releaseForRetry();
             return;
           }
           if (host.sessionKey !== submittedSessionKey) {
-            releaseForRetry();
             return;
           }
         }
         let prevDraft = messageOverride == null ? previousDraft : undefined;
+        let recoveryComposer: { draft: string; attachments: ChatAttachment[] } | undefined;
+        const recoveryScope = resolveStoredChatOutboxScope(host, submittedSessionKey);
         if (messageOverride == null) {
           recordNonTranscriptInputHistory(host, message);
           if (waitsForPicker) {
-            prevDraft = clearSubmittedComposerState(
-              host,
-              previousDraft,
-              attachmentsToSend,
-            ).previousDraft;
+            const cleared = clearSubmittedComposerState(host, previousDraft, attachmentsToSend);
+            prevDraft = cleared.previousDraft;
+            if (cleared.previousDraft !== undefined) {
+              recoveryComposer = {
+                draft: cleared.previousDraft,
+                attachments: cleared.previousAttachments ?? [],
+              };
+            }
           } else {
+            recoveryComposer = {
+              draft: previousDraft,
+              attachments: parsed.command.key === "export-session" ? [] : attachmentsToSend,
+            };
             host.chatMessage = "";
             // Export leaves the composer in its current session; /new must clear
             // attachments before its handoff can capture them under both routes.
@@ -436,6 +425,7 @@ async function handleSendChatSubmission(
             resetChatInputHistoryNavigation(host);
           }
         }
+        const recovery = captureChatCommandComposerRecovery(host, recoveryScope, recoveryComposer);
         const dispatchResult = await dispatchChatSlashCommand(
           host,
           parsed.command.key,
@@ -448,37 +438,33 @@ async function handleSendChatSubmission(
           },
         );
         if (dispatchResult === "failed") {
-          opts?.onLocalCommandSendRejected?.();
+          if (messageOverride != null || submittedCommandScopeIsVisible(host, recovery)) {
+            opts?.onLocalCommandSendRejected?.();
+          }
         }
-        if (
-          (dispatchResult === "failed" || dispatchResult === "cancelled") &&
-          messageOverride == null
-        ) {
-          restoreComposerAfterFailedSend(host, {
-            previousAttachments: attachmentsToSend,
-            previousDraft,
-            releaseForRetry,
-          });
+        if (dispatchResult === "failed" || dispatchResult === "cancelled") {
+          if (!restoreFailedCommandComposer(host, recovery)) {
+            releaseChatAttachmentPayloads(
+              excludeComposerAttachments(host, recovery.composer?.attachments),
+            );
+          }
+        } else if (dispatchResult === "completed") {
+          if (submittedCommandConnectionIsCurrent(host, recovery)) {
+            clearOwnedCommandComposerFallback(host, recovery);
+          }
+          if (!commandComposerFallbackRetainsAttachments(host, recovery)) {
+            releaseChatAttachmentPayloads(
+              excludeComposerAttachments(host, recovery.composer?.attachments),
+            );
+          }
         }
       };
       if (waitsForPicker) {
-        const submitKey = chatSubmitKey(host, submissionId, "local", message, attachmentsToSend);
+        const submitKey = chatSubmitKey(host, "local", message, attachmentsToSend);
         await withChatSubmitGuard(host, submitKey, dispatchLocalCommand);
       } else {
         await dispatchLocalCommand();
       }
-      return;
-    }
-  }
-
-  const historyState = host as unknown as ChatState;
-  if (historyState.chatLoading) {
-    await loadChatHistory(historyState);
-    if (
-      host.sessionKey !== submittedSessionKey ||
-      !visibleSessionMatches(host, submittedSessionKey, submittedAgentId)
-    ) {
-      releaseForRetry();
       return;
     }
   }
@@ -493,7 +479,6 @@ async function handleSendChatSubmission(
   const refreshSessions = shouldInterpretChatCommands && isChatResetCommand(message);
   const submitKey = chatSubmitKey(
     host,
-    submissionId,
     "message",
     effectiveMessage,
     attachmentsToSend,
@@ -501,7 +486,6 @@ async function handleSendChatSubmission(
   );
   await withChatSubmitGuard(host, submitKey, async () => {
     if (host.sessionKey !== submittedSessionKey) {
-      releaseForRetry();
       return;
     }
     const cleared =
@@ -526,7 +510,6 @@ async function handleSendChatSubmission(
       initialSendState,
       skillWorkshopRevision,
       replyToId,
-      submissionId,
     );
     if (!queued) {
       return;
@@ -540,7 +523,6 @@ async function handleSendChatSubmission(
       cancelPendingSendBeforeRequest(host, queued, {
         previousDraft: cleared.previousDraft,
         previousAttachments: cleared.previousAttachments,
-        releaseForRetry,
       });
       setChatError(host, OFFLINE_QUEUE_STORAGE_ERROR);
       return;
@@ -561,7 +543,6 @@ async function handleSendChatSubmission(
         cancelPendingSendBeforeRequest(host, queued, {
           previousDraft: cleared.previousDraft,
           previousAttachments: cleared.previousAttachments,
-          releaseForRetry,
         });
       } else {
         updateQueuedMessageForSession(host, submittedSessionKey, queued.id, (item) => ({
@@ -582,9 +563,6 @@ async function handleSendChatSubmission(
         setChatError(host, OFFLINE_QUEUE_STORAGE_ERROR);
         return;
       }
-    }
-    if (historyState.chatLoading) {
-      await loadChatHistory(historyState);
     }
     if (
       host.sessionKey !== submittedSessionKey ||
@@ -647,7 +625,6 @@ async function handleSendChatSubmission(
         }
       }
     } else {
-      const expectedLeafEntryId = resolveDisplayedLeafEntryId(historyState);
       sendResult = await sendChatMessageNow(host, effectiveMessage, {
         queueItemId: queued.id,
         previousDraft: cleared.previousDraft,
@@ -657,7 +634,6 @@ async function handleSendChatSubmission(
         ...(expectedLeafEntryId !== undefined ? { expectedLeafEntryId } : {}),
         restoreAttachments: Boolean(messageOverride && opts?.restoreDraft),
         refreshSessions,
-        releaseForRetry,
         routingSessionKey: submittedSessionKey,
         storageMode: canSendFromMemory ? "memory" : "durable",
         submittedAtMs,

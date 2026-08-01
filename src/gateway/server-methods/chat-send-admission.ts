@@ -6,7 +6,6 @@ import { isReplyRunAbortableForSignal } from "../../auto-reply/reply/reply-run-r
 import { resolveSessionWorkStartError } from "../../config/sessions.js";
 import { SESSION_ROUTING_CHANGED_ERROR_REASON } from "../../config/sessions/main-session.js";
 import {
-  readSessionTranscriptActivePathEntryState,
   readSessionTranscriptActiveLeafEvents,
   resolveSessionTranscriptActiveLeafEntryId,
 } from "../../config/sessions/session-accessor.js";
@@ -49,6 +48,7 @@ export async function admitChatSend(params: {
   respond: GatewayRequestHandlerOptions["respond"];
   context: GatewayRequestHandlerOptions["context"];
   client: GatewayRequestHandlerOptions["client"];
+  onAdmissionOwned?: () => Promise<boolean>;
 }) {
   const { request, session, respond, context, client } = params;
   const { p, explicitOrigin, normalizedAttachments, turnKind } = request;
@@ -197,51 +197,22 @@ export async function admitChatSend(params: {
       throw new Error(`Session "${sessionKey}" was deleted while starting work. Retry.`);
     }
     if (commitOutcome && expectedLeafEntryId !== undefined) {
-      const latestSessionId = latestEntry?.sessionId;
-      const expectedSessionId = requestedSessionId ?? backingSessionId;
-      // Branch navigation rotates the backing transcript. Check the pane's rendered
-      // generation before ancestry because a copied branch can retain the old leaf.
-      if (expectedSessionId && latestSessionId && expectedSessionId !== latestSessionId) {
-        throw new Error(ACTIVE_LEAF_CHANGED_ERROR_REASON);
-      }
       // Runtime session identity resolves through the canonical SQLite accessor;
       // legacy/reset-archive files are read-only history fallbacks, never send targets.
-      const activePathState =
-        latestSessionId && expectedLeafEntryId !== null
-          ? readSessionTranscriptActivePathEntryState(
-              {
-                agentId,
-                sessionId: latestSessionId,
-                sessionKey: latestSession.canonicalKey,
-                sessionEntry: latestEntry,
-                storePath: latestSession.storePath,
-              },
-              expectedLeafEntryId,
-            )
-          : undefined;
-      const currentLeafEntryId = activePathState
-        ? activePathState.activeLeafEntryId
-        : latestSessionId
-          ? resolveSessionTranscriptActiveLeafEntryId(
-              readSessionTranscriptActiveLeafEvents({
-                agentId,
-                sessionId: latestSessionId,
-                sessionKey: latestSession.canonicalKey,
-                sessionEntry: latestEntry,
-                storePath: latestSession.storePath,
-              }),
-            )
-          : undefined;
+      const currentLeafEntryId = latestEntry?.sessionId
+        ? resolveSessionTranscriptActiveLeafEntryId(
+            readSessionTranscriptActiveLeafEvents({
+              agentId,
+              sessionId: latestEntry.sessionId,
+              sessionKey: latestSession.canonicalKey,
+              sessionEntry: latestEntry,
+              storePath: latestSession.storePath,
+            }),
+          )
+        : undefined;
       // The lifecycle admission fence also blocks branch switching. Check the canonical
       // transcript under that fence so a stale pane cannot dispatch onto another branch.
-      // A same-generation ancestor only proves linear progress on the selected path;
-      // callers without a rendered session generation retain exact-leaf semantics.
-      const acceptsSameBranchAdvance =
-        expectedLeafEntryId !== null &&
-        requestedSessionId !== undefined &&
-        requestedSessionId === latestSessionId &&
-        activePathState?.entryOnActivePath === true;
-      if ((currentLeafEntryId ?? null) !== expectedLeafEntryId && !acceptsSameBranchAdvance) {
+      if ((currentLeafEntryId ?? null) !== expectedLeafEntryId) {
         throw new Error(ACTIVE_LEAF_CHANGED_ERROR_REASON);
       }
     }
@@ -408,6 +379,21 @@ export async function admitChatSend(params: {
       runId: clientRunId,
     });
     return { ok: false as const };
+  }
+  if (params.onAdmissionOwned) {
+    let proceed: boolean;
+    try {
+      proceed = await params.onAdmissionOwned();
+    } catch (error) {
+      activeRunAbort.cleanup({ force: true });
+      gatewayWorkAdmission.release();
+      throw error;
+    }
+    if (!proceed) {
+      activeRunAbort.cleanup({ force: true });
+      gatewayWorkAdmission.release();
+      return { ok: false as const };
+    }
   }
 
   let releaseGatewayRootContinuation: (() => void) | undefined;
