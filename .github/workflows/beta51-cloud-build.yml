@@ -19,6 +19,8 @@ on:
           - beta6-telegram
           - beta6-restart-handoff
           - beta6-terminal-recovery-residue
+          - beta6-session-search
+          - beta6-mac-ui
       phase:
         description: TDD evidence phase; does not alter the test command
         required: true
@@ -47,6 +49,7 @@ env:
 
 jobs:
   focused_validation:
+    if: ${{ inputs.suite != 'beta6-mac-ui' }}
     name: ${{ inputs.suite }} (${{ inputs.phase }})
     runs-on: ubuntu-24.04
     timeout-minutes: 45
@@ -147,7 +150,8 @@ jobs:
             src/auto-reply/reply/restart-recovery-claim.ts \
             src/auto-reply/reply/agent-runner-execution-terminal-failures.test.ts \
             src/auto-reply/reply/restart-recovery-claim.test.ts \
-            src/auto-reply/reply/agent-runner.runreplyagent.e2e.test.ts
+            src/auto-reply/reply/agent-runner.runreplyagent.e2e.test.ts \
+            src/gateway/session-utils.test.ts
 
       - name: Run fixed focused suite
         env:
@@ -193,8 +197,91 @@ jobs:
               node scripts/run-vitest.mjs run \
                 src/agents/main-session-recovery-run-ownership.test.ts
               ;;
+            beta6-session-search)
+              node scripts/run-vitest.mjs run src/gateway/session-utils.test.ts
+              ;;
             *)
               echo "::error::Unsupported fixed suite: $SUITE"
               exit 1
               ;;
           esac
+
+  macos_ui_validation:
+    if: ${{ inputs.suite == 'beta6-mac-ui' }}
+    name: ${{ inputs.suite }} (${{ inputs.phase }})
+    runs-on: macos-26-intel
+    timeout-minutes: 90
+    steps:
+      - name: Validate immutable public-repository dispatch
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          EVENT_SHA: ${{ github.sha }}
+          CURRENT_REPOSITORY: ${{ github.repository }}
+          REPOSITORY_IS_PRIVATE: ${{ github.event.repository.private }}
+          CURRENT_REF: ${{ github.ref }}
+        run: |
+          set -euo pipefail
+          if [[ "$CURRENT_REPOSITORY" != "$PERSONAL_RELEASE_REPOSITORY" ]]; then
+            echo "::error::This workflow is restricted to $PERSONAL_RELEASE_REPOSITORY."
+            exit 1
+          fi
+          if [[ "$REPOSITORY_IS_PRIVATE" != "false" ]]; then
+            echo "::error::The personal build must use a public repository and standard free runners."
+            exit 1
+          fi
+          if [[ "$CURRENT_REF" != "refs/heads/agent/openclaw-beta-5-1" ]]; then
+            echo "::error::Dispatch the one existing personal repair branch."
+            exit 1
+          fi
+          if [[ ! "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::source_sha must be a full lowercase Git SHA."
+            exit 1
+          fi
+          if [[ "$EVENT_SHA" != "$SOURCE_SHA" ]]; then
+            echo "::error::The dispatched ref resolved to $EVENT_SHA, expected $SOURCE_SHA."
+            exit 1
+          fi
+
+      - name: Checkout exact source SHA
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          ref: ${{ inputs.source_sha }}
+          fetch-depth: 200
+          persist-credentials: false
+
+      - name: Verify frozen official ancestry and Xcode
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          set -euo pipefail
+          if [[ "$(git rev-parse HEAD)" != "$SOURCE_SHA" ]]; then
+            echo "::error::Checkout did not resolve to the requested source SHA."
+            exit 1
+          fi
+          official_remote="official-openclaw"
+          official_url="https://github.com/openclaw/openclaw.git"
+          git remote add "$official_remote" "$official_url"
+          git fetch --no-tags --filter=blob:none "$official_remote" "$FROZEN_UPSTREAM_SHA"
+          if ! git merge-base --is-ancestor "$FROZEN_UPSTREAM_SHA" "$SOURCE_SHA"; then
+            echo "::error::Source does not contain frozen official main $FROZEN_UPSTREAM_SHA."
+            exit 1
+          fi
+          xcodebuild -version
+          xcode_version="$(xcodebuild -version | awk 'NR == 1 { print $2 }')"
+          if [[ "$xcode_version" != 26.* ]]; then
+            echo "::error::Expected Xcode 26.x, got $xcode_version."
+            exit 1
+          fi
+          swift --version
+
+      - name: Run macOS and shared UI regression suites
+        run: |
+          set -euo pipefail
+          macos_status=0
+          swift test             --package-path apps/macos             --filter 'DashboardWindowSmokeTests|WebChatSwiftUISmokeTests'             --no-parallel || macos_status=$?
+          shared_status=0
+          swift test             --package-path apps/shared/OpenClawKit             --filter 'ChatSessionSidebarModelTests|ChatViewModelSessionDeletionTests'             --no-parallel || shared_status=$?
+          if (( macos_status != 0 || shared_status != 0 )); then
+            echo "::error::macOS suite status=$macos_status shared UI suite status=$shared_status"
+            exit 1
+          fi

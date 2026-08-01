@@ -1,6 +1,7 @@
 import AppKit
 import Foundation
 import Testing
+import WebKit
 @testable import OpenClaw
 
 private actor DashboardRouteAuthGate {
@@ -859,6 +860,31 @@ struct DashboardWindowSmokeTests {
         #expect(dashboardLogString(for: url) == "http://127.0.0.1:18789/control/")
     }
 
+    @Test func `dashboard failure page strips URL fragments from every rendered field`() throws {
+        let shownURL = try #require(
+            URL(string: "http://127.0.0.1:18789/control/#token=url-token")) // pragma: allowlist secret
+        let titleURL = try #require(
+            URL(string: "http://127.0.0.1:18789/control/#token=title-token")) // pragma: allowlist secret
+        let messageURL = try #require(
+            URL(string: "http://127.0.0.1:18789/control/#token=message-token")) // pragma: allowlist secret
+        let detailURL = try #require(
+            URL(string: "http://127.0.0.1:18789/control/#token=detail-token")) // pragma: allowlist secret
+
+        let html = DashboardFailurePage.html(
+            title: "Failed to load \(titleURL.absoluteString)",
+            message: "WebKit rejected \(messageURL.absoluteString)",
+            detail: "Retry \(detailURL.absoluteString)",
+            url: shownURL)
+
+        for fragment in ["url-token", "title-token", "message-token", "detail-token"] {
+            #expect(!html.contains(fragment))
+        }
+        #expect(html.contains("http://127.0.0.1:18789/control/"))
+        #expect(DashboardFailurePage.redactingURLFragments(
+            in: "Failed to load \(messageURL.absoluteString)") ==
+            "Failed to load http://127.0.0.1:18789/control/")
+    }
+
     @Test func `dashboard native chrome clears both desktop sidebars`() throws {
         let url = try #require(URL(string: "http://127.0.0.1:18789/control/"))
         let controller = DashboardWindowController(
@@ -914,6 +940,69 @@ struct DashboardWindowSmokeTests {
         #expect(!DashboardWindowController._testJavaScriptConfirmResult(
             for: .alertSecondButtonReturn))
         #expect(!DashboardWindowController._testJavaScriptConfirmResult(for: .cancel))
+    }
+
+    @Test func `dashboard implements every javascript dialog delegate bridge`() throws {
+        let url = try #require(URL(string: "http://127.0.0.1:18789/control/"))
+        let controller = DashboardWindowController(
+            url: url,
+            auth: DashboardWindowAuth(gatewayUrl: nil, token: nil, password: nil))
+
+        #expect(controller.responds(to: NSSelectorFromString(
+            "webView:runJavaScriptAlertPanelWithMessage:initiatedByFrame:completionHandler:")))
+        #expect(controller.responds(to: NSSelectorFromString(
+            "webView:runJavaScriptConfirmPanelWithMessage:initiatedByFrame:completionHandler:")))
+        #expect(controller.responds(to: NSSelectorFromString(
+            "webView:runJavaScriptTextInputPanelWithPrompt:defaultText:initiatedByFrame:completionHandler:")))
+        #expect(!controller._testOwnsJavaScriptControlUIDialog(WKWebView()))
+
+        try controller._testOpenLinkBrowser(#require(URL(string: "https://docs.openclaw.ai/")))
+        #expect(!controller._testLinkBrowserOwnsJavaScriptControlUIDialog)
+    }
+
+    @Test func `dashboard javascript dialogs accept only trusted main control frames`() throws {
+        let dashboard = try #require(URL(string: "http://127.0.0.1:18789/control/"))
+        let trusted = try #require(URL(string: "http://127.0.0.1:18789/control/chat"))
+        let embeddedExternal = try #require(URL(string: "https://clickclack.ai/embed/channel/demo"))
+        let wrongPath = try #require(URL(string: "http://127.0.0.1:18789/control-room"))
+
+        #expect(DashboardWindowController.shouldAllowJavaScriptControlUIDialog(
+            from: trusted,
+            isMainFrame: true,
+            dashboardURL: dashboard))
+        #expect(!DashboardWindowController.shouldAllowJavaScriptControlUIDialog(
+            from: trusted,
+            isMainFrame: false,
+            dashboardURL: dashboard))
+        #expect(!DashboardWindowController.shouldAllowJavaScriptControlUIDialog(
+            from: embeddedExternal,
+            isMainFrame: false,
+            dashboardURL: dashboard))
+        #expect(!DashboardWindowController.shouldAllowJavaScriptControlUIDialog(
+            from: wrongPath,
+            isMainFrame: true,
+            dashboardURL: dashboard))
+    }
+
+    @Test func `dashboard javascript alert and prompt preserve host text and prompt result`() {
+        let alert = DashboardWindowController._testJavaScriptAlert(
+            message: "The preserved worktree could not be removed.",
+            host: "127.0.0.1")
+        let prompt = DashboardWindowController._testJavaScriptPromptAlert(
+            prompt: "Rename session",
+            defaultText: "Daily notes",
+            host: "127.0.0.1")
+
+        #expect(alert.informativeText.contains("127.0.0.1 is asking:"))
+        #expect(alert.buttons.map(\.title) == ["OK"])
+        #expect(prompt.alert.informativeText.contains("Rename session"))
+        #expect(prompt.textField.stringValue == "Daily notes")
+        #expect(DashboardWindowController._testJavaScriptPromptResult(
+            for: .alertFirstButtonReturn,
+            text: "Renamed") == "Renamed")
+        #expect(DashboardWindowController._testJavaScriptPromptResult(
+            for: .alertSecondButtonReturn,
+            text: "Renamed") == nil)
     }
 
     @Test func `dashboard failure state opens in dashboard window`() throws {
