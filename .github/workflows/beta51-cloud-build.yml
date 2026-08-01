@@ -134,6 +134,12 @@ jobs:
             extensions/telegram/src/bot/body-helpers.ts \
             extensions/telegram/src/bot-message-context.body.ts \
             extensions/telegram/src/bot-message-context.body.test.ts \
+            src/agents/session-write-lock-error.ts \
+            src/auto-reply/reply/agent-runner-error-handler.ts \
+            src/auto-reply/reply/agent-runner-execute.ts \
+            src/auto-reply/reply/agent-runner-execution.types.ts \
+            src/auto-reply/reply/agent-runner-run.ts \
+            src/auto-reply/reply/restart-recovery-claim.ts \
             src/auto-reply/reply/agent-runner-execution-terminal-failures.test.ts \
             src/auto-reply/reply/restart-recovery-claim.test.ts \
             src/auto-reply/reply/agent-runner.runreplyagent.e2e.test.ts
