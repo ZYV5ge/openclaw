@@ -17,6 +17,7 @@ on:
           - beta6-sqlite
           - beta6-updater
           - beta6-telegram
+          - beta6-restart-handoff
       phase:
         description: TDD evidence phase; does not alter the test command
         required: true
@@ -132,7 +133,10 @@ jobs:
             src/cli/update-cli/update-command.test.ts \
             extensions/telegram/src/bot/body-helpers.ts \
             extensions/telegram/src/bot-message-context.body.ts \
-            extensions/telegram/src/bot-message-context.body.test.ts
+            extensions/telegram/src/bot-message-context.body.test.ts \
+            src/auto-reply/reply/agent-runner-execution-terminal-failures.test.ts \
+            src/auto-reply/reply/restart-recovery-claim.test.ts \
+            src/auto-reply/reply/agent-runner.runreplyagent.e2e.test.ts
 
       - name: Run fixed focused suite
         env:
@@ -152,6 +156,16 @@ jobs:
               ;;
             beta6-telegram)
               node scripts/run-vitest.mjs run --config test/vitest/vitest.extension-telegram.config.ts telegram/src/bot-message-context.body.test.ts
+              ;;
+            beta6-restart-handoff)
+              node scripts/run-vitest.mjs run \
+                --config test/vitest/vitest.auto-reply-reply.config.ts \
+                src/auto-reply/reply/restart-recovery-claim.test.ts \
+                src/auto-reply/reply/agent-runner-execution-terminal-failures.test.ts
+              OPENCLAW_E2E_WORKERS=1 node scripts/run-vitest.mjs run \
+                --config test/vitest/vitest.e2e.config.ts \
+                src/auto-reply/reply/agent-runner.runreplyagent.e2e.test.ts \
+                -t "preserves an adopted restart claim when the replacement takes the SQLite lease"
               ;;
             *)
               echo "::error::Unsupported fixed suite: $SUITE"
