@@ -189,10 +189,8 @@ jobs:
                 --config test/vitest/vitest.agents-core.config.ts \
                 src/agents/main-session-recovery-store.test.ts
               node scripts/run-vitest.mjs run \
-                --config test/vitest/vitest.agents-core.config.ts \
                 src/agents/main-session-recovery-state.test.ts
               node scripts/run-vitest.mjs run \
-                --config test/vitest/vitest.agents-core.config.ts \
                 src/agents/main-session-recovery-run-ownership.test.ts
               ;;
             *)
