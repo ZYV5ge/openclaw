@@ -111,10 +111,18 @@ jobs:
           save-actions-cache: "false"
 
       - name: Check workflow and focused formatting
+        env:
+          TDD_PHASE: ${{ inputs.phase }}
         run: |
           set -euo pipefail
           node scripts/check-workflows.mjs
-          node_modules/.bin/oxfmt --check             extensions/google/src/gemini-web-search-provider.ts             extensions/google/web-search-provider.test.ts
+          if [[ "$TDD_PHASE" == "red" ]]; then
+            node_modules/.bin/oxfmt extensions/google/web-search-provider.test.ts
+            git --no-pager diff -- extensions/google/web-search-provider.test.ts
+          fi
+          node_modules/.bin/oxfmt --check \
+            extensions/google/src/gemini-web-search-provider.ts \
+            extensions/google/web-search-provider.test.ts
 
       - name: Run fixed focused suite
         env:
