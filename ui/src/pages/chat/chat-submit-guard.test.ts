@@ -1,16 +1,7 @@
 // @vitest-environment node
 import { describe, expect, it } from "vitest";
 import type { ChatHost } from "./chat-send-contract.ts";
-import { withChatSubmitGuard } from "./chat-submit-guard.ts";
-
-type GuardWithSubmissionToken = <T>(
-  host: ChatHost,
-  key: string,
-  run: () => Promise<T>,
-  submissionToken: string,
-) => Promise<T | undefined>;
-
-const guarded = withChatSubmitGuard as unknown as GuardWithSubmissionToken;
+import { withChatSubmissionGuard, withChatSubmitGuard } from "./chat-submit-guard.ts";
 
 function createDeferred<T>() {
   let resolve!: (value: T | PromiseLike<T>) => void;
@@ -32,7 +23,7 @@ describe("withChatSubmitGuard", () => {
     const order: string[] = [];
     const host = createHost();
 
-    const first = guarded(
+    const first = withChatSubmitGuard(
       host,
       "same-key",
       async () => {
@@ -40,23 +31,20 @@ describe("withChatSubmitGuard", () => {
         await gate.promise;
         order.push("first:end");
       },
-      "submission-1",
     );
-    const second = guarded(
+    const second = withChatSubmitGuard(
       host,
       "same-key",
       async () => {
         order.push("second");
       },
-      "submission-2",
     );
-    const third = guarded(
+    const third = withChatSubmitGuard(
       host,
       "same-key",
       async () => {
         order.push("third");
       },
-      "submission-3",
     );
 
     await Promise.resolve();
@@ -67,32 +55,25 @@ describe("withChatSubmitGuard", () => {
     expect(order).toEqual(["first:start", "first:end", "second", "third"]);
   });
 
-  it("deduplicates reentry by submission token even when the derived key changes", async () => {
+  it("deduplicates concurrent and settled handler reentry by submission id", async () => {
     const gate = createDeferred<void>();
     const calls: string[] = [];
     const host = createHost();
+    const run = async () => {
+      calls.push("original");
+      await gate.promise;
+    };
 
-    const first = guarded(
-      host,
-      "original-key",
-      async () => {
-        calls.push("original");
-        await gate.promise;
-      },
-      "logical-submission",
-    );
+    const first = withChatSubmissionGuard(host, "logical-submission", run);
+    const reentry = withChatSubmissionGuard(host, "logical-submission", run);
     await Promise.resolve();
-    const reentry = guarded(
-      host,
-      "changed-key",
-      async () => {
-        calls.push("reentry");
-      },
-      "logical-submission",
-    );
+    expect(calls).toEqual(["original"]);
 
     gate.resolve();
     await Promise.all([first, reentry]);
+    await expect(
+      withChatSubmissionGuard(host, "logical-submission", run),
+    ).resolves.toBeUndefined();
 
     expect(calls).toEqual(["original"]);
   });
@@ -102,7 +83,7 @@ describe("withChatSubmitGuard", () => {
     const order: string[] = [];
     const host = createHost();
 
-    const first = guarded(
+    const first = withChatSubmitGuard(
       host,
       "same-key",
       async () => {
@@ -110,23 +91,20 @@ describe("withChatSubmitGuard", () => {
         await gate.promise;
         throw new Error("first failed");
       },
-      "submission-1",
     );
-    const second = guarded(
+    const second = withChatSubmitGuard(
       host,
       "same-key",
       async () => {
         order.push("second");
       },
-      "submission-2",
     );
-    const third = guarded(
+    const third = withChatSubmitGuard(
       host,
       "same-key",
       async () => {
         order.push("third");
       },
-      "submission-3",
     );
 
     gate.resolve();

@@ -5225,7 +5225,9 @@ describe("handleSendChat", () => {
 
     try {
       await waitForFast(() =>
-        expect(host.chatQueue.filter((item) => item.localCommandName === "compact")).toHaveLength(2),
+        expect(host.chatQueue.filter((item) => item.localCommandName === "compact")).toHaveLength(
+          2,
+        ),
       );
       expect(executeSlashCommandMock).toHaveBeenCalledOnce();
       firstCommand.resolve({ content: "First compaction complete." });

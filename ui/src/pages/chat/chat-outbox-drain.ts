@@ -34,7 +34,9 @@ import {
 export type QueuedChatSendResult = "sent" | "pending" | "failed";
 export type QueuedChatStorageMode = "durable" | "memory";
 export type QueuedChatSendOptions = {
-  /** Exact submit-time leaf; restored drains omit it so intervening advances park the draft. */
+  /** Resolve the rendered leaf after any authoritative history refresh, immediately before send. */
+  bindDisplayedLeafEntryId?: boolean;
+  /** Explicit leaf for specialized callers; restored drains omit both leaf options. */
   expectedLeafEntryId?: string | null;
   pendingSettings?: Promise<boolean>;
   previousAttachments?: ChatAttachment[];

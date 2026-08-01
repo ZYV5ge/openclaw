@@ -5,6 +5,7 @@ import { parseSlashCommand } from "../../lib/chat/commands.ts";
 import { extractCompanionCommandQuestion } from "../../lib/chat/companion-question.ts";
 import { resolveCurrentUserIdentity } from "../../lib/chat/current-user-identity.ts";
 import { visibleSessionMatches } from "../../lib/sessions/index.ts";
+import { generateUUID } from "../../lib/uuid.ts";
 import {
   getChatAttachmentDataUrl,
   releaseChatAttachmentPayloads,
@@ -39,10 +40,9 @@ import {
   setChatError,
   waitForPendingChatSettings,
 } from "./chat-send-queue-state.ts";
-import { resolveDisplayedLeafEntryId } from "./chat-send-request.ts";
 import { recordChatSendTiming } from "./chat-send-timing.ts";
 import { getPendingChatPickerPatch } from "./chat-session.ts";
-import { withChatSubmitGuard } from "./chat-submit-guard.ts";
+import { withChatSubmissionGuard, withChatSubmitGuard } from "./chat-submit-guard.ts";
 import { resolveStoredChatOutboxScope } from "./composer-persistence.ts";
 import {
   recordNonTranscriptInputHistory,
@@ -67,6 +67,8 @@ type ChatSendOptions = {
   skillWorkshopRevision?: ChatQueueSkillWorkshopRevision;
   /** Lets request-scoped UI actions recover from rejected local commands. */
   onLocalCommandSendRejected?: () => void;
+  /** Stable identity for one logical user submission across handler re-entry. */
+  submissionId?: string;
 };
 
 function isChatResetCommand(text: string) {
@@ -95,6 +97,7 @@ function chatSubmitKey(
   message: string,
   attachments: ChatAttachment[],
   skillWorkshopRevision?: ChatQueueSkillWorkshopRevision,
+  laneSubmissionId?: string,
 ): string {
   return JSON.stringify([
     kind,
@@ -103,6 +106,7 @@ function chatSubmitKey(
     skillWorkshopRevision?.proposalId ?? "",
     skillWorkshopRevision?.agentId ?? "",
     attachments.map(attachmentSubmitSignature),
+    laneSubmissionId ?? "",
   ]);
 }
 
@@ -187,8 +191,20 @@ async function sendDetachedCommandMessage(
   }
 }
 
-export async function handleSendChat(
+export function handleSendChat(
   host: ChatHost,
+  messageOverride?: string,
+  opts?: ChatSendOptions,
+) {
+  const submissionId = opts?.submissionId?.trim() || generateUUID();
+  return withChatSubmissionGuard(host, submissionId, () =>
+    handleSendChatSubmission(host, submissionId, messageOverride, opts),
+  );
+}
+
+async function handleSendChatSubmission(
+  host: ChatHost,
+  submissionId: string,
   messageOverride?: string,
   opts?: ChatSendOptions,
 ) {
@@ -196,11 +212,12 @@ export async function handleSendChat(
   const message = (messageOverride ?? host.chatMessage).trim();
   const submittedAtMs = controlUiNowMs();
   const submittedSessionKey = host.sessionKey;
-  const expectedLeafEntryId = resolveDisplayedLeafEntryId(host as unknown as ChatState);
   const attachmentsToSend =
     messageOverride == null ? snapshotChatAttachments(host.chatAttachments) : [];
   const hasAttachments = attachmentsToSend.length > 0;
   const skillWorkshopRevision = opts?.skillWorkshopRevision;
+  const runGuardedSubmission = <T>(key: string, run: () => Promise<T>) =>
+    withChatSubmitGuard(host, key, run);
 
   if (!message && !hasAttachments) {
     return;
@@ -238,7 +255,7 @@ export async function handleSendChat(
         return;
       }
       const submitKey = chatSubmitKey(host, "local", message, []);
-      await withChatSubmitGuard(host, submitKey, async () => {
+      await runGuardedSubmission(submitKey, async () => {
         if (messageOverride == null) {
           recordNonTranscriptInputHistory(host, message);
           if (host.chatMessage === previousDraft) {
@@ -253,7 +270,7 @@ export async function handleSendChat(
     // /approve bypasses the run whose approval it resolves.
     if (parsed?.command.key === "approve" && isChatBusy(host)) {
       const submitKey = chatSubmitKey(host, "detached", message, attachmentsToSend);
-      await withChatSubmitGuard(host, submitKey, async () => {
+      await runGuardedSubmission(submitKey, async () => {
         if (!(await waitForSubmittedRoute(host, submittedSessionKey))) {
           return;
         }
@@ -267,6 +284,7 @@ export async function handleSendChat(
         const recoveryScope = resolveStoredChatOutboxScope(host, submittedSessionKey);
         await sendDetachedCommandMessage(host, message, {
           attachments: hasAttachments ? attachmentsToSend : undefined,
+          runId: submissionId,
           recovery: captureChatCommandComposerRecovery(
             host,
             recoveryScope,
@@ -286,8 +304,15 @@ export async function handleSendChat(
       parsed?.command.key === "model" && shouldForwardModelCommandToServer(parsed.args);
     if (parsed?.command.executeLocal && !forwardModel) {
       if (shouldQueueLocalSlashCommand(parsed.command.key)) {
-        const submitKey = chatSubmitKey(host, "local", message, attachmentsToSend);
-        await withChatSubmitGuard(host, submitKey, async () => {
+        const submitKey = chatSubmitKey(
+          host,
+          "local",
+          message,
+          attachmentsToSend,
+          undefined,
+          submissionId,
+        );
+        await runGuardedSubmission(submitKey, async () => {
           if (messageOverride == null) {
             recordNonTranscriptInputHistory(host, message);
             host.chatMessage = "";
@@ -389,7 +414,7 @@ export async function handleSendChat(
       };
       if (waitsForPicker) {
         const submitKey = chatSubmitKey(host, "local", message, attachmentsToSend);
-        await withChatSubmitGuard(host, submitKey, dispatchLocalCommand);
+        await runGuardedSubmission(submitKey, dispatchLocalCommand);
       } else {
         await dispatchLocalCommand();
       }
@@ -410,8 +435,9 @@ export async function handleSendChat(
     effectiveMessage,
     attachmentsToSend,
     skillWorkshopRevision,
+    submissionId,
   );
-  await withChatSubmitGuard(host, submitKey, async () => {
+  await runGuardedSubmission(submitKey, async () => {
     if (host.sessionKey !== submittedSessionKey) {
       return;
     }
@@ -454,7 +480,7 @@ export async function handleSendChat(
     const sendResult = await deliverChatQueueItem(host, queued, {
       previousDraft: cleared.previousDraft,
       previousAttachments: cleared.previousAttachments,
-      ...(expectedLeafEntryId !== undefined ? { expectedLeafEntryId } : {}),
+      ...(!skillWorkshopRevision ? { bindDisplayedLeafEntryId: true } : {}),
       ...(pendingSettings ? { pendingSettings } : {}),
       restoreAttachments: Boolean(messageOverride && opts?.restoreDraft),
       restoreDraft: Boolean(messageOverride && opts?.restoreDraft),

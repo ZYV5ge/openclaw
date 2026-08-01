@@ -39,6 +39,7 @@ import {
 import {
   isActiveLeafChangedError,
   requestChatSend,
+  resolveDisplayedLeafEntryId,
   requestSkillWorkshopRevisionChatSend,
 } from "./chat-send-request.ts";
 import {
@@ -228,6 +229,12 @@ async function sendQueuedChatMessage(
       return prepared;
     }
   }
+  if (options?.bindDisplayedLeafEntryId) {
+    const state = host as unknown as ChatState;
+    while (state.chatLoading && host.connected && host.client) {
+      await loadChatHistory(state);
+    }
+  }
   prepared = finishDeliveryAdmission(host, prepared, storageMode, queueSessionKey, options);
   if (typeof prepared === "string") {
     return prepared;
@@ -312,6 +319,10 @@ async function sendQueuedChatMessage(
     });
   }
 
+  const expectedLeafEntryId = options?.bindDisplayedLeafEntryId
+    ? resolveDisplayedLeafEntryId(host as unknown as ChatState)
+    : options?.expectedLeafEntryId;
+
   try {
     const ack = prepared.skillWorkshopRevision
       ? await requestSkillWorkshopRevisionChatSend(host as unknown as ChatState, {
@@ -330,8 +341,8 @@ async function sendQueuedChatMessage(
           runId,
           sessionKey,
           agentId: prepared.agentId,
-          ...(options?.expectedLeafEntryId !== undefined
-            ? { expectedLeafEntryId: options.expectedLeafEntryId }
+          ...(expectedLeafEntryId !== undefined
+            ? { expectedLeafEntryId }
             : {}),
           ...(prepared.replyToId ? { replyToId: prepared.replyToId } : {}),
         });
@@ -629,8 +640,12 @@ export async function deliverChatQueueItem(
     const routeVisible =
       host.sessionKey === routingSessionKey &&
       visibleSessionMatches(host, routingSessionKey, admittedItem.agentId);
+    const waitsForAuthoritativeLeaf =
+      sendOptions.bindDisplayedLeafEntryId === true &&
+      (host as unknown as ChatState).chatLoading;
     if (
       drainResult === undefined &&
+      !waitsForAuthoritativeLeaf &&
       routeVisible &&
       (isChatBusy(host) || hasAbortableSessionRun(host))
     ) {
