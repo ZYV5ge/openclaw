@@ -254,6 +254,20 @@ describe("OpenClaw performance workflow", () => {
     expect(run.indexOf(probeCap)).toBeLessThan(run.indexOf(boundedProbe));
   });
 
+  it("measures warmed and first-device gateway health separately", () => {
+    const run = findStep("Run OpenClaw source performance probes", "source_performance").run ?? "";
+
+    expect(run).toContain("--case gatewayHealthJsonConnected \\");
+    expect(run).toContain("--case gatewayHealthJsonFirstDevice \\");
+  });
+
+  it("keeps the source performance gateway fixture network-hermetic", () => {
+    const run = findStep("Run OpenClaw source performance probes", "source_performance").run ?? "";
+
+    expect(run).toContain('"models": { "catalogRefresh": { "enabled": false } },');
+    expect(run).toContain('"update": { "checkOnStart": false },');
+  });
+
   it("isolates required publication in a fresh artifact-consuming job", () => {
     const workflow = readWorkflow();
     const publisher = workflow.jobs?.publish;
