@@ -14,6 +14,7 @@ on:
         type: choice
         options:
           - gemini-schema
+          - beta6-sqlite
       phase:
         description: TDD evidence phase; does not alter the test command
         required: true
@@ -122,7 +123,9 @@ jobs:
           fi
           node_modules/.bin/oxfmt --check \
             extensions/google/src/gemini-web-search-provider.ts \
-            extensions/google/web-search-provider.test.ts
+            extensions/google/web-search-provider.test.ts \
+            src/state/openclaw-state-db-startup-checkpoint.ts \
+            src/state/openclaw-state-db.test.ts
 
       - name: Run fixed focused suite
         env:
@@ -133,6 +136,9 @@ jobs:
           case "$SUITE" in
             gemini-schema)
               node scripts/run-vitest.mjs run                 --config test/vitest/vitest.extension-providers.config.ts                 google/web-search-provider.test.ts
+              ;;
+            beta6-sqlite)
+              node scripts/run-vitest.mjs run --config test/vitest/vitest.unit-src.config.ts state/openclaw-state-db.test.ts
               ;;
             *)
               echo "::error::Unsupported fixed suite: $SUITE"
