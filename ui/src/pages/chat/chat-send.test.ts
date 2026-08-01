@@ -5173,41 +5173,46 @@ describe("handleSendChat", () => {
     }
   });
 
-  it("coalesces duplicate in-flight chat submits before the gateway acknowledges them", async () => {
-    const sent = createDeferred<unknown>();
-
+  it("queues distinct identical chat submissions while the first ACK is pending", async () => {
+    const firstAck = createDeferred<unknown>();
+    const sends: Record<string, unknown>[] = [];
     const host = makeHost({
       requestHandlers: {
-        "chat.send": () => sent.promise,
+        "chat.send": (params: unknown) => {
+          const payload = requireRecord(params, "repeated chat send payload");
+          sends.push(payload);
+          return sends.length === 1
+            ? firstAck.promise
+            : Promise.resolve({ runId: payload.idempotencyKey, status: "ok" });
+        },
       },
     });
 
     const first = handleSendChat(host, "same prompt");
+    await waitForFast(() => expect(sends).toHaveLength(1));
     const second = handleSendChat(host, "same prompt");
 
-    expect(host.request.mock.calls.filter(([method]) => method === "chat.send")).toHaveLength(1);
-    expect(host.chatQueue).toHaveLength(1);
-    expect(host.chatQueue[0]?.text).toBe("same prompt");
-    expect(host.chatQueue[0]?.sendState).toBe("sending");
-    expect(host.chatMessages).toStrictEqual([]);
+    try {
+      await waitForFast(() => expect(host.chatQueue).toHaveLength(2));
+      expect(sends).toHaveLength(1);
+      expect(host.chatQueue.map((item) => item.text)).toEqual(["same prompt", "same prompt"]);
+      expect(host.chatQueue.every((item) => item.sendState !== "failed")).toBe(true);
+    } finally {
+      firstAck.resolve({ runId: sends[0]?.idempotencyKey, status: "ok" });
+      await Promise.all([first, second]);
+    }
 
-    const queuedRunId = host.chatQueue[0]?.sendRunId;
-    sent.resolve({ runId: queuedRunId, status: "started" });
-    await Promise.all([first, second]);
-
-    expect(host.request.mock.calls.filter(([method]) => method === "chat.send")).toHaveLength(1);
-    expect(host.chatQueue).toEqual([
-      expect.objectContaining({ sendState: "sending", text: "same prompt" }),
-    ]);
-    expect(loadChatComposerSnapshot(host, host.sessionKey)?.queue).toEqual([
-      expect.objectContaining({ sendAttempts: 1, sendState: "waiting-reconnect" }),
-    ]);
-    expect(host.chatMessages).toStrictEqual([]);
+    expect(sends.map((payload) => payload.message)).toEqual(["same prompt", "same prompt"]);
+    expect(sends[0]?.idempotencyKey).not.toBe(sends[1]?.idempotencyKey);
+    expect(host.chatQueue).toStrictEqual([]);
   });
 
-  it("coalesces duplicate queued local commands while the first command is running", async () => {
-    const command = createDeferred<{ content: string }>();
-    executeSlashCommandMock.mockImplementation(() => command.promise);
+  it("queues two identical local commands and executes both in FIFO order", async () => {
+    const firstCommand = createDeferred<{ content: string }>();
+    const secondCommand = createDeferred<{ content: string }>();
+    executeSlashCommandMock
+      .mockImplementationOnce(() => firstCommand.promise)
+      .mockImplementationOnce(() => secondCommand.promise);
     const host = makeHost({
       requestHandlers: {
         "chat.history": () => idleChatHistory(),
@@ -5216,17 +5221,23 @@ describe("handleSendChat", () => {
 
     const first = handleSendChat(host, "/compact");
     await waitForFast(() => expect(executeSlashCommandMock).toHaveBeenCalledOnce());
-    const duplicate = handleSendChat(host, "/compact");
+    const second = handleSendChat(host, "/compact");
 
     try {
-      expect(host.chatQueue.filter((item) => item.localCommandName === "compact")).toHaveLength(1);
+      await waitForFast(() =>
+        expect(host.chatQueue.filter((item) => item.localCommandName === "compact")).toHaveLength(2),
+      );
       expect(executeSlashCommandMock).toHaveBeenCalledOnce();
+      firstCommand.resolve({ content: "First compaction complete." });
+      await waitForFast(() => expect(executeSlashCommandMock).toHaveBeenCalledTimes(2));
     } finally {
-      command.resolve({ content: "Compaction complete." });
-      await Promise.all([first, duplicate]);
+      firstCommand.resolve({ content: "First compaction complete." });
+      secondCommand.resolve({ content: "Second compaction complete." });
+      await Promise.allSettled([first, second]);
     }
 
-    expect(executeSlashCommandMock).toHaveBeenCalledOnce();
+    expect(executeSlashCommandMock).toHaveBeenCalledTimes(2);
+    expect(host.chatQueue.filter((item) => item.localCommandName === "compact")).toStrictEqual([]);
   });
 
   it("keeps normal prompt text visible as pending until chat.send is acknowledged", async () => {
@@ -7025,6 +7036,48 @@ describe("handleSendChat", () => {
     expect(sends).toHaveLength(2);
     expect(sends[1]).toMatchObject({ message: "second message" });
     expect(sends[1]).toMatchObject({ expectedLeafEntryId: "leaf-before-queue" });
+  });
+
+  it("waits for in-flight authoritative history before binding the foreground leaf", async () => {
+    const history = createDeferred<unknown>();
+    const sends: Record<string, unknown>[] = [];
+    const host = makeHost({
+      requestHandlers: {
+        "chat.history": () => history.promise,
+        "chat.send": (params: unknown) => {
+          const payload = requireRecord(params, "history-fenced send payload");
+          sends.push(payload);
+          return { runId: payload.idempotencyKey, status: "ok" };
+        },
+      },
+      chatDisplayedLeafEntryId: "leaf-stale",
+      chatMessage: "send after history",
+    });
+
+    const refresh = loadChatHistory(host as unknown as Parameters<typeof loadChatHistory>[0]);
+    await waitForFast(() => expect(host.chatLoading).toBe(true));
+    const send = handleSendChat(host);
+
+    try {
+      await Promise.resolve();
+      expect(sends).toStrictEqual([]);
+    } finally {
+      history.resolve({
+        messages: [],
+        sessionInfo: row("agent:main", {
+          activeLeafEntryId: "leaf-current",
+          hasActiveRun: false,
+          status: "done",
+        }),
+      });
+      await Promise.all([refresh, send]);
+    }
+
+    expect(sends).toHaveLength(1);
+    expect(sends[0]).toMatchObject({
+      message: "send after history",
+      expectedLeafEntryId: "leaf-current",
+    });
   });
 
   it("parks an active-leaf rejection, restores the draft, and refreshes branch state", async () => {

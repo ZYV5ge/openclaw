@@ -21,6 +21,7 @@ on:
           - beta6-terminal-recovery-residue
           - beta6-session-search
           - beta6-mac-ui
+          - beta6-control-ui-send
       phase:
         description: TDD evidence phase; does not alter the test command
         required: true
@@ -151,7 +152,13 @@ jobs:
             src/auto-reply/reply/agent-runner-execution-terminal-failures.test.ts \
             src/auto-reply/reply/restart-recovery-claim.test.ts \
             src/auto-reply/reply/agent-runner.runreplyagent.e2e.test.ts \
-            src/gateway/session-utils.test.ts
+            src/gateway/session-utils.test.ts \
+            ui/src/pages/chat/chat-send-contract.ts \
+            ui/src/pages/chat/chat-send-delivery.ts \
+            ui/src/pages/chat/chat-send-submit.ts \
+            ui/src/pages/chat/chat-submit-guard.ts \
+            ui/src/pages/chat/chat-submit-guard.test.ts \
+            ui/src/pages/chat/chat-send.test.ts
 
       - name: Run fixed focused suite
         env:
@@ -199,6 +206,11 @@ jobs:
               ;;
             beta6-session-search)
               node scripts/run-vitest.mjs run src/gateway/session-utils.test.ts
+              ;;
+            beta6-control-ui-send)
+              pnpm --dir ui exec vitest run --config vitest.config.ts \
+                src/pages/chat/chat-submit-guard.test.ts \
+                src/pages/chat/chat-send.test.ts
               ;;
             *)
               echo "::error::Unsupported fixed suite: $SUITE"
