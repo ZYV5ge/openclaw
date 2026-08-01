@@ -788,10 +788,19 @@ export function resolveUpdatedInstallCommandEnv(params?: {
   serviceEnv?: NodeJS.ProcessEnv;
   invocationCwd?: string;
 }): NodeJS.ProcessEnv {
-  const selectedEnv = params?.serviceEnv ?? params?.processEnv ?? process.env;
-  return disableUpdatedPackageCompileCacheEnv(
-    resolveServiceRefreshEnv(selectedEnv, params?.invocationCwd),
+  const processEnv = resolveServiceRefreshEnv(
+    params?.processEnv ?? process.env,
+    params?.invocationCwd,
   );
+  const serviceEnv = params?.serviceEnv
+    ? resolveServiceRefreshEnv(params.serviceEnv, params.invocationCwd)
+    : undefined;
+  // SecretRefs may resolve from the updater's runtime env even when the
+  // managed service intentionally omits resolved secrets from its definition.
+  return disableUpdatedPackageCompileCacheEnv({
+    ...processEnv,
+    ...serviceEnv,
+  });
 }
 
 export function resolvePostInstallDoctorEnv(params?: {
