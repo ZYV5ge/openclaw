@@ -64,9 +64,7 @@ export class DoctorSqliteDiskSpaceError extends Error {
   }
 }
 
-export function isDoctorSqliteDiskSpaceError(
-  error: unknown,
-): error is DoctorSqliteDiskSpaceError {
+export function isDoctorSqliteDiskSpaceError(error: unknown): error is DoctorSqliteDiskSpaceError {
   return error instanceof DoctorSqliteDiskSpaceError;
 }
 export type DoctorSqliteCompactSnapshot = {
@@ -117,8 +115,7 @@ export function assertDoctorSqliteCompactionDiskSpace(params: {
   }
 
   const requiredBytesBigInt =
-    2n * (BigInt(dbSizeBytes) + BigInt(walSizeBytes)) +
-    DOCTOR_SQLITE_COMPACTION_HEADROOM_BYTES;
+    2n * (BigInt(dbSizeBytes) + BigInt(walSizeBytes)) + DOCTOR_SQLITE_COMPACTION_HEADROOM_BYTES;
   if (requiredBytesBigInt > BigInt(Number.MAX_SAFE_INTEGER)) {
     throw createDiskSpaceUnavailableError({
       dbSizeBytes,

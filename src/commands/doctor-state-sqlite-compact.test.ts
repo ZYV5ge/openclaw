@@ -171,8 +171,7 @@ describe("runDoctorStateSqliteCompact", () => {
     const before = readSqliteFileSnapshot(sqlitePath);
     const dbSizeBytes = fs.statSync(sqlitePath).size;
     const walSizeBytes = fs.statSync(walPath).size;
-    const requiredBytes =
-      2 * (dbSizeBytes + walSizeBytes) + DOCTOR_SQLITE_HEADROOM_BYTES;
+    const requiredBytes = 2 * (dbSizeBytes + walSizeBytes) + DOCTOR_SQLITE_HEADROOM_BYTES;
     const disk = vi.spyOn(diskSpace, "tryReadDiskSpace").mockReturnValue({
       availableBytes: requiredBytes - 1,
       checkedPath: path.dirname(sqlitePath),
@@ -238,7 +237,6 @@ describe("runDoctorStateSqliteCompact", () => {
     expect(integrity).not.toHaveBeenCalled();
     expect(readSqliteFileSnapshot(sqlitePath)).toEqual(before);
   });
-
 
   it("reports a missing canonical database as skipped", async () => {
     const env = createStateEnv();

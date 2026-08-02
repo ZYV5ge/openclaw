@@ -26,11 +26,6 @@ import { LEGACY_IMPLICIT_AGENT_ID, normalizeAgentId } from "../routing/session-k
 import { closeOpenClawAgentDatabaseByPath } from "../state/openclaw-agent-db.js";
 import { compactDoctorSessionSqliteTarget } from "./doctor-session-sqlite-compact.js";
 import {
-  assertDoctorSqliteCompactionDiskSpace,
-  isDoctorSqliteDiskSpaceError,
-  type DoctorSqliteDiskSpaceError,
-} from "./doctor-sqlite-compact.js";
-import {
   assertSafeSessionSqliteMigrationDirectory,
   assertSafeSessionSqliteMigrationMove,
   canonicalMigrationFilePath,
@@ -68,6 +63,11 @@ import {
   type DoctorSessionSqliteReport,
   type DoctorSessionSqliteTargetReport,
 } from "./doctor-session-sqlite-types.js";
+import {
+  assertDoctorSqliteCompactionDiskSpace,
+  isDoctorSqliteDiskSpaceError,
+  type DoctorSqliteDiskSpaceError,
+} from "./doctor-sqlite-compact.js";
 import {
   assertDoctorSqliteMaintenancePathsNotAliased,
   isDestructiveDoctorSessionSqliteMode,

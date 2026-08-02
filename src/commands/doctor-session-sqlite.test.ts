@@ -15,9 +15,9 @@ import {
 } from "../config/sessions/session-accessor.sqlite.js";
 import * as diskSpace from "../infra/disk-space.js";
 import * as nodeSqlite from "../infra/node-sqlite.js";
-import * as sqliteIntegrity from "../infra/sqlite-integrity.js";
 import * as replaceFile from "../infra/replace-file.js";
 import { resolveSqliteDatabaseFilePaths } from "../infra/sqlite-files.js";
+import * as sqliteIntegrity from "../infra/sqlite-integrity.js";
 import {
   closeOpenClawAgentDatabasesForTest,
   openOpenClawAgentDatabase,
@@ -315,7 +315,6 @@ describe("runDoctorSessionSqlite", () => {
       validationBeforeArchive: "passed",
     });
   });
-
 
   it("uses the requested agent as the owner for explicit-store maintenance", async () => {
     const stateDir = autoCleanupTempDirs.make("openclaw-doctor-explicit-ops-");

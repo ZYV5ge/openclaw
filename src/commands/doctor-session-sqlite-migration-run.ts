@@ -769,9 +769,7 @@ export function writeSessionSqliteMigrationFailureReports(
         issues: target.issues.map((issue) => ({
           code: issue.code,
           message: sanitizeFailureIssueMessage(issue, target),
-          ...(issue.availableBytes !== undefined
-            ? { availableBytes: issue.availableBytes }
-            : {}),
+          ...(issue.availableBytes !== undefined ? { availableBytes: issue.availableBytes } : {}),
           ...(issue.dbSizeBytes !== undefined ? { dbSizeBytes: issue.dbSizeBytes } : {}),
           ...(issue.requiredBytes !== undefined ? { requiredBytes: issue.requiredBytes } : {}),
           ...(issue.sessionKey ? { sessionKey: redactSessionKey(issue.sessionKey) } : {}),
@@ -820,9 +818,7 @@ export function createSessionSqliteMigrationFailureIssue(
       issues: target.issues.map((issue) => ({
         code: issue.code,
         message: sanitizeFailureIssueMessage(issue, target),
-        ...(issue.availableBytes !== undefined
-          ? { availableBytes: issue.availableBytes }
-          : {}),
+        ...(issue.availableBytes !== undefined ? { availableBytes: issue.availableBytes } : {}),
         ...(issue.dbSizeBytes !== undefined ? { dbSizeBytes: issue.dbSizeBytes } : {}),
         ...(issue.requiredBytes !== undefined ? { requiredBytes: issue.requiredBytes } : {}),
         ...(issue.stage ? { stage: issue.stage } : {}),
