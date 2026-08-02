@@ -170,6 +170,73 @@ describe("runDoctorSessionSqlite", () => {
     });
   });
 
+  it("checks disk before migrating an older session schema", async () => {
+    const store = createLegacyStore();
+    fs.writeFileSync(store.storePath, "{}\n", { mode: 0o600 });
+    for (const candidate of [
+      store.transcriptPath,
+      store.trajectoryPath,
+      store.unreferencedJsonlPath,
+    ]) {
+      fs.rmSync(candidate, { force: true });
+    }
+    const sqlitePath = createHistoricalV1AgentDatabase({ agentId: "main", env: store.env });
+    const highDisk = {
+      availableBytes: Number.MAX_SAFE_INTEGER,
+      checkedPath: path.dirname(sqlitePath),
+      targetPath: sqlitePath,
+      totalBytes: Number.MAX_SAFE_INTEGER,
+    };
+    const disk = vi
+      .spyOn(diskSpace, "tryReadDiskSpace")
+      .mockReturnValueOnce(highDisk)
+      .mockReturnValueOnce({ ...highDisk, availableBytes: 0 });
+    const readEntries = vi.spyOn(doctorSessionSqliteReaders, "readSqliteEntryCount");
+
+    const report = await runDoctorSessionSqlite({
+      env: store.env,
+      mode: "import",
+      store: store.storePath,
+    });
+
+    expect(disk).toHaveBeenCalledTimes(2);
+    expect(readEntries).not.toHaveBeenCalled();
+    expect(report.totals).toMatchObject({ importedEntries: 0, issues: 1, sqliteEntries: 0 });
+    expect(report.targets[0]?.compact).toBeUndefined();
+    expect(report.targets[0]?.issues).toEqual([
+      expect.objectContaining({
+        code: "sqlite_compact_insufficient_disk",
+        message: expect.stringMatching(/before session SQLite schema migration/iu),
+        stage: "before-schema-migration",
+      }),
+    ]);
+    expect(report.targets[0]?.archivedLegacyStoreFiles).toEqual([]);
+    expect(report.targets[0]?.archivedTranscriptFiles).toEqual([]);
+    expect(report.targets[0]?.archivedUnreferencedJsonlFiles).toEqual([]);
+
+    const sqlite = nodeSqlite.requireNodeSqlite();
+    const database = new sqlite.DatabaseSync(sqlitePath, { readOnly: true });
+    try {
+      expect(database.prepare("PRAGMA user_version").get()).toEqual({ user_version: 1 });
+      expect(database.prepare("PRAGMA auto_vacuum").get()).toEqual({ auto_vacuum: 0 });
+    } finally {
+      database.close();
+    }
+
+    const manifest = readMigrationManifest(report.migrationRun?.manifestPath);
+    expect(manifest.failedAt).toBeTruthy();
+    expect(manifest.failureReports).toBeDefined();
+    expect(manifest.targets[0]).toMatchObject({
+      issues: [
+        expect.objectContaining({
+          code: "sqlite_compact_insufficient_disk",
+          stage: "before-schema-migration",
+        }),
+      ],
+      validationBeforeArchive: "passed",
+    });
+  });
+
   it("rechecks disk after schema migration and does not start VACUUM when space falls", async () => {
     const store = createLegacyStore();
     fs.writeFileSync(store.storePath, "{}\n", { mode: 0o600 });
