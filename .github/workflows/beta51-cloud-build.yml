@@ -1218,7 +1218,7 @@ jobs:
             appArchitectures: ["arm64", "x86_64"],
             appSignature: "ad-hoc",
             rawNpmArchive: process.env.RAW_PACKAGE_NAME,
-            rawNpmSha256,
+            rawNpmSha256: rawSha256,
           };
           fs.writeFileSync(
             path.join(bundleDir, "intel-build-receipt.json"),
