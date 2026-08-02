@@ -3,6 +3,7 @@ import type {
   ChatAttachment,
   ChatQueueItem,
   ChatQueueSkillWorkshopRevision,
+  ChatTranscriptRevision,
 } from "./chat-types.ts";
 import { normalizeSenderIdentity } from "./sender-label.ts";
 
@@ -53,6 +54,22 @@ function normalizeChatAttachment(value: unknown): ChatAttachment | null {
     restored.dataUrl = dataUrl;
   }
   return restored;
+}
+
+function normalizeTranscriptRevision(value: unknown): ChatTranscriptRevision | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+  const entry = value as Record<string, unknown>;
+  const expectedLeafEntryId =
+    entry.expectedLeafEntryId === null
+      ? null
+      : normalizeOptionalString(entry.expectedLeafEntryId);
+  if (expectedLeafEntryId === undefined) {
+    return undefined;
+  }
+  const sessionId = normalizeOptionalString(entry.sessionId);
+  return { expectedLeafEntryId, ...(sessionId ? { sessionId } : {}) };
 }
 
 function normalizeSkillWorkshopRevision(
@@ -110,6 +127,10 @@ export function normalizeStoredQueueItem(value: unknown): ChatQueueItem | null {
   const replyToId = normalizeOptionalString(entry.replyToId);
   if (replyToId) {
     item.replyToId = replyToId;
+  }
+  const transcriptRevision = normalizeTranscriptRevision(entry.transcriptRevision);
+  if (transcriptRevision) {
+    item.transcriptRevision = transcriptRevision;
   }
   if (
     entry.sendState === "failed" ||

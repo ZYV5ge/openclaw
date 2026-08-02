@@ -16,6 +16,12 @@ export type ChatAttachment = {
 
 export type ChatQueueSkillWorkshopRevision = { proposalId: string; agentId?: string };
 
+/** Paired identity of one authoritative transcript snapshot rendered by the UI. */
+export type ChatTranscriptRevision = {
+  expectedLeafEntryId: string | null;
+  sessionId?: string;
+};
+
 export type ChatQueueItem = {
   id: string;
   text: string;
@@ -46,6 +52,8 @@ export type ChatQueueItem = {
   agentId?: string;
   sender?: SenderIdentity;
   skillWorkshopRevision?: ChatQueueSkillWorkshopRevision;
+  /** Submit-time revision, refreshed only when an already-running history load completes. */
+  transcriptRevision?: ChatTranscriptRevision;
 };
 
 /** Union type for items in the chat thread */
