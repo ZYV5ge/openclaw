@@ -7594,71 +7594,81 @@ describe("handleSendChat", () => {
     ]);
   });
 
-  it("does not release a reconnect fence for a removed fresh admission", async () => {
+  it("does not release a reconnect fence for a removed fresh successor", async () => {
     const firstAck = createDeferred<unknown>();
-    const sends: Record<string, unknown>[] = [];
+    const sendPayloads: Array<Record<string, unknown>> = [];
+    const first = {
+      id: "stale-fresh-first",
+      text: "earlier reconnect row",
+      createdAt: 1,
+      sendAttempts: 0,
+      sendRunId: "stale-fresh-first-run",
+      sendState: "waiting-reconnect" as const,
+      sessionKey: "agent:main",
+    };
+    const fenced = {
+      id: "stale-fresh-fenced",
+      text: "keep this behind the reconnect fence",
+      createdAt: 2,
+      sendAttempts: 0,
+      sendRunId: "stale-fresh-fenced-run",
+      sendState: "waiting-reconnect" as const,
+      sessionKey: "agent:main",
+    };
     const request = makeRequestMock({
-      "chat.history": () => idleChatHistory(),
+      "chat.history": idleChatHistory(),
       "chat.send": (params: unknown) => {
-        const payload = requireRecord(params, "removed fresh admission payload");
-        sends.push(payload);
-        return sends.length === 1
+        const payload = requireRecord(params, "stale fresh admission payload");
+        sendPayloads.push(payload);
+        return sendPayloads.length === 1
           ? firstAck.promise
           : Promise.resolve({ runId: payload.idempotencyKey, status: "ok" });
       },
     });
     const client = clientWithRequest(request);
-    const firstItem = {
-      id: "first-before-removed-fresh-admission",
-      text: "first before removed fresh admission",
-      createdAt: 1,
-      sessionKey: "agent:main",
-    };
-    const fencedItem = {
-      id: "fenced-after-removed-fresh-admission",
-      text: "keep the fence after cancellation",
-      createdAt: 2,
-      sessionKey: "agent:main",
-    };
-    const host = makeHost({ client, chatQueue: [firstItem, fencedItem] });
-    const cancellingHost = makeHost({
+    const ownerHost = makeHost({
       client,
-      chatMessage: "cancel this fence release",
+      chatQueue: [first, fenced],
     });
-    admitHostQueueItems(host);
+    const cancellingHost = makeHost({ client });
+
+    admitHostQueueItems(ownerHost);
     parkStoredChatHistoryRefreshUntilReconnect(
-      host,
-      { sessionKey: host.sessionKey },
-      fencedItem.id,
+      ownerHost,
+      { sessionKey: fenced.sessionKey },
+      fenced.id,
     );
 
-    const draining = retryReconnectableQueuedChatSends(host);
-    await waitForFast(() => expect(sends).toHaveLength(1));
+    const draining = retryReconnectableQueuedChatSends(ownerHost);
+    await waitForFast(() => expect(sendPayloads).toHaveLength(1));
 
-    const cancelledSend = handleSendChat(cancellingHost);
-    await waitForFast(() =>
-      expect(
-        listStoredChatOutboxes(cancellingHost)[0]?.queue.some(
-          (entry) => entry.text === "cancel this fence release",
-        ),
-      ).toBe(true),
-    );
-    const cancelled = expectDefined(
-      listStoredChatOutboxes(cancellingHost)[0]?.queue.find(
-        (entry) => entry.text === "cancel this fence release",
-      ),
-      "cancelled reconnect-fence successor",
-    );
-    removeQueuedMessage(cancellingHost, cancelled.id);
+    const successorSend = handleSendChat(cancellingHost, "remove this fresh successor");
+    const queuedSuccessor = () =>
+      listStoredChatOutboxes(cancellingHost)
+        .flatMap((outbox) => outbox.queue)
+        .find((item) => item.text === "remove this fresh successor");
 
-    firstAck.resolve({ runId: sends[0]?.idempotencyKey, status: "ok" });
-    await Promise.all([draining, cancelledSend]);
+    await waitForFast(() => expect(queuedSuccessor()).toBeDefined());
+    expect(await raceWithMacrotask(successorSend)).toBe("pending");
 
-    expect(sends.map((payload) => payload.message)).toEqual([
-      "first before removed fresh admission",
+    const successor = expectDefined(queuedSuccessor(), "fresh successor");
+    removeQueuedMessage(cancellingHost, successor.id);
+    expect(queuedSuccessor()).toBeUndefined();
+
+    firstAck.resolve({
+      runId: sendPayloads[0]?.idempotencyKey,
+      status: "ok",
+    });
+    await Promise.all([draining, successorSend]);
+
+    expect(sendPayloads.map((payload) => payload.message)).toEqual([
+      "earlier reconnect row",
     ]);
-    expect(listStoredChatOutboxes(host)[0]?.queue).toEqual([
-      expect.objectContaining({ id: fencedItem.id, text: fencedItem.text }),
+    expect(listStoredChatOutboxes(ownerHost)[0]?.queue).toEqual([
+      expect.objectContaining({
+        id: fenced.id,
+        text: fenced.text,
+      }),
     ]);
   });
 
@@ -9935,4 +9945,5 @@ describe("handleAbortChat", () => {
   });
 });
 /* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */
+
 
