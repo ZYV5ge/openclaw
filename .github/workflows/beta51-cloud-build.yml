@@ -772,8 +772,8 @@ jobs:
             echo "::error::Dispatch the one existing personal repair branch."
             exit 1
           fi
-          if [[ "$TDD_PHASE" != "green" ]]; then
-            echo "::error::macOS packaging is permitted only after GREEN validation."
+          if [[ "$TDD_PHASE" != "red" && "$TDD_PHASE" != "green" ]]; then
+            echo "::error::macOS packaging accepts only RED or GREEN validation phases."
             exit 1
           fi
           if [[ ! "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
@@ -815,6 +815,25 @@ jobs:
             echo "::error::The build checkout is not clean."
             exit 1
           fi
+
+      - name: Check personal runtime version contract before native build
+        run: |
+          set -euo pipefail
+          node --input-type=module <<'NODE'
+          import assert from "node:assert/strict";
+          import { resolvePackageChangelogVersions } from "./scripts/package-changelog.mjs";
+
+          assert.deepEqual(
+            resolvePackageChangelogVersions("2026.7.2-beta.6.1"),
+            ["2026.7.2-beta.6.1", "2026.7.2", "Unreleased"],
+          );
+          NODE
+
+      - name: Stop after personal runtime RED evidence
+        if: ${{ inputs.phase == 'red' }}
+        run: |
+          echo "::error::RED contract unexpectedly passed; stopping before native build."
+          exit 1
 
       - name: Select pinned Xcode 26.6 and Swift 6.3
         run: |
