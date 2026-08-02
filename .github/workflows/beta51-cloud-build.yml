@@ -242,6 +242,14 @@ jobs:
             extensions/google/web-search-provider.test.ts \
             src/infra/startup-migration-checkpoint.ts \
             src/infra/startup-migration-checkpoint.test.ts \
+            src/commands/doctor-session-sqlite-compact.ts \
+            src/commands/doctor-session-sqlite-migration-run.ts \
+            src/commands/doctor-session-sqlite-types.ts \
+            src/commands/doctor-session-sqlite.test.ts \
+            src/commands/doctor-session-sqlite.ts \
+            src/commands/doctor-sqlite-compact.ts \
+            src/commands/doctor-state-sqlite-compact.test.ts \
+            src/commands/doctor-state-sqlite-compact.ts \
             src/state/openclaw-state-db-startup-checkpoint.ts \
             src/state/openclaw-state-db.ts \
             src/state/openclaw-state-db.test.ts \
