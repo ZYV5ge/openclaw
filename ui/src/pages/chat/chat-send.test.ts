@@ -7189,9 +7189,7 @@ describe("handleSendChat", () => {
       currentSessionId: "session-stable",
     });
 
-    const refresh = loadChatHistory(
-      host as unknown as Parameters<typeof loadChatHistory>[0],
-    );
+    const refresh = loadChatHistory(host as unknown as Parameters<typeof loadChatHistory>[0]);
     await waitForFast(() => expect(host.chatLoading).toBe(true));
     const send = handleSendChat(host);
 
@@ -7351,9 +7349,7 @@ describe("handleSendChat", () => {
       sessionKey,
     });
 
-    const refresh = loadChatHistory(
-      host as unknown as Parameters<typeof loadChatHistory>[0],
-    );
+    const refresh = loadChatHistory(host as unknown as Parameters<typeof loadChatHistory>[0]);
     await waitForFast(() => expect(host.chatLoading).toBe(true));
     const send = handleSendChat(host);
 
@@ -7498,9 +7494,7 @@ describe("handleSendChat", () => {
 
     const firstSend = handleSendChat(firstHost, "first pane turn");
     await waitForFast(() => expect(sends).toHaveLength(1));
-    const refresh = loadChatHistory(
-      secondHost as unknown as Parameters<typeof loadChatHistory>[0],
-    );
+    const refresh = loadChatHistory(secondHost as unknown as Parameters<typeof loadChatHistory>[0]);
     await waitForFast(() => expect(secondHost.chatLoading).toBe(true));
     const secondSend = handleSendChat(secondHost);
     await waitForFast(() => expect(secondHost.chatMessage).toBe(""));
@@ -7523,9 +7517,7 @@ describe("handleSendChat", () => {
     expect(sends.map((payload) => payload.message)).toEqual(["first pane turn"]);
     expect(firstHost.chatError).toBeNull();
     expect(firstHost.chatMessage).toBe("");
-    expect(secondHost.chatError).toBe(
-      "The thread switched branches — review and resend.",
-    );
+    expect(secondHost.chatError).toBe("The thread switched branches — review and resend.");
     expect(secondHost.chatMessage).toBe("second pane draft");
     expect(listStoredChatOutboxes(secondHost)[0]?.queue[0]).toMatchObject({
       sendState: "failed",
@@ -7563,9 +7555,7 @@ describe("handleSendChat", () => {
 
     const firstSend = handleSendChat(firstHost, "first pane before reconnect");
     await waitForFast(() => expect(sends).toHaveLength(1));
-    const refresh = loadChatHistory(
-      secondHost as unknown as Parameters<typeof loadChatHistory>[0],
-    );
+    const refresh = loadChatHistory(secondHost as unknown as Parameters<typeof loadChatHistory>[0]);
     await waitForFast(() => expect(secondHost.chatLoading).toBe(true));
     const secondSend = handleSendChat(secondHost);
 
@@ -7583,9 +7573,7 @@ describe("handleSendChat", () => {
     });
     await Promise.all([firstSend, refresh, secondSend]);
 
-    expect(sends.map((payload) => payload.message)).toEqual([
-      "first pane before reconnect",
-    ]);
+    expect(sends.map((payload) => payload.message)).toEqual(["first pane before reconnect"]);
     expect(listStoredChatOutboxes(secondHost)[0]?.queue[0]).toMatchObject({
       text: "keep this behind the reconnect fence",
       transcriptRevision: {
@@ -7618,9 +7606,7 @@ describe("handleSendChat", () => {
       currentSessionId: "session-stable",
     });
 
-    const refresh = loadChatHistory(
-      host as unknown as Parameters<typeof loadChatHistory>[0],
-    );
+    const refresh = loadChatHistory(host as unknown as Parameters<typeof loadChatHistory>[0]);
     await waitForFast(() => expect(host.chatLoading).toBe(true));
     const send = handleSendChat(host);
     await waitForFast(() => expect(host.chatQueue).toHaveLength(1));
@@ -7698,9 +7684,7 @@ describe("handleSendChat", () => {
     await Promise.all([refresh, send]);
 
     expect(sends).toStrictEqual([]);
-    expect(host.chatError).not.toBe(
-      "The thread switched branches — review and resend.",
-    );
+    expect(host.chatError).not.toBe("The thread switched branches — review and resend.");
     expect(host.chatMessage).toBe("");
     expect(listStoredChatOutboxes(host)[0]?.queue[0]).toMatchObject({
       sendAttempts: 2,

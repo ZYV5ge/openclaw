@@ -41,9 +41,7 @@ export type QueuedChatHistoryRefreshContext = {
 };
 export type QueuedChatSendOptions = {
   /** Rebind against the submitting pane after its in-flight history refresh. */
-  refreshDisplayedTranscriptRevisionAfterHistory?:
-    | true
-    | QueuedChatHistoryRefreshContext;
+  refreshDisplayedTranscriptRevisionAfterHistory?: true | QueuedChatHistoryRefreshContext;
   pendingSettings?: Promise<boolean>;
   previousAttachments?: ChatAttachment[];
   previousDraft?: string;
