@@ -2,7 +2,6 @@ import {
   DEFAULT_GATEWAY_REQUEST_TIMEOUT_MS,
   resolveGatewayStartupRetryAfterMs,
 } from "@openclaw/gateway-client/browser";
-
 import { initialState, Task, TaskStatus } from "@lit/task";
 import type { ReactiveController, ReactiveControllerHost } from "lit";
 import type { GatewayAgentRow, GatewaySessionRow, ModelCatalogEntry } from "../../api/types.ts";
@@ -102,7 +101,6 @@ async function requestNewSessionMetadata(
     }
   }
 }
-
 
 type DraftModelTarget = {
   entry?: ModelCatalogEntry;

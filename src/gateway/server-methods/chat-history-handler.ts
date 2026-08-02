@@ -160,7 +160,6 @@ async function buildChatMetadataResult(params: {
     ...(commandsResult.status === "fulfilled" ? commandsResult.value : {}),
     swarmEnabled: resolveSwarmConfig(params.cfg, params.agentId).enabled,
   };
-
 }
 
 async function buildChatStartupModelCatalogProjection(params: {
