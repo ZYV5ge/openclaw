@@ -736,9 +736,14 @@ jobs:
     if: ${{ inputs.suite == 'beta6-macos-package' }}
     permissions:
       contents: read
-    name: Build OpenClaw 2026.7.2-beta.6.1 macOS universal package
+    name: Build OpenClaw 2026.7.2-beta.6.1 universal App and Intel staging
     runs-on: macos-26-intel
     timeout-minutes: 180
+    outputs:
+      artifact_name: ${{ steps.release_meta.outputs.artifact_name }}
+      build_timestamp: ${{ steps.release_meta.outputs.build_timestamp }}
+      staging_cache_key: ${{ steps.release_meta.outputs.staging_cache_key }}
+      raw_package_name: ${{ steps.source_package.outputs.raw_package_name }}
     env:
       SOURCE_SHA: ${{ inputs.source_sha }}
       GIT_COMMIT: ${{ inputs.source_sha }}
@@ -899,10 +904,13 @@ jobs:
           fi
           short_sha="$(printf '%.12s' "$SOURCE_SHA")"
           artifact_name="OpenClaw-$APP_VERSION-macos-universal-$short_sha"
+          staging_cache_key="openclaw-macos-intel-stage-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-$SOURCE_SHA"
           bundle_dir=".artifacts/personal-release/upload"
           mkdir -p "$bundle_dir"
           echo "OPENCLAW_BUILD_TIMESTAMP=$build_timestamp" >> "$GITHUB_ENV"
           echo "artifact_name=$artifact_name" >> "$GITHUB_OUTPUT"
+          echo "build_timestamp=$build_timestamp" >> "$GITHUB_OUTPUT"
+          echo "staging_cache_key=$staging_cache_key" >> "$GITHUB_OUTPUT"
           echo "bundle_dir=$bundle_dir" >> "$GITHUB_OUTPUT"
           {
             echo "Source SHA: $SOURCE_SHA"
@@ -1020,28 +1028,28 @@ jobs:
           test -s "dist/OpenClaw-$APP_VERSION.dmg"
           df -h .
 
-      - name: Package same-checkout Core Gateway runtime
-        id: runtime
+      - name: Package same-checkout raw npm source archive
+        id: source_package
         run: |
           set -euo pipefail
-          runtime_dir=".artifacts/personal-release/runtime"
+          package_dir=".artifacts/personal-release/runtime-source"
           short_sha="$(printf '%.12s' "$SOURCE_SHA")"
-          runtime_name="openclaw-$APP_VERSION-runtime-$short_sha.tgz"
-          mkdir -p "$runtime_dir"
+          raw_package_name="openclaw-$APP_VERSION-source-npm-$short_sha.tgz"
+          mkdir -p "$package_dir"
           node scripts/package-openclaw-for-docker.mjs \
             --skip-build \
             --allow-unreleased-changelog \
-            --output-dir "$runtime_dir" \
-            --output-name "$runtime_name"
-          runtime_path="$PWD/$runtime_dir/$runtime_name"
-          test -s "$runtime_path"
-          echo "runtime_path=$runtime_path" >> "$GITHUB_OUTPUT"
-          echo "runtime_name=$runtime_name" >> "$GITHUB_OUTPUT"
+            --output-dir "$package_dir" \
+            --output-name "$raw_package_name"
+          raw_package_path="$PWD/$package_dir/$raw_package_name"
+          test -s "$raw_package_path"
+          echo "raw_package_path=$raw_package_path" >> "$GITHUB_OUTPUT"
+          echo "raw_package_name=$raw_package_name" >> "$GITHUB_OUTPUT"
 
-      - name: Verify App runtime Control UI signing and architectures
+      - name: Verify App and raw npm source package signing architectures and Control UI
         env:
-          RUNTIME_TGZ: ${{ steps.runtime.outputs.runtime_path }}
-          RUNTIME_NAME: ${{ steps.runtime.outputs.runtime_name }}
+          RAW_PACKAGE_TGZ: ${{ steps.source_package.outputs.raw_package_path }}
+          RAW_PACKAGE_NAME: ${{ steps.source_package.outputs.raw_package_name }}
           BUNDLE_DIR: ${{ steps.release_meta.outputs.bundle_dir }}
         run: |
           set -euo pipefail
@@ -1073,7 +1081,7 @@ jobs:
           mkdir -p "$BUNDLE_DIR"
           cp "$zip" "$BUNDLE_DIR/"
           cp "$dmg" "$BUNDLE_DIR/"
-          cp "$RUNTIME_TGZ" "$BUNDLE_DIR/"
+          cp "$RAW_PACKAGE_TGZ" "$BUNDLE_DIR/"
           verify_app_metadata "$app"
           codesign -dv --verbose=4 "$app" >"$BUNDLE_DIR/signature.txt" 2>&1
           cat "$BUNDLE_DIR/signature.txt"
@@ -1118,47 +1126,17 @@ jobs:
           hdiutil detach "$dmg_mount" >/dev/null
           dmg_attached=0
           trap - EXIT
-          runtime_check="$RUNNER_TEMP/openclaw-runtime-check"
-          rm -rf "$runtime_check"
-          mkdir -p "$runtime_check"
-          tar -xzf "$RUNTIME_TGZ" -C "$runtime_check"
-          runtime_package="$runtime_check/package"
-          test -s "$runtime_package/package.json"
-          test -s "$runtime_package/dist/build-info.json"
-          test -s "$runtime_package/dist/control-ui/index.html"
-          env -u NODE_PATH RUNTIME_ROOT="$runtime_package" node --input-type=module <<'NODE'
-          import { createRequire } from "node:module";
-          import fs from "node:fs";
-          import path from "node:path";
-
-          const runtimeRoot = process.env.RUNTIME_ROOT;
-          const runtimePackage = JSON.parse(
-            fs.readFileSync(path.join(runtimeRoot, "package.json"), "utf8"),
-          );
-          const runtimeRequire = createRequire(path.join(runtimeRoot, "package.json"));
-          const missing = Object.keys(runtimePackage.dependencies ?? {}).filter((name) => {
-            try {
-              runtimeRequire.resolve(name);
-              return false;
-            } catch {
-              return true;
-            }
-          });
-          if (missing.length > 0) {
-            throw new Error(
-              "packaged runtime has unresolved production dependencies: " + missing.join(", "),
-            );
-          }
-          NODE
-          runtime_smoke_home="$RUNNER_TEMP/openclaw-runtime-smoke-home"
-          mkdir -p "$runtime_smoke_home"
-          env -u NODE_PATH \
-            HOME="$runtime_smoke_home" \
-            OPENCLAW_STATE_DIR="$runtime_smoke_home/.openclaw" \
-            node "$runtime_package/openclaw.mjs" doctor --non-interactive
+          raw_package_check="$RUNNER_TEMP/openclaw-runtime-check"
+          rm -rf "$raw_package_check"
+          mkdir -p "$raw_package_check"
+          tar -xzf "$RAW_PACKAGE_TGZ" -C "$raw_package_check"
+          raw_package="$raw_package_check/package"
+          test -s "$raw_package/package.json"
+          test -s "$raw_package/dist/build-info.json"
+          test -s "$raw_package/dist/control-ui/index.html"
           ROOT_UI="$PWD/dist/control-ui" \
           APP_UI="$PWD/$app/Contents/Resources/control-ui" \
-          RUNTIME_UI="$runtime_package/dist/control-ui" \
+          RUNTIME_UI="$raw_package/dist/control-ui" \
           MANIFEST_DIR="$BUNDLE_DIR" \
           node --input-type=module <<'NODE'
           import fs from "node:fs";
@@ -1173,7 +1151,7 @@ jobs:
             packageFiles: packageJson.files,
           });
           NODE
-          RUNTIME_ROOT="$runtime_package" node --input-type=module <<'NODE'
+          RAW_PACKAGE_ROOT="$raw_package" node --input-type=module <<'NODE'
           import fs from "node:fs";
           import path from "node:path";
           const expected = {
@@ -1181,11 +1159,11 @@ jobs:
             commit: process.env.SOURCE_SHA,
             builtAt: process.env.OPENCLAW_BUILD_TIMESTAMP,
           };
-          const runtimePackage = JSON.parse(fs.readFileSync(path.join(process.env.RUNTIME_ROOT, "package.json"), "utf8"));
+          const runtimePackage = JSON.parse(fs.readFileSync(path.join(process.env.RAW_PACKAGE_ROOT, "package.json"), "utf8"));
           if (runtimePackage.version !== expected.version) {
             throw new Error("runtime package version " + runtimePackage.version + ", expected " + expected.version);
           }
-          for (const file of ["dist/build-info.json", path.join(process.env.RUNTIME_ROOT, "dist/build-info.json")]) {
+          for (const file of ["dist/build-info.json", path.join(process.env.RAW_PACKAGE_ROOT, "dist/build-info.json")]) {
             const info = JSON.parse(fs.readFileSync(file, "utf8"));
             for (const [key, value] of Object.entries(expected)) {
               if (info[key] !== value) {
@@ -1211,11 +1189,10 @@ jobs:
             "$root_runtime_manifest_sha" \
             >"$BUNDLE_DIR/control-ui-manifest.sha256"
 
-      - name: Write provenance and SHA256SUMS
+      - name: Write immutable Intel staging receipt and checksums
         env:
           BUNDLE_DIR: ${{ steps.release_meta.outputs.bundle_dir }}
-          ARTIFACT_NAME: ${{ steps.release_meta.outputs.artifact_name }}
-          RUNTIME_NAME: ${{ steps.runtime.outputs.runtime_name }}
+          RAW_PACKAGE_NAME: ${{ steps.source_package.outputs.raw_package_name }}
         run: |
           set -euo pipefail
           node --input-type=module <<'NODE'
@@ -1223,17 +1200,407 @@ jobs:
           import fs from "node:fs";
           import path from "node:path";
           const bundleDir = process.env.BUNDLE_DIR;
-          const digest = (file) => crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex");
-          const artifactFiles = fs
+          const rawPackage = path.join(bundleDir, process.env.RAW_PACKAGE_NAME);
+          const rawSha256 = crypto.createHash("sha256").update(fs.readFileSync(rawPackage)).digest("hex");
+          const receipt = {
+            schemaVersion: 1,
+            purpose: "immutable Intel-built components for ARM64 runtime assembly",
+            sourceSha: process.env.SOURCE_SHA,
+            frozenOfficialSha: process.env.FROZEN_UPSTREAM_SHA,
+            version: process.env.APP_VERSION,
+            appBuild: process.env.APP_BUILD,
+            buildTimestamp: process.env.OPENCLAW_BUILD_TIMESTAMP,
+            workflowRunId: process.env.GITHUB_RUN_ID,
+            workflowRunAttempt: process.env.GITHUB_RUN_ATTEMPT,
+            runner: "macos-26-intel",
+            runnerArch: process.env.RUNNER_ARCH,
+            xcode: process.env.OPENCLAW_XCODE_VERSION,
+            appArchitectures: ["arm64", "x86_64"],
+            appSignature: "ad-hoc",
+            rawNpmArchive: process.env.RAW_PACKAGE_NAME,
+            rawNpmSha256,
+          };
+          fs.writeFileSync(
+            path.join(bundleDir, "intel-build-receipt.json"),
+            JSON.stringify(receipt, null, 2) + "\n",
+          );
+          NODE
+          node --input-type=module <<'NODE'
+          import crypto from "node:crypto";
+          import fs from "node:fs";
+          import path from "node:path";
+          const bundleDir = process.env.BUNDLE_DIR;
+          const lines = fs
             .readdirSync(bundleDir)
+            .filter((name) => name !== "INTEL-STAGING-SHA256SUMS")
             .filter((name) => fs.statSync(path.join(bundleDir, name)).isFile())
+            .toSorted()
+            .map((name) => crypto.createHash("sha256").update(fs.readFileSync(path.join(bundleDir, name))).digest("hex") + "  " + name);
+          fs.writeFileSync(path.join(bundleDir, "INTEL-STAGING-SHA256SUMS"), lines.join("\n") + "\n");
+          NODE
+          (cd "$BUNDLE_DIR" && shasum -a 256 -c INTEL-STAGING-SHA256SUMS)
+          {
+            echo "## Intel staging components ready"
+            echo
+            echo "- Version: $APP_VERSION"
+            echo "- Build: $APP_BUILD"
+            echo "- Source: $SOURCE_SHA"
+            echo "- App: universal arm64 + x86_64, ad-hoc signed"
+            echo "- Runtime input: raw npm source archive; not a runnable runtime"
+            echo "- Next: native macos-26 ARM64 installation and validation"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Save immutable Intel staging components to Actions cache
+        uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: ${{ steps.release_meta.outputs.bundle_dir }}
+          key: ${{ steps.release_meta.outputs.staging_cache_key }}
+
+  macos_runtime_arm64:
+    if: ${{ inputs.suite == 'beta6-macos-package' && inputs.phase == 'green' }}
+    needs: macos_package
+    permissions:
+      contents: read
+    name: Assemble and validate OpenClaw 2026.7.2-beta.6.1 darwin-arm64 runtime
+    runs-on: macos-26
+    timeout-minutes: 90
+    env:
+      SOURCE_SHA: ${{ inputs.source_sha }}
+      GIT_COMMIT: ${{ inputs.source_sha }}
+      APP_VERSION: "2026.7.2-beta.6.1"
+      APP_BUILD: "2607000206"
+      BUNDLE_ID: "ai.openclaw.mac"
+      OPENCLAW_BUILD_TIMESTAMP: ${{ needs.macos_package.outputs.build_timestamp }}
+      RAW_PACKAGE_NAME: ${{ needs.macos_package.outputs.raw_package_name }}
+      FINAL_ARTIFACT_NAME: ${{ needs.macos_package.outputs.artifact_name }}
+      STAGING_CACHE_KEY: ${{ needs.macos_package.outputs.staging_cache_key }}
+      BUNDLE_DIR: ${{ github.workspace }}/.artifacts/personal-release/upload
+      FINAL_DIR: ${{ github.workspace }}/.artifacts/personal-release/final-upload
+      NODE_OPTIONS: "--max-old-space-size=4096"
+
+    steps:
+      - name: Validate immutable public ARM64 build dispatch
+        env:
+          EVENT_SHA: ${{ github.sha }}
+          CURRENT_REPOSITORY: ${{ github.repository }}
+          REPOSITORY_IS_PRIVATE: ${{ github.event.repository.private }}
+          CURRENT_REF: ${{ github.ref }}
+          TDD_PHASE: ${{ inputs.phase }}
+        run: |
+          set -euo pipefail
+          if [[ "$CURRENT_REPOSITORY" != "$PERSONAL_RELEASE_REPOSITORY" ]]; then
+            echo "::error::This workflow is restricted to $PERSONAL_RELEASE_REPOSITORY."
+            exit 1
+          fi
+          if [[ "$REPOSITORY_IS_PRIVATE" != "false" ]]; then
+            echo "::error::The personal build must use a public repository and standard free runners."
+            exit 1
+          fi
+          if [[ "$CURRENT_REF" != "refs/heads/agent/openclaw-beta-5-1" ]]; then
+            echo "::error::Dispatch the one existing personal repair branch."
+            exit 1
+          fi
+          if [[ "$TDD_PHASE" != "green" ]]; then
+            echo "::error::ARM64 runtime assembly is a GREEN-only delivery step."
+            exit 1
+          fi
+          if [[ ! "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::source_sha must be a full lowercase Git SHA."
+            exit 1
+          fi
+          if [[ "$EVENT_SHA" != "$SOURCE_SHA" ]]; then
+            echo "::error::The dispatched ref resolved to $EVENT_SHA, expected $SOURCE_SHA."
+            exit 1
+          fi
+          if [[ "$RUNNER_ARCH" != "ARM64" || "$(uname -m)" != "arm64" ]]; then
+            echo "::error::Expected standard macos-26 ARM64 runner; RUNNER_ARCH=$RUNNER_ARCH uname=$(uname -m)."
+            exit 1
+          fi
+
+      - name: Checkout exact frozen source
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          ref: ${{ inputs.source_sha }}
+          fetch-depth: 200
+          persist-credentials: false
+
+      - name: Verify frozen official ancestry on ARM64
+        run: |
+          set -euo pipefail
+          if [[ "$(git rev-parse HEAD)" != "$SOURCE_SHA" ]]; then
+            echo "::error::Checkout did not resolve to $SOURCE_SHA."
+            exit 1
+          fi
+          official_remote="official-openclaw"
+          official_url="https://github.com/openclaw/openclaw.git"
+          if git remote get-url "$official_remote" >/dev/null 2>&1; then
+            git remote set-url "$official_remote" "$official_url"
+          else
+            git remote add "$official_remote" "$official_url"
+          fi
+          git fetch --no-tags --filter=blob:none "$official_remote" "$FROZEN_UPSTREAM_SHA"
+          if ! git merge-base --is-ancestor "$FROZEN_UPSTREAM_SHA" "$SOURCE_SHA"; then
+            echo "::error::Source does not contain frozen official main $FROZEN_UPSTREAM_SHA."
+            exit 1
+          fi
+          if [[ -n "$(git status --porcelain=v1 --untracked-files=all)" ]]; then
+            echo "::error::The ARM64 checkout is not clean."
+            exit 1
+          fi
+
+      - name: Setup pinned Node 24 on ARM64
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          check-latest: false
+
+      - name: Verify native Node architecture
+        run: |
+          set -euo pipefail
+          node --version
+          npm --version
+          if [[ "$(node -p 'process.arch')" != "arm64" ]]; then
+            echo "::error::Expected arm64 Node runtime."
+            exit 1
+          fi
+
+      - name: Restore immutable Intel staging components
+        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: ${{ env.BUNDLE_DIR }}
+          key: ${{ env.STAGING_CACHE_KEY }}
+          fail-on-cache-miss: true
+
+      - name: Verify Intel staging component checksums
+        run: |
+          set -euo pipefail
+          test -s "$BUNDLE_DIR/INTEL-STAGING-SHA256SUMS"
+          test -s "$BUNDLE_DIR/$RAW_PACKAGE_NAME"
+          test -s "$BUNDLE_DIR/intel-build-receipt.json"
+          (cd "$BUNDLE_DIR" && shasum -a 256 -c INTEL-STAGING-SHA256SUMS)
+          node --input-type=module <<'NODE'
+          import fs from "node:fs";
+          const receipt = JSON.parse(fs.readFileSync(process.env.BUNDLE_DIR + "/intel-build-receipt.json", "utf8"));
+          const expected = {
+            sourceSha: process.env.SOURCE_SHA,
+            frozenOfficialSha: process.env.FROZEN_UPSTREAM_SHA,
+            version: process.env.APP_VERSION,
+            appBuild: process.env.APP_BUILD,
+            buildTimestamp: process.env.OPENCLAW_BUILD_TIMESTAMP,
+            rawNpmArchive: process.env.RAW_PACKAGE_NAME,
+          };
+          for (const [key, value] of Object.entries(expected)) {
+            if (receipt[key] !== value) {
+              throw new Error("Intel receipt " + key + "=" + receipt[key] + ", expected " + value);
+            }
+          }
+          NODE
+
+      - name: Install production dependency closure and package ARM64 runtime
+        id: arm_runtime
+        run: |
+          set -euo pipefail
+          raw_package="$BUNDLE_DIR/$RAW_PACKAGE_NAME"
+          runtime_prefix="$RUNNER_TEMP/openclaw-installed-prefix"
+          npm_cache="$RUNNER_TEMP/openclaw-npm-cache"
+          archive_root="$RUNNER_TEMP/openclaw-runtime-archive"
+          mkdir -p "$runtime_prefix" "$npm_cache" "$archive_root"
+          (
+            cd "$RUNNER_TEMP"
+            env -u NODE_PATH -u npm_config_arch -u npm_config_platform \
+              npm_config_cache="$npm_cache" \
+              npm install --global \
+                --prefix "$runtime_prefix" \
+                --omit=dev \
+                --include=optional \
+                --no-audit \
+                --no-fund \
+                "$raw_package"
+          )
+          runtime_root="$runtime_prefix/lib/node_modules/openclaw"
+          test -s "$runtime_root/openclaw.mjs"
+          test -d "$runtime_root/node_modules"
+          test -s "$runtime_root/dist/build-info.json"
+          test -s "$runtime_root/dist/control-ui/index.html"
+          npm ls --global --prefix "$runtime_prefix" --omit=dev --all --json > "$BUNDLE_DIR/runtime-npm-tree.json"
+          raw_sha="$(shasum -a 256 "$raw_package" | awk '{print $1}')"
+          short_sha="$(printf '%.12s' "$SOURCE_SHA")"
+          runtime_name="openclaw-$APP_VERSION-runtime-darwin-arm64-$short_sha.tgz"
+          mv "$runtime_root" "$archive_root/package"
+          COPYFILE_DISABLE=1 tar -czf "$BUNDLE_DIR/$runtime_name" -C "$archive_root" package
+          test -s "$BUNDLE_DIR/$runtime_name"
+          echo "runtime_name=$runtime_name" >> "$GITHUB_OUTPUT"
+          echo "runtime_path=$BUNDLE_DIR/$runtime_name" >> "$GITHUB_OUTPUT"
+          echo "raw_sha=$raw_sha" >> "$GITHUB_OUTPUT"
+
+      - name: Verify runnable self-contained ARM64 runtime
+        env:
+          RUNTIME_TGZ: ${{ steps.arm_runtime.outputs.runtime_path }}
+        run: |
+          set -euo pipefail
+          runtime_check="$RUNNER_TEMP/openclaw-runtime-final-check"
+          mkdir -p "$runtime_check"
+          tar -xzf "$RUNTIME_TGZ" -C "$runtime_check"
+          runtime_package="$runtime_check/package"
+          test -s "$runtime_package/package.json"
+          test -s "$runtime_package/openclaw.mjs"
+          test -s "$runtime_package/dist/build-info.json"
+          test -s "$runtime_package/dist/control-ui/index.html"
+          env -u NODE_PATH RUNTIME_ROOT="$runtime_package" node --input-type=module <<'NODE'
+          import { createRequire } from "node:module";
+          import fs from "node:fs";
+          import path from "node:path";
+          const runtimeRoot = fs.realpathSync(process.env.RUNTIME_ROOT);
+          const packageJson = JSON.parse(fs.readFileSync(path.join(runtimeRoot, "package.json"), "utf8"));
+          const runtimeRequire = createRequire(path.join(runtimeRoot, "package.json"));
+          const failures = [];
+          for (const name of Object.keys(packageJson.dependencies ?? {})) {
+            try {
+              const resolved = fs.realpathSync(runtimeRequire.resolve(name));
+              const relative = path.relative(runtimeRoot, resolved);
+              if (relative.startsWith(".." + path.sep) || path.isAbsolute(relative)) {
+                failures.push(name + " resolved outside runtime: " + resolved);
+              }
+            } catch (error) {
+              failures.push(name + " unresolved: " + String(error));
+            }
+          }
+          if (failures.length > 0) {
+            throw new Error("installed runtime dependency closure failed:\n" + failures.join("\n"));
+          }
+          runtimeRequire.resolve("tslog");
+          NODE
+          runtime_smoke_home="$RUNNER_TEMP/openclaw-runtime-smoke-home"
+          mkdir -p "$runtime_smoke_home"
+          version_output="$(
+            env -u NODE_PATH \
+              HOME="$runtime_smoke_home" \
+              OPENCLAW_STATE_DIR="$runtime_smoke_home/.openclaw" \
+              node "$runtime_package/openclaw.mjs" --version
+          )"
+          if [[ "$version_output" != "$APP_VERSION" && "$version_output" != "OpenClaw $APP_VERSION" ]]; then
+            echo "::error::Unexpected runtime version: $version_output"
+            exit 1
+          fi
+          env -u NODE_PATH HOME="$runtime_smoke_home" OPENCLAW_STATE_DIR="$runtime_smoke_home/.openclaw" \
+            node "$runtime_package/openclaw.mjs" gateway --help >/dev/null
+          env -u NODE_PATH HOME="$runtime_smoke_home" OPENCLAW_STATE_DIR="$runtime_smoke_home/.openclaw" \
+            node "$runtime_package/openclaw.mjs" doctor --non-interactive \
+            | tee "$BUNDLE_DIR/runtime-doctor-smoke.txt"
+          pty_node="$(find "$runtime_package/node_modules" -path '*/@lydell/node-pty-darwin-arm64/prebuilds/darwin-arm64/pty.node' -type f -print -quit)"
+          spawn_helper="$(find "$runtime_package/node_modules" -path '*/@lydell/node-pty-darwin-arm64/prebuilds/darwin-arm64/spawn-helper' -type f -print -quit)"
+          sqlite_vec="$(find "$runtime_package/node_modules" -path '*/sqlite-vec-darwin-arm64/vec0.dylib' -type f -print -quit)"
+          test -n "$pty_node"
+          test -n "$spawn_helper"
+          test -n "$sqlite_vec"
+          test -x "$spawn_helper"
+          [[ "$(lipo -archs "$pty_node")" == "arm64" ]]
+          [[ "$(lipo -archs "$spawn_helper")" == "arm64" ]]
+          [[ "$(lipo -archs "$sqlite_vec")" == "arm64" ]]
+          if find "$runtime_package/node_modules" -type d \( -name '@lydell/node-pty-darwin-x64' -o -name 'sqlite-vec-darwin-x64' \) -print -quit | grep -q .; then
+            echo "::error::ARM64 runtime contains a darwin-x64 native optional package."
+            exit 1
+          fi
+          {
+            file "$pty_node"
+            file "$spawn_helper"
+            file "$sqlite_vec"
+          } | tee "$BUNDLE_DIR/runtime-arm64-native.txt"
+          env -u NODE_PATH RUNTIME_ROOT="$runtime_package" node --input-type=module <<'NODE'
+          import { createRequire } from "node:module";
+          import fs from "node:fs";
+          import path from "node:path";
+          import { DatabaseSync } from "node:sqlite";
+          const runtimeRoot = fs.realpathSync(process.env.RUNTIME_ROOT);
+          const runtimeRequire = createRequire(path.join(runtimeRoot, "package.json"));
+          const pty = runtimeRequire("@lydell/node-pty");
+          if (typeof pty.spawn !== "function") throw new Error("@lydell/node-pty did not expose spawn()");
+          const sqliteVec = runtimeRequire("sqlite-vec");
+          const extensionPath = fs.realpathSync(sqliteVec.getLoadablePath());
+          const relative = path.relative(runtimeRoot, extensionPath);
+          if (relative.startsWith(".." + path.sep) || path.isAbsolute(relative) || !extensionPath.includes("sqlite-vec-darwin-arm64")) {
+            throw new Error("sqlite-vec resolved outside the ARM64 runtime: " + extensionPath);
+          }
+          const db = new DatabaseSync(":memory:", { allowExtension: true });
+          sqliteVec.load(db);
+          const row = db.prepare("SELECT vec_version() AS version").get();
+          db.close();
+          if (typeof row?.version !== "string" || row.version.trim().length === 0) {
+            throw new Error("sqlite-vec did not return vec_version()");
+          }
+          console.log("node-pty load: ok");
+          console.log("sqlite-vec load: " + row.version);
+          NODE
+          RUNTIME_ROOT="$runtime_package" node --input-type=module <<'NODE'
+          import fs from "node:fs";
+          import path from "node:path";
+          import { buildControlUiManifest } from "./scripts/verify-control-ui-release-parity.mjs";
+          const expected = JSON.parse(fs.readFileSync(path.join(process.env.BUNDLE_DIR, "control-ui-runtime.manifest.json"), "utf8"));
+          const actual = buildControlUiManifest(path.join(process.env.RUNTIME_ROOT, "dist/control-ui"));
+          if (JSON.stringify(actual) !== JSON.stringify(expected)) {
+            throw new Error("installed ARM64 runtime Control UI differs from the verified raw package");
+          }
+          fs.writeFileSync(
+            path.join(process.env.BUNDLE_DIR, "control-ui-runtime-arm64.manifest.json"),
+            JSON.stringify(actual, null, 2) + "\n",
+          );
+          const expectedBuild = {
+            version: process.env.APP_VERSION,
+            commit: process.env.SOURCE_SHA,
+            builtAt: process.env.OPENCLAW_BUILD_TIMESTAMP,
+          };
+          const packageJson = JSON.parse(fs.readFileSync(path.join(process.env.RUNTIME_ROOT, "package.json"), "utf8"));
+          if (packageJson.version !== expectedBuild.version) throw new Error("installed runtime package version mismatch");
+          const buildInfo = JSON.parse(fs.readFileSync(path.join(process.env.RUNTIME_ROOT, "dist/build-info.json"), "utf8"));
+          for (const [key, value] of Object.entries(expectedBuild)) {
+            if (buildInfo[key] !== value) {
+              throw new Error("installed runtime build-info " + key + "=" + buildInfo[key] + ", expected " + value);
+            }
+          }
+          NODE
+
+      - name: Write final provenance and SHA256SUMS
+        env:
+          RUNTIME_NAME: ${{ steps.arm_runtime.outputs.runtime_name }}
+          RAW_NPM_SHA256: ${{ steps.arm_runtime.outputs.raw_sha }}
+        run: |
+          set -euo pipefail
+          if [[ -e "$FINAL_DIR" ]]; then
+            echo "::error::Final output directory unexpectedly already exists."
+            exit 1
+          fi
+          mkdir -p "$FINAL_DIR"
+          node --input-type=module <<'NODE'
+          import fs from "node:fs";
+          import path from "node:path";
+          for (const name of fs.readdirSync(process.env.BUNDLE_DIR).toSorted()) {
+            const source = path.join(process.env.BUNDLE_DIR, name);
+            if (!fs.statSync(source).isFile()) continue;
+            if (name === process.env.RAW_PACKAGE_NAME || name === "INTEL-STAGING-SHA256SUMS") continue;
+            fs.copyFileSync(source, path.join(process.env.FINAL_DIR, name));
+          }
+          fs.copyFileSync(
+            path.join(process.env.BUNDLE_DIR, "INTEL-STAGING-SHA256SUMS"),
+            path.join(process.env.FINAL_DIR, "intel-staging-components.sha256-receipt"),
+          );
+          NODE
+          node --input-type=module <<'NODE'
+          import crypto from "node:crypto";
+          import fs from "node:fs";
+          import path from "node:path";
+          const finalDir = process.env.FINAL_DIR;
+          const digest = (file) => crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex");
+          const intelReceipt = JSON.parse(fs.readFileSync(path.join(finalDir, "intel-build-receipt.json"), "utf8"));
+          const artifactFiles = fs
+            .readdirSync(finalDir)
+            .filter((name) => fs.statSync(path.join(finalDir, name)).isFile())
             .toSorted();
           const files = Object.fromEntries(artifactFiles.map((name) => {
-            const file = path.join(bundleDir, name);
+            const file = path.join(finalDir, name);
             return [name, { bytes: fs.statSync(file).size, sha256: digest(file) }];
           }));
           const provenance = {
-            schemaVersion: 1,
+            schemaVersion: 2,
             product: "OpenClaw",
             version: process.env.APP_VERSION,
             appBuild: process.env.APP_BUILD,
@@ -1245,12 +1612,11 @@ jobs:
             },
             build: {
               builtAt: process.env.OPENCLAW_BUILD_TIMESTAMP,
-              runner: "macos-26-intel",
-              runnerArch: process.env.RUNNER_ARCH,
-              xcode: process.env.OPENCLAW_XCODE_VERSION,
               workflowRunId: process.env.GITHUB_RUN_ID,
               workflowRunAttempt: process.env.GITHUB_RUN_ATTEMPT,
               workflowUrl: process.env.GITHUB_SERVER_URL + "/" + process.env.GITHUB_REPOSITORY + "/actions/runs/" + process.env.GITHUB_RUN_ID,
+              appAssembly: { runner: "macos-26-intel", runnerArch: "X64", xcode: intelReceipt.xcode },
+              runtimeAssembly: { runner: "macos-26", runnerArch: process.env.RUNNER_ARCH, node: process.version },
             },
             app: {
               bundleId: process.env.BUNDLE_ID,
@@ -1260,45 +1626,56 @@ jobs:
             },
             runtime: {
               archive: process.env.RUNTIME_NAME,
+              platform: "darwin",
+              architecture: "arm64",
               sameCheckout: true,
+              rawNpmArchive: process.env.RAW_PACKAGE_NAME,
+              rawNpmSha256: process.env.RAW_NPM_SHA256,
+              installedFromRawNpmArchive: true,
+              dependencyClosureValidated: true,
+              dependencyPathsContained: true,
+              doctorValidated: true,
+              nodePtyLoaded: true,
+              sqliteVecLoaded: true,
+              controlUiParityValidated: true,
             },
             files,
           };
-          fs.writeFileSync(path.join(bundleDir, "provenance.json"), JSON.stringify(provenance, null, 2) + "\n");
+          fs.writeFileSync(path.join(finalDir, "provenance.json"), JSON.stringify(provenance, null, 2) + "\n");
           NODE
           node --input-type=module <<'NODE'
           import crypto from "node:crypto";
           import fs from "node:fs";
           import path from "node:path";
-          const bundleDir = process.env.BUNDLE_DIR;
+          const finalDir = process.env.FINAL_DIR;
           const lines = fs
-            .readdirSync(bundleDir)
+            .readdirSync(finalDir)
             .filter((name) => name !== "SHA256SUMS")
-            .filter((name) => fs.statSync(path.join(bundleDir, name)).isFile())
+            .filter((name) => fs.statSync(path.join(finalDir, name)).isFile())
             .toSorted()
-            .map((name) => crypto.createHash("sha256").update(fs.readFileSync(path.join(bundleDir, name))).digest("hex") + "  " + name);
-          fs.writeFileSync(path.join(bundleDir, "SHA256SUMS"), lines.join("\n") + "\n");
+            .map((name) => crypto.createHash("sha256").update(fs.readFileSync(path.join(finalDir, name))).digest("hex") + "  " + name);
+          fs.writeFileSync(path.join(finalDir, "SHA256SUMS"), lines.join("\n") + "\n");
           NODE
-          while IFS= read -r artifact_file; do
-            test -s "$artifact_file"
-          done < <(find "$BUNDLE_DIR" -type f -print)
+          (cd "$FINAL_DIR" && shasum -a 256 -c SHA256SUMS)
           {
-            echo "## macOS package ready"
+            echo "## Complete macOS package ready"
             echo
-            echo "- Artifact: $ARTIFACT_NAME"
+            echo "- Artifact: $FINAL_ARTIFACT_NAME"
             echo "- Version: $APP_VERSION"
             echo "- Build: $APP_BUILD"
             echo "- Source: $SOURCE_SHA"
-            echo "- Architectures: arm64 x86_64"
+            echo "- App: universal arm64 + x86_64"
+            echo "- Runtime: installed and validated darwin-arm64 dependency closure"
             echo "- Signing: ad-hoc; not notarized"
-            echo "- App ZIP, DMG, same-SHA runtime TGZ, provenance and SHA256SUMS are included."
+            echo "- Includes App ZIP, DMG, runnable runtime TGZ, provenance and validation receipts"
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload complete macOS package
+        id: upload_final
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: ${{ steps.release_meta.outputs.artifact_name }}
-          path: ${{ steps.release_meta.outputs.bundle_dir }}
+          name: ${{ needs.macos_package.outputs.artifact_name }}
+          path: ${{ env.FINAL_DIR }}
           if-no-files-found: error
           compression-level: 0
           retention-days: 7
