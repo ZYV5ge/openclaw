@@ -32131,7 +32131,7 @@
     },
     {
       "kind": "conditional-branch",
-      "line": 898,
+      "line": 974,
       "path": "apps/macos/Sources/OpenClaw/DashboardWindowController.swift",
       "source": "[\\(host)]",
       "surface": "apple",
@@ -39795,7 +39795,7 @@
     },
     {
       "kind": "ui-localized-call",
-      "line": 958,
+      "line": 959,
       "path": "apps/macos/Sources/OpenClaw/WebChatSwiftUI.swift",
       "source": "Talk mode uses the primary Gateway window",
       "surface": "apple",
@@ -39803,7 +39803,7 @@
     },
     {
       "kind": "ui-localized-call",
-      "line": 960,
+      "line": 961,
       "path": "apps/macos/Sources/OpenClaw/WebChatSwiftUI.swift",
       "source": "Talk mode off",
       "surface": "apple",
@@ -39811,7 +39811,7 @@
     },
     {
       "kind": "ui-localized-call",
-      "line": 962,
+      "line": 963,
       "path": "apps/macos/Sources/OpenClaw/WebChatSwiftUI.swift",
       "source": "Talk mode paused",
       "surface": "apple",
@@ -39819,7 +39819,7 @@
     },
     {
       "kind": "ui-localized-call",
-      "line": 965,
+      "line": 966,
       "path": "apps/macos/Sources/OpenClaw/WebChatSwiftUI.swift",
       "source": "Talk mode ready",
       "surface": "apple",
@@ -39827,7 +39827,7 @@
     },
     {
       "kind": "ui-localized-call",
-      "line": 966,
+      "line": 967,
       "path": "apps/macos/Sources/OpenClaw/WebChatSwiftUI.swift",
       "source": "Listening",
       "surface": "apple",
@@ -39835,7 +39835,7 @@
     },
     {
       "kind": "ui-localized-call",
-      "line": 967,
+      "line": 968,
       "path": "apps/macos/Sources/OpenClaw/WebChatSwiftUI.swift",
       "source": "Thinking",
       "surface": "apple",
@@ -39843,7 +39843,7 @@
     },
     {
       "kind": "ui-localized-call",
-      "line": 968,
+      "line": 969,
       "path": "apps/macos/Sources/OpenClaw/WebChatSwiftUI.swift",
       "source": "Speaking",
       "surface": "apple",
@@ -39851,7 +39851,7 @@
     },
     {
       "kind": "ui-localized-call",
-      "line": 972,
+      "line": 973,
       "path": "apps/macos/Sources/OpenClaw/WebChatSwiftUI.swift",
       "source": "What would you like to work on?",
       "surface": "apple",
@@ -39859,7 +39859,7 @@
     },
     {
       "kind": "ui-localized-call",
-      "line": 976,
+      "line": 977,
       "path": "apps/macos/Sources/OpenClaw/WebChatSwiftUI.swift",
       "source": "Check OpenClaw status",
       "surface": "apple",
@@ -39867,7 +39867,7 @@
     },
     {
       "kind": "ui-localized-call",
-      "line": 977,
+      "line": 978,
       "path": "apps/macos/Sources/OpenClaw/WebChatSwiftUI.swift",
       "source": "Summarize the current OpenClaw status and tell me what needs attention.",
       "surface": "apple",
@@ -39875,7 +39875,7 @@
     },
     {
       "kind": "ui-localized-call",
-      "line": 980,
+      "line": 981,
       "path": "apps/macos/Sources/OpenClaw/WebChatSwiftUI.swift",
       "source": "What can you do?",
       "surface": "apple",
@@ -39883,7 +39883,7 @@
     },
     {
       "kind": "ui-localized-call",
-      "line": 981,
+      "line": 982,
       "path": "apps/macos/Sources/OpenClaw/WebChatSwiftUI.swift",
       "source": "Show me what you can help with on this Mac right now.",
       "surface": "apple",
@@ -39891,7 +39891,7 @@
     },
     {
       "kind": "ui-localized-call",
-      "line": 984,
+      "line": 985,
       "path": "apps/macos/Sources/OpenClaw/WebChatSwiftUI.swift",
       "source": "Catch me up",
       "surface": "apple",
@@ -39899,7 +39899,7 @@
     },
     {
       "kind": "ui-localized-call",
-      "line": 985,
+      "line": 986,
       "path": "apps/macos/Sources/OpenClaw/WebChatSwiftUI.swift",
       "source": "Summarize what happened in my threads since yesterday.",
       "surface": "apple",
