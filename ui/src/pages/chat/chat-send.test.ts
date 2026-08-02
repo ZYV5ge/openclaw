@@ -7189,7 +7189,9 @@ describe("handleSendChat", () => {
       currentSessionId: "session-stable",
     });
 
-    const refresh = loadChatHistory(host as unknown as Parameters<typeof loadChatHistory>[0]);
+    const refresh = loadChatHistory(
+      host as unknown as Parameters<typeof loadChatHistory>[0],
+    );
     await waitForFast(() => expect(host.chatLoading).toBe(true));
     const send = handleSendChat(host);
 
@@ -7327,6 +7329,55 @@ describe("handleSendChat", () => {
     expect(listStoredChatOutboxes(host)[0]?.queue[0]?.transcriptRevision).toEqual({
       expectedLeafEntryId: "leaf-after-generation-known",
       sessionId: "session-now-known",
+    });
+  });
+
+  it("refreshes a main-session alias on its authoritative revision", async () => {
+    const history = createDeferred<unknown>();
+    const sends: Record<string, unknown>[] = [];
+    const sessionKey = "agent:main:main";
+    const host = makeHost({
+      requestHandlers: {
+        "chat.history": () => history.promise,
+        "chat.send": (params: unknown) => {
+          const payload = requireRecord(params, "main-session alias send payload");
+          sends.push(payload);
+          return { runId: payload.idempotencyKey, status: "started" };
+        },
+      },
+      chatDisplayedLeafEntryId: "leaf-before-alias-history",
+      chatMessage: "send from the main alias",
+      currentSessionId: "session-alias-stable",
+      sessionKey,
+    });
+
+    const refresh = loadChatHistory(
+      host as unknown as Parameters<typeof loadChatHistory>[0],
+    );
+    await waitForFast(() => expect(host.chatLoading).toBe(true));
+    const send = handleSendChat(host);
+
+    history.resolve({
+      messages: [],
+      sessionInfo: row(sessionKey, {
+        activeLeafEntryId: "leaf-after-alias-history",
+        hasActiveRun: false,
+        sessionId: "session-alias-stable",
+        status: "done",
+      }),
+    });
+    await Promise.all([refresh, send]);
+
+    expect(sends).toHaveLength(1);
+    expect(sends[0]).toMatchObject({
+      expectedLeafEntryId: "leaf-after-alias-history",
+      message: "send from the main alias",
+      sessionId: "session-alias-stable",
+      sessionKey,
+    });
+    expect(listStoredChatOutboxes(host)[0]?.queue[0]?.transcriptRevision).toEqual({
+      expectedLeafEntryId: "leaf-after-alias-history",
+      sessionId: "session-alias-stable",
     });
   });
 
@@ -7472,7 +7523,9 @@ describe("handleSendChat", () => {
     expect(sends.map((payload) => payload.message)).toEqual(["first pane turn"]);
     expect(firstHost.chatError).toBeNull();
     expect(firstHost.chatMessage).toBe("");
-    expect(secondHost.chatError).toBe("The thread switched branches — review and resend.");
+    expect(secondHost.chatError).toBe(
+      "The thread switched branches — review and resend.",
+    );
     expect(secondHost.chatMessage).toBe("second pane draft");
     expect(listStoredChatOutboxes(secondHost)[0]?.queue[0]).toMatchObject({
       sendState: "failed",
@@ -7534,7 +7587,9 @@ describe("handleSendChat", () => {
     await Promise.all([refresh, send]);
 
     expect(sends).toStrictEqual([]);
-    expect(host.chatError).not.toBe("The thread switched branches — review and resend.");
+    expect(host.chatError).not.toBe(
+      "The thread switched branches — review and resend.",
+    );
     expect(host.chatMessage).toBe("");
     expect(listStoredChatOutboxes(host)[0]?.queue[0]).toMatchObject({
       sendAttempts: 2,
