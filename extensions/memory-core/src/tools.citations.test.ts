@@ -821,6 +821,48 @@ describe("memory tools", () => {
     }
   });
 
+  it("keeps primary memory when supplement aggregation rejects", async () => {
+    registerMemoryCorpusSupplement("malformed-wiki", {
+      search: async () => [
+        {
+          corpus: "wiki",
+          path: undefined as unknown as string,
+          score: 4,
+          snippet: "malformed wiki result a",
+        },
+        {
+          corpus: "wiki",
+          path: undefined as unknown as string,
+          score: 4,
+          snippet: "malformed wiki result b",
+        },
+      ],
+      get: async () => null,
+    });
+
+    const tool = createMemorySearchToolOrThrow();
+    const result = await tool.execute("call_all_malformed_supplement", {
+      query: "alpha",
+      corpus: "all",
+    });
+    const details = result.details as PartialMemorySearchDetails;
+
+    expect(details.results.map((entry) => [entry.corpus, entry.path])).toEqual([
+      ["memory", "MEMORY.md"],
+    ]);
+    expect(details.partial).toBe(true);
+    expect(details.disabled).not.toBe(true);
+    expect(details.unavailable).not.toBe(true);
+    expect(details.debug?.partialFailures).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          phase: "supplement",
+          kind: "supplement-failed",
+        }),
+      ]),
+    );
+  });
+
   it("keeps a fulfilled wiki supplement when a sibling times out", async () => {
     vi.useFakeTimers();
     try {
@@ -983,7 +1025,8 @@ describe("memory tools", () => {
       controller.signal,
     );
     await vi.waitFor(() => expect(supplementSignal).toBeInstanceOf(AbortSignal));
-    await Promise.resolve();
+    expect(searchCalls).toBe(1);
+    await new Promise<void>((resolve) => setImmediate(resolve));
     controller.abort(abortReason);
 
     await expect(cancelledPromise).rejects.toBe(abortReason);
