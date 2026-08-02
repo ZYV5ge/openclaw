@@ -128,6 +128,8 @@ jobs:
           node scripts/check-workflows.mjs
           if [[ "$TDD_PHASE" == "red" ]]; then
             node_modules/.bin/oxfmt \
+              extensions/memory-core/src/tools.shared.ts \
+              extensions/memory-core/src/tools.ts \
               extensions/memory-core/src/tools.shared.test.ts \
               extensions/memory-core/src/tools.citations.test.ts \
               extensions/memory-wiki/src/bounded-walk.abort.test.ts \
@@ -138,6 +140,8 @@ jobs:
               ui/src/pages/chat/chat-submit-guard.test.ts \
               ui/src/pages/chat/chat-send.test.ts
             git --no-pager diff -- \
+              extensions/memory-core/src/tools.shared.ts \
+              extensions/memory-core/src/tools.ts \
               extensions/memory-core/src/tools.shared.test.ts \
               extensions/memory-core/src/tools.citations.test.ts \
               extensions/memory-wiki/src/bounded-walk.abort.test.ts \
