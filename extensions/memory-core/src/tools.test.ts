@@ -525,6 +525,34 @@ describe("memory_search unavailable payloads", () => {
     expect((retry.details as { results?: unknown[] }).results).toHaveLength(1);
   });
 
+  it("handles rejecting one-shot cleanup after caller cancellation", async () => {
+    const controller = new AbortController();
+    const abortError = new Error("agent run cancelled before cleanup");
+    setMemorySearchImpl(async () => {
+      controller.abort(abortError);
+      return [
+        {
+          path: "MEMORY.md",
+          startLine: 1,
+          endLine: 1,
+          score: 0.9,
+          snippet: "result before rejected cleanup",
+          source: "memory",
+        },
+      ];
+    });
+    setMemoryCloseImpl(async () => {
+      throw new Error("one-shot close failed after cancellation");
+    });
+    const tool = createMemorySearchToolOrThrow({ oneShotCliRun: true });
+
+    await expect(
+      tool.execute("cleanup-rejection-after-abort", { query: "hello" }, controller.signal),
+    ).rejects.toBe(abortError);
+    expect(getMemoryCloseMockCalls()).toBe(1);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  });
+
   it("allows qmd search to complete after the default deadline", async () => {
     vi.useFakeTimers();
     try {

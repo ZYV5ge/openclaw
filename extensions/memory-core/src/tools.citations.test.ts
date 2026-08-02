@@ -943,6 +943,58 @@ describe("memory tools", () => {
     }
   });
 
+  it("does not cooldown memory when caller cancellation follows a primary failure", async () => {
+    const controller = new AbortController();
+    const abortReason = new Error("cancel after primary memory failure");
+    let searchCalls = 0;
+    let supplementSignal: AbortSignal | undefined;
+    setMemorySearchImpl(async () => {
+      searchCalls += 1;
+      if (searchCalls === 1) {
+        throw new Error("primary memory failed before caller cancellation");
+      }
+      return [
+        {
+          path: "MEMORY.md",
+          startLine: 5,
+          endLine: 7,
+          score: 0.9,
+          snippet: "retry memory",
+          source: "memory" as const,
+        },
+      ];
+    });
+    registerMemoryCorpusSupplement("memory-wiki", {
+      search: async (params) => {
+        supplementSignal = params.signal;
+        return await new Promise<never>((_resolve, reject) => {
+          params.signal?.addEventListener("abort", () => reject(params.signal?.reason), {
+            once: true,
+          });
+        });
+      },
+      get: async () => null,
+    });
+
+    const tool = createMemorySearchToolOrThrow();
+    const cancelledPromise = tool.execute(
+      "call_all_failure_then_abort",
+      { query: "alpha", corpus: "all" },
+      controller.signal,
+    );
+    await vi.waitFor(() => expect(supplementSignal).toBeInstanceOf(AbortSignal));
+    await Promise.resolve();
+    controller.abort(abortReason);
+
+    await expect(cancelledPromise).rejects.toBe(abortReason);
+    const retry = await tool.execute("call_memory_after_failure_then_abort", {
+      query: "alpha",
+      corpus: "memory",
+    });
+    expect((retry.details as PartialMemorySearchDetails).results).toHaveLength(1);
+    expect(searchCalls).toBe(2);
+  });
+
   it("forwards caller abort to supplements and preserves the original reason without cooldown", async () => {
     const controller = new AbortController();
     const abortReason = new Error("memory search caller cancelled");
