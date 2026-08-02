@@ -364,9 +364,7 @@ async function drainStoredChatOutbox(
       : storedItem;
     if (!item || (item.sendState === "failed" && !freshItem)) {
       if (item) {
-        clientState.historyRefreshFences.delete(
-          storedChatHistoryRefreshFenceKey(scope, item.id),
-        );
+        clientState.historyRefreshFences.delete(storedChatHistoryRefreshFenceKey(scope, item.id));
       } else {
         clearStoredChatHistoryRefreshFencesForScope(clientState, scope);
       }
@@ -380,7 +378,7 @@ async function drainStoredChatOutbox(
         Boolean(historyRefreshFence.host.client) &&
         (historyRefreshFence.host.client !== historyRefreshFence.client ||
           historyRefreshFence.host.connectionEpoch !== historyRefreshFence.connectionEpoch);
-      if (!reconnected) {
+      if (!reconnected && lane.freshAdmissions.size === 0) {
         syncVisibleChatQueueProjection(host);
         return "blocked";
       }

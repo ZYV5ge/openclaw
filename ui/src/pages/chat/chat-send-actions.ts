@@ -250,7 +250,12 @@ export async function retryQueuedChatMessage(host: ChatHost, id: string) {
     setChatError(host, OFFLINE_QUEUE_STORAGE_ERROR);
     return;
   }
-  const drain = scheduleStoredChatOutboxDrain(host, outbox, chatOutboxDrainDependencies);
+  const drain = scheduleStoredChatOutboxDrain(
+    host,
+    outbox,
+    chatOutboxDrainDependencies,
+    retry.id,
+  );
   if (host.chatSending && host.chatSendingScopeKey === storedChatOutboxScopeKey(outbox)) {
     void drain;
     return;
