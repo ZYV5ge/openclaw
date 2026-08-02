@@ -13,7 +13,9 @@ import {
   readSqliteTranscriptStatsSync,
   upsertSqliteSessionEntry,
 } from "../config/sessions/session-accessor.sqlite.js";
+import * as diskSpace from "../infra/disk-space.js";
 import * as nodeSqlite from "../infra/node-sqlite.js";
+import * as sqliteIntegrity from "../infra/sqlite-integrity.js";
 import * as replaceFile from "../infra/replace-file.js";
 import { resolveSqliteDatabaseFilePaths } from "../infra/sqlite-files.js";
 import {
@@ -34,6 +36,7 @@ import {
   restoreSessionSqliteMigrationRun,
   type ActiveSessionSqliteMigrationRun,
 } from "./doctor-session-sqlite-migration-run.js";
+import * as doctorSessionSqliteReaders from "./doctor-session-sqlite-readers.js";
 import {
   createTranscriptEventReader,
   readOnlySqliteSessionEntries,
@@ -67,7 +70,25 @@ const lexicalRootTempDir = path.resolve("/tmp");
 const realRootTempDir = canonicalTestPath(lexicalRootTempDir);
 const hasPlatformRootTempAlias = lexicalRootTempDir !== realRootTempDir;
 
+function readFileSnapshot(filePaths: readonly string[]): Record<string, Buffer> {
+  return Object.fromEntries(
+    filePaths
+      .filter((filePath) => fs.existsSync(filePath))
+      .map((filePath) => [filePath, fs.readFileSync(filePath)]),
+  );
+}
+
+function readSqliteFileSnapshot(sqlitePath: string): Record<string, Buffer> {
+  return readFileSnapshot([
+    sqlitePath,
+    sqlitePath + "-wal",
+    sqlitePath + "-shm",
+    sqlitePath + "-journal",
+  ]);
+}
+
 beforeEach(() => {
+  vi.restoreAllMocks();
   closeOpenClawAgentDatabasesForTest();
   closeOpenClawStateDatabaseForTest();
 });
@@ -80,6 +101,154 @@ afterEach(() => {
 });
 
 describe("runDoctorSessionSqlite", () => {
+  it("blocks low-space import before any SQLite read or write", async () => {
+    const store = createLegacyStore();
+    const sqlitePath = createHistoricalV1AgentDatabase({ agentId: "main", env: store.env });
+    const walPath = sqlitePath + "-wal";
+    fs.writeFileSync(walPath, Buffer.alloc(4096, 0x5a), { mode: 0o600 });
+    const sqliteBefore = readSqliteFileSnapshot(sqlitePath);
+    const legacyPaths = [
+      store.storePath,
+      store.transcriptPath,
+      store.trajectoryPath,
+      store.unreferencedJsonlPath,
+    ];
+    const legacyBefore = readFileSnapshot(legacyPaths);
+    const dbSizeBytes = fs.statSync(sqlitePath).size;
+    const walSizeBytes = fs.statSync(walPath).size;
+    const requiredBytes = 2 * (dbSizeBytes + walSizeBytes) + 2 * 1024 * 1024 * 1024;
+    const disk = vi.spyOn(diskSpace, "tryReadDiskSpace").mockReturnValue({
+      availableBytes: requiredBytes - 1,
+      checkedPath: path.dirname(sqlitePath),
+      targetPath: sqlitePath,
+      totalBytes: requiredBytes,
+    });
+    const readEntries = vi.spyOn(doctorSessionSqliteReaders, "readSqliteEntryCount");
+    const open = vi.spyOn(nodeSqlite, "openNodeSqliteDatabase");
+    const integrity = vi.spyOn(sqliteIntegrity, "assertSqliteIntegrity");
+
+    const report = await runDoctorSessionSqlite({
+      env: store.env,
+      mode: "import",
+      store: store.storePath,
+    });
+
+    expect(report.totals).toMatchObject({
+      importedEntries: 0,
+      importedTranscriptEvents: 0,
+      issues: 1,
+      sqliteEntries: 0,
+    });
+    expect(report.targets[0]?.issues).toEqual([
+      expect.objectContaining({
+        code: "sqlite_compact_insufficient_disk",
+        message: expect.stringMatching(/before session SQLite import/iu),
+        stage: "before-import",
+      }),
+    ]);
+    expect(disk).toHaveBeenCalledTimes(1);
+    expect(readEntries).not.toHaveBeenCalled();
+    expect(open).not.toHaveBeenCalled();
+    expect(integrity).not.toHaveBeenCalled();
+    expect(report.targets[0]?.archivedLegacyStoreFiles).toEqual([]);
+    expect(report.targets[0]?.archivedTranscriptFiles).toEqual([]);
+    expect(report.targets[0]?.archivedUnreferencedJsonlFiles).toEqual([]);
+    expect(readSqliteFileSnapshot(sqlitePath)).toEqual(sqliteBefore);
+    expect(readFileSnapshot(legacyPaths)).toEqual(legacyBefore);
+
+    const manifest = readMigrationManifest(report.migrationRun?.manifestPath);
+    expect(manifest.failedAt).toBeTruthy();
+    expect(manifest.failureReports).toBeDefined();
+    expect(manifest.targets[0]).toMatchObject({
+      issues: [
+        expect.objectContaining({
+          code: "sqlite_compact_insufficient_disk",
+          stage: "before-import",
+        }),
+      ],
+      validationBeforeArchive: "not_run",
+    });
+  });
+
+  it("rechecks disk after schema migration and does not start VACUUM when space falls", async () => {
+    const store = createLegacyStore();
+    fs.writeFileSync(store.storePath, "{}\n", { mode: 0o600 });
+    for (const candidate of [
+      store.transcriptPath,
+      store.trajectoryPath,
+      store.unreferencedJsonlPath,
+    ]) {
+      fs.rmSync(candidate, { force: true });
+    }
+    const sqlitePath = createHistoricalV1AgentDatabase({ agentId: "main", env: store.env });
+    const highDisk = {
+      availableBytes: Number.MAX_SAFE_INTEGER,
+      checkedPath: path.dirname(sqlitePath),
+      targetPath: sqlitePath,
+      totalBytes: Number.MAX_SAFE_INTEGER,
+    };
+    const disk = vi
+      .spyOn(diskSpace, "tryReadDiskSpace")
+      .mockReturnValueOnce(highDisk)
+      .mockReturnValueOnce(highDisk)
+      .mockReturnValueOnce({ ...highDisk, availableBytes: 0 });
+    const readEntries = vi.spyOn(doctorSessionSqliteReaders, "readSqliteEntryCount");
+
+    const report = await runDoctorSessionSqlite({
+      env: store.env,
+      mode: "import",
+      store: store.storePath,
+    });
+
+    expect(disk).toHaveBeenCalledTimes(3);
+    expect(readEntries).not.toHaveBeenCalled();
+    expect(report.totals).toMatchObject({ importedEntries: 0, issues: 1, sqliteEntries: 0 });
+    expect(report.targets[0]?.compact).toBeUndefined();
+    expect(report.targets[0]?.issues).toEqual([
+      expect.objectContaining({
+        code: "sqlite_compact_insufficient_disk",
+        message: expect.stringMatching(
+          /schema migration and import completed.*VACUUM was not started/iu,
+        ),
+        stage: "after-schema-migration-before-compact",
+      }),
+    ]);
+    expect(report.targets[0]?.archivedLegacyStoreFiles).toEqual([]);
+    expect(report.targets[0]?.archivedTranscriptFiles).toEqual([]);
+    expect(report.targets[0]?.archivedUnreferencedJsonlFiles).toEqual([]);
+    expect(fs.readFileSync(store.storePath, "utf8")).toBe("{}\n");
+
+    const sqlite = nodeSqlite.requireNodeSqlite();
+    const database = new sqlite.DatabaseSync(sqlitePath, { readOnly: true });
+    try {
+      expect(database.prepare("PRAGMA user_version").get()).toEqual({
+        user_version: OPENCLAW_AGENT_SCHEMA_VERSION,
+      });
+      expect(
+        database
+          .prepare("SELECT schema_version FROM schema_meta WHERE meta_key = ?")
+          .get("primary"),
+      ).toEqual({ schema_version: OPENCLAW_AGENT_SCHEMA_VERSION });
+      expect(database.prepare("PRAGMA auto_vacuum").get()).toEqual({ auto_vacuum: 0 });
+    } finally {
+      database.close();
+    }
+
+    const manifest = readMigrationManifest(report.migrationRun?.manifestPath);
+    expect(manifest.failedAt).toBeTruthy();
+    expect(manifest.failureReports).toBeDefined();
+    expect(manifest.targets[0]).toMatchObject({
+      issues: [
+        expect.objectContaining({
+          code: "sqlite_compact_insufficient_disk",
+          stage: "after-schema-migration-before-compact",
+        }),
+      ],
+      validationBeforeArchive: "passed",
+    });
+  });
+
+
   it("uses the requested agent as the owner for explicit-store maintenance", async () => {
     const stateDir = autoCleanupTempDirs.make("openclaw-doctor-explicit-ops-");
     const storePath = path.join(stateDir, "shared", "sessions.json");
