@@ -145,6 +145,8 @@ jobs:
               src/gateway/server-methods/chat.directive-tags.test.ts \
               ui/src/lib/chat/outbox-store-codec.ts \
               ui/src/pages/chat/chat-send-delivery.ts \
+              ui/src/pages/chat/composer-persistence.ts \
+              ui/src/pages/chat/composer-persistence.test.ts \
               ui/src/lib/chat/outbox-store.test.ts \
               ui/src/pages/chat/chat-submit-guard.test.ts \
               ui/src/pages/chat/chat-send.test.ts
@@ -166,6 +168,8 @@ jobs:
               src/gateway/server-methods/chat.directive-tags.test.ts \
               ui/src/lib/chat/outbox-store-codec.ts \
               ui/src/pages/chat/chat-send-delivery.ts \
+              ui/src/pages/chat/composer-persistence.ts \
+              ui/src/pages/chat/composer-persistence.test.ts \
               ui/src/lib/chat/outbox-store.test.ts \
               ui/src/pages/chat/chat-submit-guard.test.ts \
               ui/src/pages/chat/chat-send.test.ts
@@ -229,6 +233,8 @@ jobs:
             ui/src/pages/chat/chat-send-actions.ts \
             ui/src/pages/chat/chat-send-contract.ts \
             ui/src/pages/chat/chat-send-delivery.ts \
+            ui/src/pages/chat/composer-persistence.ts \
+            ui/src/pages/chat/composer-persistence.test.ts \
             ui/src/pages/chat/chat-send-queue-state.ts \
             ui/src/pages/chat/chat-send-request.ts \
             ui/src/pages/chat/chat-send-submit.ts \
@@ -332,6 +338,7 @@ jobs:
               ui_status=0
               pnpm --dir ui exec vitest run --config vitest.config.ts \
                 src/lib/chat/outbox-store.test.ts \
+                src/pages/chat/composer-persistence.test.ts \
                 src/pages/chat/chat-submit-guard.test.ts \
                 src/pages/chat/chat-send.test.ts \
                 src/pages/chat/chat-composer.test.ts || ui_status=$?

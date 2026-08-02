@@ -7283,6 +7283,53 @@ describe("handleSendChat", () => {
     });
   });
 
+  it("adopts authoritative B/B when the submitted revision had no session generation", async () => {
+    const history = createDeferred<unknown>();
+    const sends: Record<string, unknown>[] = [];
+    const host = makeHost({
+      requestHandlers: {
+        "chat.history": () => history.promise,
+        "chat.send": (params: unknown) => {
+          const payload = requireRecord(params, "unknown-generation send payload");
+          sends.push(payload);
+          return { runId: payload.idempotencyKey, status: "started" };
+        },
+      },
+      chatDisplayedLeafEntryId: "leaf-before-generation-known",
+      chatMessage: "bind after generation becomes known",
+      currentSessionId: null,
+    });
+
+    const refresh = loadChatHistory(host as unknown as Parameters<typeof loadChatHistory>[0]);
+    await waitForFast(() => expect(host.chatLoading).toBe(true));
+    const send = handleSendChat(host);
+    expect(host.chatQueue[0]?.transcriptRevision).toEqual({
+      expectedLeafEntryId: "leaf-before-generation-known",
+    });
+
+    history.resolve({
+      messages: [],
+      sessionInfo: row("agent:main", {
+        activeLeafEntryId: "leaf-after-generation-known",
+        hasActiveRun: false,
+        sessionId: "session-now-known",
+        status: "done",
+      }),
+    });
+    await Promise.all([refresh, send]);
+
+    expect(sends).toHaveLength(1);
+    expect(sends[0]).toMatchObject({
+      expectedLeafEntryId: "leaf-after-generation-known",
+      message: "bind after generation becomes known",
+      sessionId: "session-now-known",
+    });
+    expect(listStoredChatOutboxes(host)[0]?.queue[0]?.transcriptRevision).toEqual({
+      expectedLeafEntryId: "leaf-after-generation-known",
+      sessionId: "session-now-known",
+    });
+  });
+
   it("retains a captured generation when refreshed history omits its session id", async () => {
     const history = createDeferred<unknown>();
     const sends: Record<string, unknown>[] = [];
@@ -7359,6 +7406,7 @@ describe("handleSendChat", () => {
     await Promise.all([refresh, send]);
 
     expect(sends).toStrictEqual([]);
+    expect(host.chatError).toBe("The thread switched branches \u2014 review and resend.");
     expect(host.chatMessage).toBe("keep this in the old session");
     expect(host.chatQueue[0]).toMatchObject({
       sendError: "The thread switched branches \u2014 review and resend.",
@@ -7450,6 +7498,7 @@ describe("handleSendChat", () => {
       text: "do not move this into the new session",
       createdAt: 1,
       sendError: "The thread switched branches \u2014 review and resend.",
+      sendAttempts: 1,
       sendRunId: "failed-session-run",
       sendState: "failed" as const,
       sessionKey: "agent:main",
@@ -7489,7 +7538,10 @@ describe("handleSendChat", () => {
     await Promise.all([refresh, retry]);
 
     expect(sends).toStrictEqual([]);
+    expect(host.chatError).toBe("The thread switched branches \u2014 review and resend.");
     expect(listStoredChatOutboxes(host)[0]?.queue[0]).toMatchObject({
+      sendAttempts: original.sendAttempts,
+      sendError: original.sendError,
       sendRunId: original.sendRunId,
       sendState: "failed",
       transcriptRevision: original.transcriptRevision,
