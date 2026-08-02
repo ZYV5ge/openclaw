@@ -103,7 +103,8 @@ afterEach(() => {
 describe("runDoctorSessionSqlite", () => {
   it("blocks low-space import before any SQLite read or write", async () => {
     const store = createLegacyStore();
-    const sqlitePath = createHistoricalV1AgentDatabase({ agentId: "main", env: store.env });
+    const sqlitePath = openOpenClawAgentDatabase({ agentId: "main", env: store.env }).path;
+    closeOpenClawAgentDatabasesForTest();
     const walPath = sqlitePath + "-wal";
     fs.writeFileSync(walPath, Buffer.alloc(4096, 0x5a), { mode: 0o600 });
     const sqliteBefore = readSqliteFileSnapshot(sqlitePath);
