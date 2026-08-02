@@ -1579,7 +1579,6 @@ describe("gateway server chat", () => {
     });
   });
 
-
   test("chat.metadata remains unavailable when configured models fail", async () => {
     await withGatewayChatHarness(async ({ ws }) => {
       await connectOk(ws);
