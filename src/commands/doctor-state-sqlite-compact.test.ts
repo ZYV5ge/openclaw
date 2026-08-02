@@ -1,9 +1,12 @@
 import fs from "node:fs";
 import path from "node:path";
 import type { DatabaseSync } from "node:sqlite";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
+import * as diskSpace from "../infra/disk-space.js";
+import * as nodeSqlite from "../infra/node-sqlite.js";
 import { requireNodeSqlite } from "../infra/node-sqlite.js";
+import * as sqliteIntegrity from "../infra/sqlite-integrity.js";
 import {
   readOpenClawDatabaseQuarantine,
   recordOpenClawDatabaseQuarantine,
@@ -23,6 +26,22 @@ const tempDirs = useAutoCleanupTempDirTracker((cleanup) => {
     cleanup();
   });
 });
+const DOCTOR_SQLITE_HEADROOM_BYTES = 2 * 1024 * 1024 * 1024;
+
+function readSqliteFileSnapshot(sqlitePath: string): Record<string, Buffer> {
+  const candidates = [
+    sqlitePath,
+    sqlitePath + "-wal",
+    sqlitePath + "-shm",
+    sqlitePath + "-journal",
+  ];
+  return Object.fromEntries(
+    candidates
+      .filter((candidate) => fs.existsSync(candidate))
+      .map((candidate) => [candidate, fs.readFileSync(candidate)]),
+  );
+}
+
 type DoctorStateSqliteCompactReport = Awaited<ReturnType<typeof runDoctorStateSqliteCompact>>;
 type CompletedStateSqliteCompactReport = Extract<
   DoctorStateSqliteCompactReport,
@@ -139,7 +158,88 @@ function expectOwnerOnlySqlitePermissions(sqlitePath: string): void {
   }
 }
 
+beforeEach(() => {
+  vi.restoreAllMocks();
+});
+
 describe("runDoctorStateSqliteCompact", () => {
+  it("fails closed before opening state SQLite when compaction headroom is insufficient", async () => {
+    const env = createStateEnv();
+    const sqlitePath = seedStateDatabase({ env, withBloat: true });
+    const walPath = sqlitePath + "-wal";
+    fs.writeFileSync(walPath, Buffer.alloc(4096, 0x5a), { mode: 0o600 });
+    const before = readSqliteFileSnapshot(sqlitePath);
+    const dbSizeBytes = fs.statSync(sqlitePath).size;
+    const walSizeBytes = fs.statSync(walPath).size;
+    const requiredBytes =
+      2 * (dbSizeBytes + walSizeBytes) + DOCTOR_SQLITE_HEADROOM_BYTES;
+    const disk = vi.spyOn(diskSpace, "tryReadDiskSpace").mockReturnValue({
+      availableBytes: requiredBytes - 1,
+      checkedPath: path.dirname(sqlitePath),
+      targetPath: sqlitePath,
+      totalBytes: requiredBytes,
+    });
+    const open = vi.spyOn(nodeSqlite, "openNodeSqliteDatabase");
+    const integrity = vi.spyOn(sqliteIntegrity, "assertSqliteIntegrity");
+
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      await expect(runDoctorStateSqliteCompact({ env })).rejects.toMatchObject({
+        availableBytes: requiredBytes - 1,
+        code: "sqlite_compact_insufficient_disk",
+        dbSizeBytes,
+        requiredBytes,
+        stage: "before-compact-open",
+        walSizeBytes,
+      });
+      expect(readSqliteFileSnapshot(sqlitePath)).toEqual(before);
+    }
+
+    expect(disk).toHaveBeenCalledTimes(2);
+    expect(open).not.toHaveBeenCalled();
+    expect(integrity).not.toHaveBeenCalled();
+
+    fs.rmSync(walPath);
+    disk.mockReturnValue({
+      availableBytes: Number.MAX_SAFE_INTEGER,
+      checkedPath: path.dirname(sqlitePath),
+      targetPath: sqlitePath,
+      totalBytes: Number.MAX_SAFE_INTEGER,
+    });
+    const report = await runDoctorStateSqliteCompact({ env });
+    expectCompletedReport(report);
+    expect(integrity).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([
+    ["unavailable", null],
+    ["unsafe", Number.MAX_SAFE_INTEGER + 1],
+  ] as const)("fails closed for %s disk-space readings", async (_label, availableBytes) => {
+    const env = createStateEnv();
+    const sqlitePath = seedStateDatabase({ env, withBloat: true });
+    const before = readSqliteFileSnapshot(sqlitePath);
+    vi.spyOn(diskSpace, "tryReadDiskSpace").mockReturnValue(
+      availableBytes === null
+        ? null
+        : {
+            availableBytes,
+            checkedPath: path.dirname(sqlitePath),
+            targetPath: sqlitePath,
+            totalBytes: null,
+          },
+    );
+    const open = vi.spyOn(nodeSqlite, "openNodeSqliteDatabase");
+    const integrity = vi.spyOn(sqliteIntegrity, "assertSqliteIntegrity");
+
+    await expect(runDoctorStateSqliteCompact({ env })).rejects.toMatchObject({
+      code: "sqlite_compact_disk_space_unavailable",
+      stage: "before-compact-open",
+    });
+    expect(open).not.toHaveBeenCalled();
+    expect(integrity).not.toHaveBeenCalled();
+    expect(readSqliteFileSnapshot(sqlitePath)).toEqual(before);
+  });
+
+
   it("reports a missing canonical database as skipped", async () => {
     const env = createStateEnv();
 
