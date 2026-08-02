@@ -816,27 +816,38 @@ jobs:
             exit 1
           fi
 
-      - name: Select pinned Xcode 26.1.1
+      - name: Select pinned Xcode 26.6 and Swift 6.3
         run: |
           set -euo pipefail
-          xcode_app="/Applications/Xcode_26.1.1.app"
+          xcode_app="/Applications/Xcode_26.6.app"
           if [[ ! -d "$xcode_app/Contents/Developer" ]]; then
-            xcode_app="/Applications/Xcode_26.1.app"
+            xcode_app="/Applications/Xcode_26.6.0.app"
           fi
           if [[ ! -d "$xcode_app/Contents/Developer" ]]; then
-            echo "::error::Pinned Xcode 26.1.1 is unavailable on this runner image."
+            echo "::error::Pinned Xcode 26.6 is unavailable on this runner image."
             exit 1
           fi
           sudo xcode-select -s "$xcode_app/Contents/Developer"
           xcodebuild -version
           xcode_version="$(xcodebuild -version | awk 'NR == 1 { print $2 }')"
-          if [[ "$xcode_version" != "26.1.1" ]]; then
-            echo "::error::Expected Xcode 26.1.1, got $xcode_version."
+          if [[ "$xcode_version" != "26.6" ]]; then
+            echo "::error::Expected Xcode 26.6, got $xcode_version."
             exit 1
           fi
           source scripts/lib/swift-toolchain.sh
           require_swift_toolchain
-          swift --version
+          swift_version="$(swift --version)"
+          printf '%s\n' "$swift_version"
+          swift_major_minor="$(printf '%s\n' "$swift_version" | sed -nE 's/.*Apple Swift version ([0-9]+)\.([0-9]+).*/\1 \2/p' | head -n 1)"
+          if [[ -z "$swift_major_minor" ]]; then
+            echo "::error::Could not parse the selected Swift toolchain version."
+            exit 1
+          fi
+          read -r swift_major swift_minor <<< "$swift_major_minor"
+          if (( swift_major < 6 )) || (( swift_major == 6 && swift_minor < 3 )); then
+            echo "::error::The locked MLX package graph requires Swift 6.3+, got $swift_major.$swift_minor."
+            exit 1
+          fi
           echo "OPENCLAW_XCODE_VERSION=$xcode_version" >> "$GITHUB_ENV"
 
       - name: Setup pinned Node and pnpm without Actions caches
