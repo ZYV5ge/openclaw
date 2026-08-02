@@ -71,10 +71,8 @@ function getActualReadFile(): ReadFile {
 
 function resetReadFileMock(): void {
   fsMocks.readFile.mockReset();
-  fsMocks.readFile.mockImplementation(
-    ((...args: Parameters<ReadFile>) =>
-      Reflect.apply(getActualReadFile(), undefined, args)) as ReadFile,
-  );
+  fsMocks.readFile.mockImplementation(((...args: Parameters<ReadFile>) =>
+    Reflect.apply(getActualReadFile(), undefined, args)) as ReadFile);
 }
 
 function collectWikiResultPaths(results: readonly { corpus: string; path: string }[]): string[] {
@@ -643,34 +641,30 @@ describe("searchMemoryWiki", () => {
       markFirstReadStarted = resolve;
     });
     let fallbackReadCount = 0;
-    fsMocks.readFile.mockImplementation(
-      (async (...args: Parameters<ReadFile>) => {
-        if (!String(args[0]).includes(`${path.sep}entities${path.sep}fallback-`)) {
-          return await Reflect.apply(getActualReadFile(), undefined, args);
-        }
-        fallbackReadCount += 1;
-        const options = args[1];
-        const signal =
-          options && typeof options === "object" && "signal" in options
-            ? options.signal
-            : undefined;
-        observedSignals.push(signal);
-        if (fallbackReadCount === 1) {
-          markFirstReadStarted?.();
-        }
-        return await new Promise<string>((resolve, reject) => {
-          pendingReads.push({ resolve, reject });
-          signal?.addEventListener(
-            "abort",
-            () => {
-              observedReadAbortReason ??= signal.reason;
-              reject(signal.reason);
-            },
-            { once: true },
-          );
-        });
-      }) as ReadFile,
-    );
+    fsMocks.readFile.mockImplementation((async (...args: Parameters<ReadFile>) => {
+      if (!String(args[0]).includes(`${path.sep}entities${path.sep}fallback-`)) {
+        return await Reflect.apply(getActualReadFile(), undefined, args);
+      }
+      fallbackReadCount += 1;
+      const options = args[1];
+      const signal =
+        options && typeof options === "object" && "signal" in options ? options.signal : undefined;
+      observedSignals.push(signal);
+      if (fallbackReadCount === 1) {
+        markFirstReadStarted?.();
+      }
+      return await new Promise<string>((resolve, reject) => {
+        pendingReads.push({ resolve, reject });
+        signal?.addEventListener(
+          "abort",
+          () => {
+            observedReadAbortReason ??= signal.reason;
+            reject(signal.reason);
+          },
+          { once: true },
+        );
+      });
+    }) as ReadFile);
 
     const searchPromise = searchMemoryWiki({
       config,

@@ -208,10 +208,7 @@ function mergeWikiSearchCorpusResults(params: {
   return sortWikiSearchResults(selected).slice(0, params.maxResults);
 }
 
-async function listWikiMarkdownFiles(
-  rootDir: string,
-  signal?: AbortSignal,
-): Promise<string[]> {
+async function listWikiMarkdownFiles(rootDir: string, signal?: AbortSignal): Promise<string[]> {
   signal?.throwIfAborted();
   const files = (
     await Promise.all(

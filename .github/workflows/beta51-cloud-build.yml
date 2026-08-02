@@ -132,7 +132,6 @@ jobs:
               extensions/memory-wiki/src/corpus-supplement.test.ts \
               extensions/memory-wiki/src/query.test.ts \
               extensions/memory-wiki/src/tool.test.ts \
-              extensions/memory-wiki/src/query.ts \
               extensions/google/web-search-provider.test.ts \
               ui/src/pages/chat/chat-submit-guard.test.ts \
               ui/src/pages/chat/chat-send.test.ts
@@ -141,7 +140,6 @@ jobs:
               extensions/memory-wiki/src/corpus-supplement.test.ts \
               extensions/memory-wiki/src/query.test.ts \
               extensions/memory-wiki/src/tool.test.ts \
-              extensions/memory-wiki/src/query.ts \
               extensions/google/web-search-provider.test.ts \
               ui/src/pages/chat/chat-submit-guard.test.ts \
               ui/src/pages/chat/chat-send.test.ts

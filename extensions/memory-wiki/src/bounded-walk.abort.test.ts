@@ -17,21 +17,19 @@ describe("walkMemoryWikiDirectory cancellation", () => {
     const abortReason = new Error("memory wiki walk cancelled");
     const yieldedPaths: string[] = [];
     let forwardedSignal: AbortSignal | undefined;
-    rootWalkMocks.walkRootDirectory.mockImplementation(
-      async function* (
-        _rootDir: string,
-        _relativePath: string,
-        options: RootWalkOptions,
-      ): AsyncGenerator<RootWalkEntry> {
-        forwardedSignal = options.signal;
-        yieldedPaths.push("first.md");
-        yield { relativePath: "first.md", kind: "file", size: 1 };
-        controller.abort(abortReason);
-        options.signal?.throwIfAborted();
-        yieldedPaths.push("second.md");
-        yield { relativePath: "second.md", kind: "file", size: 1 };
-      },
-    );
+    rootWalkMocks.walkRootDirectory.mockImplementation(async function* (
+      _rootDir: string,
+      _relativePath: string,
+      options: RootWalkOptions,
+    ): AsyncGenerator<RootWalkEntry> {
+      forwardedSignal = options.signal;
+      yieldedPaths.push("first.md");
+      yield { relativePath: "first.md", kind: "file", size: 1 };
+      controller.abort(abortReason);
+      options.signal?.throwIfAborted();
+      yieldedPaths.push("second.md");
+      yield { relativePath: "second.md", kind: "file", size: 1 };
+    });
 
     const outcome = await walkMemoryWikiDirectory("/vault", "", {
       signal: controller.signal,
