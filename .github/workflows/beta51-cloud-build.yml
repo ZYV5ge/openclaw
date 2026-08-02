@@ -143,6 +143,8 @@ jobs:
               packages/gateway-protocol/src/schema/logs-chat.test.ts \
               src/config/sessions/session-accessor.sqlite-active-events.test.ts \
               src/gateway/server-methods/chat.directive-tags.test.ts \
+              ui/src/lib/chat/outbox-store-codec.ts \
+              ui/src/pages/chat/chat-send-delivery.ts \
               ui/src/lib/chat/outbox-store.test.ts \
               ui/src/pages/chat/chat-submit-guard.test.ts \
               ui/src/pages/chat/chat-send.test.ts
@@ -162,6 +164,8 @@ jobs:
               packages/gateway-protocol/src/schema/logs-chat.test.ts \
               src/config/sessions/session-accessor.sqlite-active-events.test.ts \
               src/gateway/server-methods/chat.directive-tags.test.ts \
+              ui/src/lib/chat/outbox-store-codec.ts \
+              ui/src/pages/chat/chat-send-delivery.ts \
               ui/src/lib/chat/outbox-store.test.ts \
               ui/src/pages/chat/chat-submit-guard.test.ts \
               ui/src/pages/chat/chat-send.test.ts
