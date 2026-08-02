@@ -26,6 +26,11 @@ import { LEGACY_IMPLICIT_AGENT_ID, normalizeAgentId } from "../routing/session-k
 import { closeOpenClawAgentDatabaseByPath } from "../state/openclaw-agent-db.js";
 import { compactDoctorSessionSqliteTarget } from "./doctor-session-sqlite-compact.js";
 import {
+  assertDoctorSqliteCompactionDiskSpace,
+  isDoctorSqliteDiskSpaceError,
+  type DoctorSqliteDiskSpaceError,
+} from "./doctor-sqlite-compact.js";
+import {
   assertSafeSessionSqliteMigrationDirectory,
   assertSafeSessionSqliteMigrationMove,
   canonicalMigrationFilePath,
@@ -305,7 +310,7 @@ async function inspectOrMigrateTarget(params: {
     issues,
     legacyEntries: records.length,
     referencedTranscriptFiles: referencedTranscriptFiles.size,
-    sqliteEntries: readSqliteEntryCount(params.target),
+    sqliteEntries: 0,
     sqlitePath: resolveTargetSqlitePath(params.target),
     storePath: params.target.storePath,
     unreferencedJsonlFiles: listUnreferencedJsonlFiles(params.target.storePath, [
@@ -314,6 +319,26 @@ async function inspectOrMigrateTarget(params: {
     validatedEntries: 0,
     validatedTranscriptEvents: 0,
   };
+  if (params.mode === "import" && blockingIssueCount(report) === 0) {
+    try {
+      assertDoctorSqliteCompactionDiskSpace({
+        sqlitePath: report.sqlitePath,
+        stage: "before-import",
+      });
+    } catch (error) {
+      if (!isDoctorSqliteDiskSpaceError(error)) {
+        throw error;
+      }
+      report.issues.push(createDoctorSqliteDiskSpaceIssue(error));
+      updateMigrationManifestTarget(
+        params.activeRun,
+        createMigrationTargetInput(params.target),
+        report.issues,
+        { validationBeforeArchive: "not_run" },
+      );
+      return report;
+    }
+  }
   if (params.mode === "inspect") {
     report.sqliteEntries = readSqliteEntryCount(params.target);
     appendSqliteDbStats(params.target, report);
@@ -321,7 +346,10 @@ async function inspectOrMigrateTarget(params: {
     return report;
   }
   if (params.mode === "compact") {
-    compactSqliteDatabase(params.target, report, { env: params.env });
+    const compactOutcome = compactSqliteDatabase(params.target, report, { env: params.env });
+    if (compactOutcome === "disk-blocked") {
+      return report;
+    }
     report.sqliteEntries = readSqliteEntryCount(params.target);
     appendSqliteDbStats(params.target, report);
     return report;
@@ -360,11 +388,19 @@ async function inspectOrMigrateTarget(params: {
     if (validationPassed) {
       // Post-import compact retrofits auto_vacuum=INCREMENTAL onto pre-flip
       // databases and returns the pages the import churn freed.
-      compactSqliteDatabase(params.target, report, {
+      const compactOutcome = compactSqliteDatabase(params.target, report, {
         closeImportedHandle: true,
         env: params.env,
         migrateOlderSchema: true,
       });
+      if (compactOutcome === "disk-blocked") {
+        updateMigrationManifestTarget(
+          params.activeRun,
+          createMigrationTargetInput(params.target),
+          report.issues,
+        );
+        return report;
+      }
     }
   }
   report.unreferencedJsonlFiles = listUnreferencedJsonlFiles(params.target.storePath, [
@@ -1117,6 +1153,22 @@ function appendSqliteDbStats(
   }
 }
 
+type DoctorSqliteCompactOutcome = "completed" | "failed" | "disk-blocked";
+
+function createDoctorSqliteDiskSpaceIssue(
+  error: DoctorSqliteDiskSpaceError,
+): DoctorSessionSqliteIssue {
+  return {
+    code: error.code,
+    message: error.message,
+    stage: error.stage,
+    ...(error.availableBytes !== undefined ? { availableBytes: error.availableBytes } : {}),
+    ...(error.dbSizeBytes !== undefined ? { dbSizeBytes: error.dbSizeBytes } : {}),
+    ...(error.requiredBytes !== undefined ? { requiredBytes: error.requiredBytes } : {}),
+    ...(error.walSizeBytes !== undefined ? { walSizeBytes: error.walSizeBytes } : {}),
+  };
+}
+
 function compactSqliteDatabase(
   target: SessionStoreTarget,
   report: DoctorSessionSqliteTargetReport,
@@ -1125,7 +1177,7 @@ function compactSqliteDatabase(
     env?: NodeJS.ProcessEnv;
     migrateOlderSchema?: boolean;
   } = {},
-): void {
+): DoctorSqliteCompactOutcome {
   try {
     if (options.closeImportedHandle) {
       closeOpenClawAgentDatabaseByPath(resolveTargetSqlitePath(target));
@@ -1136,11 +1188,17 @@ function compactSqliteDatabase(
           migrateOlderSchema: true,
         })
       : compactDoctorSessionSqliteTarget(target, { env: options.env });
+    return "completed";
   } catch (err) {
+    if (isDoctorSqliteDiskSpaceError(err)) {
+      report.issues.push(createDoctorSqliteDiskSpaceIssue(err));
+      return "disk-blocked";
+    }
     report.issues.push({
       code: "sqlite_compact_failed",
       message: `SQLite database compact failed: ${String(err)}`,
     });
+    return "failed";
   }
 }
 

@@ -10,7 +10,10 @@ import {
 } from "../state/openclaw-agent-db.js";
 import { resolveTargetSqlitePath } from "./doctor-session-sqlite-readers.js";
 import type { DoctorSessionSqliteCompactReport } from "./doctor-session-sqlite-types.js";
-import { compactDoctorSqliteFile } from "./doctor-sqlite-compact.js";
+import {
+  assertDoctorSqliteCompactionDiskSpace,
+  compactDoctorSqliteFile,
+} from "./doctor-sqlite-compact.js";
 
 /** Reclaim free pages from one agent session SQLite database. */
 export function compactDoctorSessionSqliteTarget(
@@ -49,6 +52,10 @@ export function compactDoctorSessionSqliteTarget(
     }
   };
   if (options.migrateOlderSchema) {
+    assertDoctorSqliteCompactionDiskSpace({
+      sqlitePath,
+      stage: "before-schema-migration",
+    });
     migrateOpenClawAgentDatabaseForMaintenance({
       agentId: target.agentId,
       pathname: sqlitePath,
@@ -64,6 +71,9 @@ export function compactDoctorSessionSqliteTarget(
         path: sqlitePath,
       });
     },
+    preflightStage: options.migrateOlderSchema
+      ? "after-schema-migration-before-compact"
+      : "before-compact-open",
     sqlitePath,
     validateBeforeMutation: (database) =>
       assertOpenClawAgentDatabaseForMaintenance(database, {

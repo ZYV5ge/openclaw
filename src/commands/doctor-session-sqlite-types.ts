@@ -1,10 +1,16 @@
 /** Shared type contracts for doctor-owned session SQLite migration reports. */
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import type { DoctorSqliteDiskSpaceStage } from "./doctor-sqlite-compact.js";
 
 export type DoctorSessionSqliteIssue = {
+  availableBytes?: number;
   code: string;
+  dbSizeBytes?: number;
   message: string;
+  requiredBytes?: number;
   sessionKey?: string;
+  stage?: DoctorSqliteDiskSpaceStage;
+  walSizeBytes?: number;
 };
 
 const SESSION_SQLITE_WARNING_ISSUE_CODES = new Set([

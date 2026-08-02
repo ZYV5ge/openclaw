@@ -83,10 +83,23 @@ const MigrationMoveSchema = z.object({
   sessionKey: z.string().optional(),
   sourcePath: AbsolutePathSchema,
 });
+const SafeByteCountSchema = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
 const MigrationIssueSchema = z.object({
+  availableBytes: SafeByteCountSchema.optional(),
   code: z.string().min(1),
+  dbSizeBytes: SafeByteCountSchema.optional(),
   message: z.string(),
+  requiredBytes: SafeByteCountSchema.optional(),
   sessionKey: z.string().optional(),
+  stage: z
+    .enum([
+      "before-import",
+      "before-schema-migration",
+      "before-compact-open",
+      "after-schema-migration-before-compact",
+    ])
+    .optional(),
+  walSizeBytes: SafeByteCountSchema.optional(),
 });
 const RestoreConflictSchema = z.object({
   archivePath: AbsolutePathSchema,
@@ -290,7 +303,7 @@ function recordMigrationMoves(
 }
 
 function migrationMoveKey(move: SessionSqliteMigrationMove): string {
-  return `${move.sourcePath}\u0000${move.archivePath}`;
+  return `${move.sourcePath}^@${move.archivePath}`;
 }
 
 export function restoreSessionSqliteMigrationRuns(params: {
@@ -515,7 +528,7 @@ function setRestoreCandidateConflicts(
 }
 
 function restoreMovePlanKey(manifestPath: string, move: SessionSqliteMigrationMove): string {
-  return `${manifestPath}\u0000${migrationMoveKey(move)}`;
+  return `${manifestPath}^@${migrationMoveKey(move)}`;
 }
 
 function collectRecordedConsumedArchives(manifest: SessionSqliteMigrationManifest): Set<string> {
@@ -756,7 +769,14 @@ export function writeSessionSqliteMigrationFailureReports(
         issues: target.issues.map((issue) => ({
           code: issue.code,
           message: sanitizeFailureIssueMessage(issue, target),
+          ...(issue.availableBytes !== undefined
+            ? { availableBytes: issue.availableBytes }
+            : {}),
+          ...(issue.dbSizeBytes !== undefined ? { dbSizeBytes: issue.dbSizeBytes } : {}),
+          ...(issue.requiredBytes !== undefined ? { requiredBytes: issue.requiredBytes } : {}),
           ...(issue.sessionKey ? { sessionKey: redactSessionKey(issue.sessionKey) } : {}),
+          ...(issue.stage ? { stage: issue.stage } : {}),
+          ...(issue.walSizeBytes !== undefined ? { walSizeBytes: issue.walSizeBytes } : {}),
         })),
         plannedMoves: target.plannedMoves.length,
         sqlitePath: sanitizeFailureReportText(shortenFailureReportPath(target.sqlitePath)),
@@ -800,6 +820,13 @@ export function createSessionSqliteMigrationFailureIssue(
       issues: target.issues.map((issue) => ({
         code: issue.code,
         message: sanitizeFailureIssueMessage(issue, target),
+        ...(issue.availableBytes !== undefined
+          ? { availableBytes: issue.availableBytes }
+          : {}),
+        ...(issue.dbSizeBytes !== undefined ? { dbSizeBytes: issue.dbSizeBytes } : {}),
+        ...(issue.requiredBytes !== undefined ? { requiredBytes: issue.requiredBytes } : {}),
+        ...(issue.stage ? { stage: issue.stage } : {}),
+        ...(issue.walSizeBytes !== undefined ? { walSizeBytes: issue.walSizeBytes } : {}),
       })),
       plannedMoves: target.plannedMoves.length,
       sqlitePath: sanitizeFailureReportText(shortenFailureReportPath(target.sqlitePath)),
@@ -823,7 +850,7 @@ export function createSessionSqliteMigrationFailureIssue(
 }
 
 function sessionSqliteMigrationTargetKey(target: { agentId: string; storePath: string }): string {
-  return `${target.agentId}\u0000${canonicalMigrationFilePath(target.storePath)}`;
+  return `${target.agentId}^@${canonicalMigrationFilePath(target.storePath)}`;
 }
 
 function findMigrationManifestTarget(
@@ -881,7 +908,7 @@ function uniqueRestoreMoves(
 ): SessionSqliteMigrationMove[] {
   const moves = new Map<string, SessionSqliteMigrationMove>();
   for (const move of [...target.completedMoves, ...target.plannedMoves]) {
-    moves.set(`${move.sourcePath}\u0000${move.archivePath}`, move);
+    moves.set(`${move.sourcePath}^@${move.archivePath}`, move);
   }
   return [...moves.values()];
 }
