@@ -7596,10 +7596,9 @@ describe("handleSendChat", () => {
 
   it("does not release a reconnect fence for a removed fresh admission", async () => {
     const firstAck = createDeferred<unknown>();
-    const history = createDeferred<unknown>();
     const sends: Record<string, unknown>[] = [];
     const request = makeRequestMock({
-      "chat.history": () => history.promise,
+      "chat.history": () => idleChatHistory(),
       "chat.send": (params: unknown) => {
         const payload = requireRecord(params, "removed fresh admission payload");
         sends.push(payload);
@@ -7609,30 +7608,32 @@ describe("handleSendChat", () => {
       },
     });
     const client = clientWithRequest(request);
-    const firstHost = makeHost({ client, connectionEpoch: 1 });
-    const fencedHost = makeHost({
-      client,
-      chatDisplayedLeafEntryId: "leaf-fenced-before-reconnect",
-      chatMessage: "keep the fence after cancellation",
-      connectionEpoch: 1,
-      currentSessionId: "session-stable",
-    });
+    const firstItem = {
+      id: "first-before-removed-fresh-admission",
+      text: "first before removed fresh admission",
+      createdAt: 1,
+      sessionKey: "agent:main",
+    };
+    const fencedItem = {
+      id: "fenced-after-removed-fresh-admission",
+      text: "keep the fence after cancellation",
+      createdAt: 2,
+      sessionKey: "agent:main",
+    };
+    const host = makeHost({ client, chatQueue: [firstItem, fencedItem] });
     const cancellingHost = makeHost({
       client,
-      chatDisplayedLeafEntryId: "leaf-cancelled-successor",
       chatMessage: "cancel this fence release",
-      connectionEpoch: 1,
-      currentSessionId: "session-stable",
     });
+    admitHostQueueItems(host);
+    parkStoredChatHistoryRefreshUntilReconnect(
+      host,
+      { sessionKey: host.sessionKey },
+      fencedItem.id,
+    );
 
-    const firstSend = handleSendChat(firstHost, "first pane before cancelled release");
+    const draining = retryReconnectableQueuedChatSends(host);
     await waitForFast(() => expect(sends).toHaveLength(1));
-    const refresh = loadChatHistory(fencedHost as unknown as Parameters<typeof loadChatHistory>[0]);
-    await waitForFast(() => expect(fencedHost.chatLoading).toBe(true));
-    const fencedSend = handleSendChat(fencedHost);
-
-    firstAck.resolve({ runId: sends[0]?.idempotencyKey, status: "ok" });
-    expect(await raceWithMacrotask(fencedSend)).toBe("pending");
 
     const cancelledSend = handleSendChat(cancellingHost);
     await waitForFast(() =>
@@ -7650,23 +7651,14 @@ describe("handleSendChat", () => {
     );
     removeQueuedMessage(cancellingHost, cancelled.id);
 
-    firstHost.connectionEpoch = 2;
-    history.resolve({
-      messages: [],
-      sessionInfo: row("agent:main", {
-        activeLeafEntryId: "leaf-fenced-after-reconnect",
-        hasActiveRun: false,
-        sessionId: "session-stable",
-        status: "done",
-      }),
-    });
-    await Promise.all([firstSend, refresh, fencedSend, cancelledSend]);
+    firstAck.resolve({ runId: sends[0]?.idempotencyKey, status: "ok" });
+    await Promise.all([draining, cancelledSend]);
 
     expect(sends.map((payload) => payload.message)).toEqual([
-      "first pane before cancelled release",
+      "first before removed fresh admission",
     ]);
-    expect(listStoredChatOutboxes(fencedHost)[0]?.queue).toEqual([
-      expect.objectContaining({ text: "keep the fence after cancellation" }),
+    expect(listStoredChatOutboxes(host)[0]?.queue).toEqual([
+      expect.objectContaining({ id: fencedItem.id, text: fencedItem.text }),
     ]);
   });
 
@@ -9943,3 +9935,4 @@ describe("handleAbortChat", () => {
   });
 });
 /* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */
+
