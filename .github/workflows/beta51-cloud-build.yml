@@ -335,10 +335,12 @@ jobs:
               OPENCLAW_VITEST_MAX_WORKERS=1 node scripts/run-vitest.mjs run \
                 --config test/vitest/vitest.gateway-methods.config.ts \
                 src/gateway/server-methods/chat.directive-tags.test.ts || gateway_status=$?
+              ui_persistence_status=0
+              pnpm --dir ui exec vitest run --config vitest.config.ts \
+                src/pages/chat/composer-persistence.test.ts || ui_persistence_status=$?
               ui_status=0
               pnpm --dir ui exec vitest run --config vitest.config.ts \
                 src/lib/chat/outbox-store.test.ts \
-                src/pages/chat/composer-persistence.test.ts \
                 src/pages/chat/chat-submit-guard.test.ts \
                 src/pages/chat/chat-send.test.ts \
                 src/pages/chat/chat-composer.test.ts || ui_status=$?
@@ -360,8 +362,8 @@ jobs:
               pnpm lint:tmp:session-transcript-reader-boundary || reader_boundary_status=$?
               sqlite_boundary_status=0
               pnpm lint:tmp:sqlite-transaction-boundary || sqlite_boundary_status=$?
-              if (( protocol_status != 0 || accessor_status != 0 || gateway_status != 0 || ui_status != 0 || core_type_status != 0 || src_test_type_status != 0 || package_test_type_status != 0 || ui_type_status != 0 || ui_test_type_status != 0 || kysely_lint_status != 0 || accessor_boundary_status != 0 || reader_boundary_status != 0 || sqlite_boundary_status != 0 )); then
-                echo "::error::active-path status protocol=$protocol_status accessor=$accessor_status gateway=$gateway_status ui=$ui_status core=$core_type_status src-test=$src_test_type_status package-test=$package_test_type_status ui-types=$ui_type_status ui-test-types=$ui_test_type_status kysely=$kysely_lint_status accessor-boundary=$accessor_boundary_status reader-boundary=$reader_boundary_status sqlite-boundary=$sqlite_boundary_status"
+              if (( protocol_status != 0 || accessor_status != 0 || gateway_status != 0 || ui_persistence_status != 0 || ui_status != 0 || core_type_status != 0 || src_test_type_status != 0 || package_test_type_status != 0 || ui_type_status != 0 || ui_test_type_status != 0 || kysely_lint_status != 0 || accessor_boundary_status != 0 || reader_boundary_status != 0 || sqlite_boundary_status != 0 )); then
+                echo "::error::active-path status protocol=$protocol_status accessor=$accessor_status gateway=$gateway_status ui-persistence=$ui_persistence_status ui=$ui_status core=$core_type_status src-test=$src_test_type_status package-test=$package_test_type_status ui-types=$ui_type_status ui-test-types=$ui_test_type_status kysely=$kysely_lint_status accessor-boundary=$accessor_boundary_status reader-boundary=$reader_boundary_status sqlite-boundary=$sqlite_boundary_status"
                 exit 1
               fi
               ;;
