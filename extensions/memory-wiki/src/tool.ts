@@ -150,7 +150,7 @@ export function createWikiSearchTool(
     description:
       "Search wiki pages and, when shared search is enabled, the active memory corpus by title, path, id, or body text.",
     parameters: WikiSearchSchema,
-    execute: async (_toolCallId, rawParams) => {
+    execute: async (_toolCallId, rawParams, signal) => {
       const params = rawParams as {
         query: string;
         maxResults?: number;
@@ -158,13 +158,16 @@ export function createWikiSearchTool(
         corpus?: ResolvedMemoryWikiConfig["search"]["corpus"];
         mode?: (typeof WIKI_SEARCH_MODES)[number];
       };
+      signal?.throwIfAborted();
       await syncImportedSourcesIfNeeded(config, appConfig);
+      signal?.throwIfAborted();
       const results = await searchMemoryWiki({
         config,
         appConfig,
         agentId: memoryContext.agentId,
         agentSessionKey: memoryContext.agentSessionKey,
         sandboxed: memoryContext.sandboxed,
+        ...(signal ? { signal } : {}),
         query: params.query,
         maxResults: params.maxResults,
         ...(params.backend ? { searchBackend: params.backend } : {}),

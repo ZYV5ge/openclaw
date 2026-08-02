@@ -149,6 +149,11 @@ jobs:
             extensions/memory-wiki/src/corpus-supplement.test.ts \
             extensions/memory-wiki/src/query.test.ts \
             extensions/memory-wiki/src/tool.test.ts \
+            extensions/memory-wiki/src/bounded-walk.ts \
+            extensions/memory-wiki/src/corpus-supplement.ts \
+            extensions/memory-wiki/src/query.ts \
+            extensions/memory-wiki/src/tool.ts \
+            src/plugins/registry-contribution-types.ts \
             extensions/google/src/gemini-web-search-provider.ts \
             extensions/google/web-search-provider.test.ts \
             src/state/openclaw-state-db-startup-checkpoint.ts \
@@ -240,6 +245,9 @@ jobs:
                 memory-wiki/src/corpus-supplement.test.ts \
                 memory-wiki/src/query.test.ts \
                 memory-wiki/src/tool.test.ts
+              pnpm tsgo:core
+              pnpm tsgo:extensions
+              pnpm tsgo:extensions:test
               ;;
             beta6-control-ui-send)
               pnpm --dir ui exec vitest run --config vitest.config.ts \

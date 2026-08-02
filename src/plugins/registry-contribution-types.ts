@@ -202,6 +202,7 @@ export type MemoryCorpusSupplement = {
     agentId?: string;
     agentSessionKey?: string;
     sandboxed?: boolean;
+    signal?: AbortSignal;
   }): Promise<MemoryCorpusSearchResult[]>;
   get(params: {
     lookup: string;
