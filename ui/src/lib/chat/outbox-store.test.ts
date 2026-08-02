@@ -37,6 +37,26 @@ describe("stored outbox summaries", () => {
         sessionId: "session-before-reconnect",
       },
     });
+    expect(
+      normalizeStoredQueueItem({
+        id: "queued-empty",
+        text: "first message",
+        createdAt: 2,
+        transcriptRevision: { expectedLeafEntryId: null, sessionId: "session-empty" },
+      }),
+    ).toMatchObject({
+      transcriptRevision: { expectedLeafEntryId: null, sessionId: "session-empty" },
+    });
+    for (const expectedLeafEntryId of ["", 42, { invalid: true }]) {
+      const restored = normalizeStoredQueueItem({
+        id: `malformed-${String(expectedLeafEntryId)}`,
+        text: "retain this row",
+        createdAt: 3,
+        transcriptRevision: { expectedLeafEntryId, sessionId: "session-safe" },
+      });
+      expect(restored).toMatchObject({ text: "retain this row" });
+      expect(restored).not.toHaveProperty("transcriptRevision");
+    }
   });
 
   it("bridges matching storage events until the last subscriber leaves", () => {

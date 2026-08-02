@@ -1213,7 +1213,10 @@ describe("chat directive tag stripping for non-streaming final payloads", () => 
 
     await send({
       idempotencyKey: `idem-${name}-leaf`,
-      requestParams: { expectedLeafEntryId: expectedLeaf },
+      requestParams: {
+        sessionId: mockState.sessionId,
+        expectedLeafEntryId: expectedLeaf,
+      },
       waitFor: "none",
     });
 
@@ -1294,6 +1297,7 @@ describe("chat directive tag stripping for non-streaming final payloads", () => 
         sessionId: mockState.sessionId,
         expectedLeafEntryId: "displayed-leaf",
       },
+      waitFor: "none",
     });
 
     expect(respond).toHaveBeenCalledWith(
