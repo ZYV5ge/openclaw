@@ -166,6 +166,7 @@ let hasAbortableSessionRun: typeof import("./run-lifecycle.ts").hasAbortableSess
 let handlePageGatewayEvent: typeof import("./chat-state-events.ts").handlePageGatewayEvent;
 let loadChatBranches: typeof import("./chat-history.ts").loadChatBranches;
 let loadChatHistory: typeof import("./chat-history.ts").loadChatHistory;
+let parkStoredChatHistoryRefreshUntilReconnect: typeof import("./chat-outbox-drain.ts").parkStoredChatHistoryRefreshUntilReconnect;
 let clearPendingQueueItemsForRun: typeof import("./chat-queue.ts").clearPendingQueueItemsForRun;
 let admitQueuedMessageForSession: typeof import("./chat-queue.ts").admitQueuedMessageForSession;
 let removeQueuedMessage: typeof import("./chat-queue.ts").removeQueuedMessage;
@@ -195,6 +196,7 @@ async function loadChatHelpers(): Promise<void> {
   ({ handlePageGatewayEvent } = await import("./chat-state-events.ts"));
   ({ refreshPageChat } = await import("./chat-state-refresh.ts"));
   ({ loadChatBranches, loadChatHistory } = await import("./chat-history.ts"));
+  ({ parkStoredChatHistoryRefreshUntilReconnect } = await import("./chat-outbox-drain.ts"));
   ({ handleAbortChat, hasAbortableSessionRun } = await import("./run-lifecycle.ts"));
   ({
     admitQueuedMessageForSession,
@@ -7590,6 +7592,68 @@ describe("handleSendChat", () => {
       "keep this behind the reconnect fence",
       "release the reconnect fence",
     ]);
+  });
+
+  it("keeps a manual reconnect-fence retry on authoritative history reconciliation", async () => {
+    const history = createDeferred<unknown>();
+    const sends: Record<string, unknown>[] = [];
+    const original = {
+      id: "manual-reconnect-fence-retry",
+      text: "reconcile this retry before sending",
+      createdAt: 1,
+      sendError: "Review before retrying.",
+      sendRunId: "failed-run",
+      sendState: "failed" as const,
+      sessionKey: "agent:main",
+      transcriptRevision: {
+        expectedLeafEntryId: "leaf-before-retry",
+        sessionId: "session-stable",
+      },
+    };
+    const host = makeHost({
+      requestHandlers: {
+        "chat.history": () => history.promise,
+        "chat.send": (params: unknown) => {
+          const payload = requireRecord(params, "manual reconnect fence retry payload");
+          sends.push(payload);
+          return { runId: payload.idempotencyKey, status: "ok" };
+        },
+      },
+      chatDisplayedLeafEntryId: "leaf-after-retry",
+      chatQueue: [original],
+      currentSessionId: "session-stable",
+    });
+    expect(admitQueuedMessageForSession(host, original.sessionKey, original)).toBe(true);
+    parkStoredChatHistoryRefreshUntilReconnect(
+      host,
+      { sessionKey: original.sessionKey },
+      original.id,
+    );
+
+    const retry = retryQueuedChatMessage(host, original.id);
+
+    await waitForFast(() =>
+      expect(host.request.mock.calls.filter(([method]) => method === "chat.history")).toHaveLength(1),
+    );
+    expect(sends).toStrictEqual([]);
+
+    history.resolve({
+      messages: [],
+      sessionInfo: row("agent:main", {
+        activeLeafEntryId: "leaf-after-retry",
+        hasActiveRun: false,
+        sessionId: "session-stable",
+        status: "done",
+      }),
+    });
+    await retry;
+
+    expect(sends).toHaveLength(1);
+    expect(sends[0]).toMatchObject({
+      expectedLeafEntryId: "leaf-after-retry",
+      message: "reconcile this retry before sending",
+      sessionId: "session-stable",
+    });
   });
 
   it("recovers a memory fallback when its history connection changes", async () => {
