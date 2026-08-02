@@ -201,13 +201,10 @@ function rebindQueuedTranscriptRevisionAfterHistory(
   if (!transcriptRevision) {
     return current;
   }
-  const rebound = updateQueuedSendItem(
-    host,
-    storageMode,
-    queueSessionKey,
-    current.id,
-    (entry) => ({ ...entry, transcriptRevision }),
-  );
+  const rebound = updateQueuedSendItem(host, storageMode, queueSessionKey, current.id, (entry) => ({
+    ...entry,
+    transcriptRevision,
+  }));
   if (!rebound) {
     setChatError(host, OFFLINE_QUEUE_STORAGE_ERROR);
     return "pending";

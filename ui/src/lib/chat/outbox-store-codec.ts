@@ -62,9 +62,7 @@ function normalizeTranscriptRevision(value: unknown): ChatTranscriptRevision | u
   }
   const entry = value as Record<string, unknown>;
   const expectedLeafEntryId =
-    entry.expectedLeafEntryId === null
-      ? null
-      : normalizeOptionalString(entry.expectedLeafEntryId);
+    entry.expectedLeafEntryId === null ? null : normalizeOptionalString(entry.expectedLeafEntryId);
   if (expectedLeafEntryId === undefined) {
     return undefined;
   }
