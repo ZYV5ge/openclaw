@@ -32,12 +32,13 @@ describe("memory-wiki corpus supplement", () => {
     queryMocks.getMemoryWikiPage.mockReset().mockResolvedValue(null);
   });
 
-  it("resolves search and get from each invocation's agent context", async () => {
+  it("resolves agent context and forwards search cancellation", async () => {
     const resolveConfig = vi.fn<MemoryWikiConfigResolver>((agentId, currentAppConfig) =>
       resolveMemoryWikiAgentConfig({ config, appConfig: currentAppConfig, agentId }),
     );
     const getAppConfig = vi.fn(() => appConfig);
     const supplement = createWikiCorpusSupplement({ resolveConfig, getAppConfig });
+    const controller = new AbortController();
 
     await supplement.search({
       query: "support handbook",
@@ -45,6 +46,7 @@ describe("memory-wiki corpus supplement", () => {
       agentId: "support",
       agentSessionKey: "agent:support:main",
       sandboxed: true,
+      signal: controller.signal,
     });
     await supplement.get({
       lookup: "marketing-plan",
@@ -68,10 +70,14 @@ describe("memory-wiki corpus supplement", () => {
       agentId: "support",
       agentSessionKey: "agent:support:main",
       sandboxed: true,
+      signal: controller.signal,
       query: "support handbook",
       maxResults: 4,
       searchBackend: "local",
       searchCorpus: "wiki",
+    });
+    expect(queryMocks.searchMemoryWiki.mock.calls[0]?.[0]).not.toMatchObject({
+      exhaustiveFallback: false,
     });
     expect(queryMocks.getMemoryWikiPage).toHaveBeenCalledWith({
       config: expect.objectContaining({

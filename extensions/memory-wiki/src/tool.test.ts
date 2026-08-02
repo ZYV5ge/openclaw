@@ -1,11 +1,20 @@
 // Memory Wiki tests cover tool plugin behavior.
 import fs from "node:fs/promises";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ResolvedMemoryWikiConfig } from "./config.js";
 import { lintMemoryWikiVault } from "./lint.js";
 import { createMemoryWikiTestHarness } from "./test-helpers.js";
-import { createWikiApplyTool, createWikiLintTool } from "./tool.js";
+import { createWikiApplyTool, createWikiLintTool, createWikiSearchTool } from "./tool.js";
+
+const queryMocks = vi.hoisted(() => ({
+  searchMemoryWiki: vi.fn(),
+}));
+
+vi.mock("./query.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./query.js")>()),
+  searchMemoryWiki: queryMocks.searchMemoryWiki,
+}));
 
 function asSchemaObject(value: unknown): Record<string, unknown> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
@@ -27,6 +36,28 @@ function unionLiteralValues(schema: Record<string, unknown>): string[] {
 
 describe("memory-wiki tools", () => {
   const harness = createMemoryWikiTestHarness();
+
+  beforeEach(() => {
+    queryMocks.searchMemoryWiki.mockReset().mockResolvedValue([]);
+  });
+
+  it("forwards wiki_search cancellation without disabling exhaustive fallback", async () => {
+    const { config } = await harness.createVault({ initialize: true });
+    const controller = new AbortController();
+    const tool = createWikiSearchTool(config);
+
+    await tool.execute("search-call", { query: "repeatable query" }, controller.signal);
+
+    expect(queryMocks.searchMemoryWiki).toHaveBeenCalledWith(
+      expect.objectContaining({
+        query: "repeatable query",
+        signal: controller.signal,
+      }),
+    );
+    expect(queryMocks.searchMemoryWiki.mock.calls[0]?.[0]).not.toMatchObject({
+      exhaustiveFallback: false,
+    });
+  });
 
   it("accepts CLI-style operation aliases in wiki_apply schema", () => {
     const tool = createWikiApplyTool({} as ResolvedMemoryWikiConfig);

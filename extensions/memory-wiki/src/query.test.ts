@@ -10,6 +10,20 @@ import { renderWikiMarkdown } from "./markdown.js";
 import { getMemoryWikiPage, searchMemoryWiki } from "./query.js";
 import { createMemoryWikiTestHarness } from "./test-helpers.js";
 
+type ReadFile = typeof import("node:fs/promises").readFile;
+
+const fsMocks = vi.hoisted(() => ({
+  actualReadFile: undefined as ReadFile | undefined,
+  readFile: vi.fn<ReadFile>(),
+}));
+
+vi.mock("node:fs/promises", async () => {
+  const actual = await vi.importActual<typeof import("node:fs/promises")>("node:fs/promises");
+  fsMocks.actualReadFile = actual.readFile;
+  const patched = { ...actual, readFile: fsMocks.readFile };
+  return { ...patched, default: patched };
+});
+
 const {
   getActiveMemorySearchManagerMock,
   loadCombinedSessionStoreForGatewayMock,
@@ -47,6 +61,22 @@ const { createVault } = createMemoryWikiTestHarness();
 let suiteRoot = "";
 let caseIndex = 0;
 
+function getActualReadFile(): ReadFile {
+  const actualReadFile = fsMocks.actualReadFile;
+  if (!actualReadFile) {
+    throw new Error("actual node:fs/promises readFile is unavailable");
+  }
+  return actualReadFile;
+}
+
+function resetReadFileMock(): void {
+  fsMocks.readFile.mockReset();
+  fsMocks.readFile.mockImplementation(
+    ((...args: Parameters<ReadFile>) =>
+      Reflect.apply(getActualReadFile(), undefined, args)) as ReadFile,
+  );
+}
+
 function collectWikiResultPaths(results: readonly { corpus: string; path: string }[]): string[] {
   const paths: string[] = [];
   for (const result of results) {
@@ -69,6 +99,7 @@ function expectFields(value: unknown, expected: Record<string, unknown>): Record
 }
 
 beforeEach(() => {
+  resetReadFileMock();
   getActiveMemorySearchManagerMock.mockReset();
   getActiveMemorySearchManagerMock.mockResolvedValue({ manager: null, error: "unavailable" });
   loadCombinedSessionStoreForGatewayMock.mockReset();
@@ -97,6 +128,57 @@ async function createQueryVault(options?: {
     initialize: options?.initialize,
     config: options?.config,
   });
+}
+
+const DIGEST_UNDERFILL_QUERY = "needlequartz";
+const DIGEST_UNDERFILL_FALLBACK_COUNT = 17;
+
+async function writeDigestUnderfillPage(
+  rootDir: string,
+  relativePath: string,
+  title: string,
+): Promise<void> {
+  await fs.writeFile(
+    path.join(rootDir, relativePath),
+    renderWikiMarkdown({
+      frontmatter: {
+        pageType: "entity",
+        id: `entity.${path.basename(relativePath, ".md")}`,
+        title,
+      },
+      body: `# ${title}\n\nDigest-underfill fixture.\n`,
+    }),
+    "utf8",
+  );
+}
+
+async function createDigestUnderfillFixture() {
+  const { rootDir, config } = await createQueryVault({ initialize: true });
+  const candidatePath = "entities/digest-candidate.md";
+  await writeDigestUnderfillPage(rootDir, candidatePath, "Needlequartz Digest Candidate");
+  await compileMemoryWikiVault(config);
+  await writeDigestUnderfillPage(rootDir, candidatePath, "Expired Digest Candidate");
+
+  const fallbackPaths = Array.from(
+    { length: DIGEST_UNDERFILL_FALLBACK_COUNT },
+    (_, index) => `entities/fallback-${String(index).padStart(2, "0")}.md`,
+  );
+  await Promise.all(
+    fallbackPaths.map((relativePath, index) =>
+      writeDigestUnderfillPage(
+        rootDir,
+        relativePath,
+        index === DIGEST_UNDERFILL_FALLBACK_COUNT - 1
+          ? "Needlequartz Only Hit"
+          : `Ordinary Fallback ${index}`,
+      ),
+    ),
+  );
+  return {
+    config,
+    fallbackPaths,
+    uniqueRelativePath: fallbackPaths[DIGEST_UNDERFILL_FALLBACK_COUNT - 1],
+  };
 }
 
 function createAppConfig(): OpenClawConfig {
@@ -534,6 +616,91 @@ describe("searchMemoryWiki", () => {
     expect(routeResults[0]?.path).toBe("entities/brad.md");
   });
 
+  it("keeps exhaustive fallback reachable and finds the only hit outside stale digest candidates", async () => {
+    const { config, uniqueRelativePath } = await createDigestUnderfillFixture();
+
+    const results = await searchMemoryWiki({
+      config,
+      query: DIGEST_UNDERFILL_QUERY,
+      maxResults: 1,
+    });
+
+    expect(collectWikiResultPaths(results)).toEqual([uniqueRelativePath]);
+  });
+
+  it("aborts digest-underfill fallback without starting another page read", async () => {
+    const { config, fallbackPaths } = await createDigestUnderfillFixture();
+    const controller = new AbortController();
+    const abortReason = new Error("memory wiki fallback cancelled");
+    const pendingReads: Array<{
+      resolve: (value: string) => void;
+      reject: (reason: unknown) => void;
+    }> = [];
+    const observedSignals: Array<AbortSignal | undefined> = [];
+    let observedReadAbortReason: unknown;
+    let markInitialWaveStarted: (() => void) | undefined;
+    const initialWaveStarted = new Promise<void>((resolve) => {
+      markInitialWaveStarted = resolve;
+    });
+    let fallbackReadCount = 0;
+    fsMocks.readFile.mockImplementation(
+      (async (...args: Parameters<ReadFile>) => {
+        if (!String(args[0]).includes(`${path.sep}entities${path.sep}fallback-`)) {
+          return await Reflect.apply(getActualReadFile(), undefined, args);
+        }
+        fallbackReadCount += 1;
+        const options = args[1];
+        const signal =
+          options && typeof options === "object" && "signal" in options
+            ? options.signal
+            : undefined;
+        observedSignals.push(signal);
+        if (fallbackReadCount === fallbackPaths.length - 1) {
+          markInitialWaveStarted?.();
+        }
+        return await new Promise<string>((resolve, reject) => {
+          pendingReads.push({ resolve, reject });
+          signal?.addEventListener(
+            "abort",
+            () => {
+              observedReadAbortReason ??= signal.reason;
+              reject(signal.reason);
+            },
+            { once: true },
+          );
+        });
+      }) as ReadFile,
+    );
+
+    const searchPromise = searchMemoryWiki({
+      config,
+      query: DIGEST_UNDERFILL_QUERY,
+      maxResults: 1,
+      signal: controller.signal,
+    });
+    await initialWaveStarted;
+    const readsAtAbort = fallbackReadCount;
+    controller.abort(abortReason);
+    pendingReads[0]?.resolve("");
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    const cleanupReason = new Error("test cleanup");
+    for (const pendingRead of pendingReads) {
+      pendingRead.reject(cleanupReason);
+    }
+    const outcome = await searchPromise.then(
+      (results) => ({ status: "fulfilled" as const, results }),
+      (reason: unknown) => ({ status: "rejected" as const, reason }),
+    );
+
+    expect.soft(fallbackReadCount).toBe(readsAtAbort);
+    expect.soft(observedSignals).toHaveLength(readsAtAbort);
+    for (const signal of observedSignals) {
+      expect.soft(signal).toBe(controller.signal);
+    }
+    expect.soft(observedReadAbortReason).toBe(abortReason);
+    expect(outcome.status === "rejected" ? outcome.reason : undefined).toBe(abortReason);
+  });
+
   it("uses body text instead of frontmatter for fallback snippets", async () => {
     const { rootDir, config } = await createQueryVault({
       initialize: true,
@@ -701,7 +868,7 @@ describe("searchMemoryWiki", () => {
     });
   });
 
-  it("includes active memory results when shared search and all corpora are enabled", async () => {
+  it("includes active memory results and forwards the caller signal to shared search", async () => {
     const { rootDir, config } = await createQueryVault({
       initialize: true,
       config: {
@@ -730,17 +897,22 @@ describe("searchMemoryWiki", () => {
       ],
     });
     getActiveMemorySearchManagerMock.mockResolvedValue({ manager });
+    const controller = new AbortController();
 
     const results = await searchMemoryWiki({
       config,
       appConfig: createAppConfig(),
       query: "alpha",
       maxResults: 5,
+      signal: controller.signal,
     });
 
     expect(results).toHaveLength(2);
     expect(results.map((result) => result.corpus).toSorted()).toEqual(["memory", "wiki"]);
-    expect(manager.search).toHaveBeenCalledWith("alpha", { maxResults: 5 });
+    expect(manager.search).toHaveBeenCalledWith("alpha", {
+      maxResults: 5,
+      signal: controller.signal,
+    });
     expect(getActiveMemorySearchManagerMock).toHaveBeenCalledWith({
       cfg: createAppConfig(),
       agentId: "main",

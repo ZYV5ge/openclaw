@@ -22,6 +22,7 @@ on:
           - beta6-session-search
           - beta6-mac-ui
           - beta6-control-ui-send
+          - beta6-memory-wiki-search
       phase:
         description: TDD evidence phase; does not alter the test command
         required: true
@@ -127,15 +128,27 @@ jobs:
           node scripts/check-workflows.mjs
           if [[ "$TDD_PHASE" == "red" ]]; then
             node_modules/.bin/oxfmt \
+              extensions/memory-wiki/src/bounded-walk.abort.test.ts \
+              extensions/memory-wiki/src/corpus-supplement.test.ts \
+              extensions/memory-wiki/src/query.test.ts \
+              extensions/memory-wiki/src/tool.test.ts \
               extensions/google/web-search-provider.test.ts \
               ui/src/pages/chat/chat-submit-guard.test.ts \
               ui/src/pages/chat/chat-send.test.ts
             git --no-pager diff -- \
+              extensions/memory-wiki/src/bounded-walk.abort.test.ts \
+              extensions/memory-wiki/src/corpus-supplement.test.ts \
+              extensions/memory-wiki/src/query.test.ts \
+              extensions/memory-wiki/src/tool.test.ts \
               extensions/google/web-search-provider.test.ts \
               ui/src/pages/chat/chat-submit-guard.test.ts \
               ui/src/pages/chat/chat-send.test.ts
           fi
           node_modules/.bin/oxfmt --check \
+            extensions/memory-wiki/src/bounded-walk.abort.test.ts \
+            extensions/memory-wiki/src/corpus-supplement.test.ts \
+            extensions/memory-wiki/src/query.test.ts \
+            extensions/memory-wiki/src/tool.test.ts \
             extensions/google/src/gemini-web-search-provider.ts \
             extensions/google/web-search-provider.test.ts \
             src/state/openclaw-state-db-startup-checkpoint.ts \
@@ -219,6 +232,14 @@ jobs:
               ;;
             beta6-session-search)
               node scripts/run-vitest.mjs run src/gateway/session-utils.test.ts
+              ;;
+            beta6-memory-wiki-search)
+              node scripts/run-vitest.mjs run \
+                --config test/vitest/vitest.extension-memory.config.ts \
+                memory-wiki/src/bounded-walk.abort.test.ts \
+                memory-wiki/src/corpus-supplement.test.ts \
+                memory-wiki/src/query.test.ts \
+                memory-wiki/src/tool.test.ts
               ;;
             beta6-control-ui-send)
               pnpm --dir ui exec vitest run --config vitest.config.ts \
