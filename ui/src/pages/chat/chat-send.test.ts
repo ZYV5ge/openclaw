@@ -7184,7 +7184,7 @@ describe("handleSendChat", () => {
       },
       chatDisplayedLeafEntryId: "leaf-stale",
       chatMessage: "send after history",
-      currentSessionId: "session-stale",
+      currentSessionId: "session-stable",
     });
 
     const refresh = loadChatHistory(host as unknown as Parameters<typeof loadChatHistory>[0]);
@@ -7196,7 +7196,7 @@ describe("handleSendChat", () => {
       expect(sends).toStrictEqual([]);
       expect(host.chatQueue[0]?.transcriptRevision).toEqual({
         expectedLeafEntryId: "leaf-stale",
-        sessionId: "session-stale",
+        sessionId: "session-stable",
       });
     } finally {
       history.resolve({
@@ -7204,7 +7204,7 @@ describe("handleSendChat", () => {
         sessionInfo: row("agent:main", {
           activeLeafEntryId: "leaf-current",
           hasActiveRun: false,
-          sessionId: "session-current",
+          sessionId: "session-stable",
           status: "done",
         }),
       });
@@ -7214,12 +7214,302 @@ describe("handleSendChat", () => {
     expect(sends).toHaveLength(1);
     expect(listStoredChatOutboxes(host)[0]?.queue[0]?.transcriptRevision).toEqual({
       expectedLeafEntryId: "leaf-current",
-      sessionId: "session-current",
+      sessionId: "session-stable",
     });
     expect(sends[0]).toMatchObject({
       message: "send after history",
       expectedLeafEntryId: "leaf-current",
-      sessionId: "session-current",
+      sessionId: "session-stable",
+    });
+  });
+
+  it("keeps the authoritative history fence across an async settings wait", async () => {
+    const history = createDeferred<unknown>();
+    const settingsPatch = createDeferred<boolean>();
+    const sends: Record<string, unknown>[] = [];
+    const host = makeHost({
+      requestHandlers: {
+        "chat.history": () => history.promise,
+        "chat.send": (params: unknown) => {
+          const payload = requireRecord(params, "history and settings send payload");
+          sends.push(payload);
+          return { runId: payload.idempotencyKey, status: "started" };
+        },
+      },
+      chatDisplayedLeafEntryId: "leaf-before-history",
+      chatMessage: "wait for history and settings",
+      currentSessionId: "session-stable",
+      pendingSettingsPatches: { "agent:main": settingsPatch.promise },
+    });
+
+    const refresh = loadChatHistory(host as unknown as Parameters<typeof loadChatHistory>[0]);
+    await waitForFast(() => expect(host.chatLoading).toBe(true));
+    const send = handleSendChat(host);
+    expect(await raceWithMacrotask(send)).toBe("pending");
+    expect(sends).toStrictEqual([]);
+
+    history.resolve({
+      messages: [],
+      sessionInfo: row("agent:main", {
+        activeLeafEntryId: "leaf-after-history",
+        hasActiveRun: false,
+        sessionId: "session-stable",
+        status: "done",
+      }),
+    });
+    await refresh;
+    await Promise.resolve();
+
+    expect(sends).toStrictEqual([]);
+    expect(listStoredChatOutboxes(host)[0]?.queue[0]?.transcriptRevision).toEqual({
+      expectedLeafEntryId: "leaf-before-history",
+      sessionId: "session-stable",
+    });
+
+    settingsPatch.resolve(true);
+    await send;
+
+    expect(sends).toHaveLength(1);
+    expect(sends[0]).toMatchObject({
+      expectedLeafEntryId: "leaf-after-history",
+      message: "wait for history and settings",
+      sessionId: "session-stable",
+    });
+    expect(listStoredChatOutboxes(host)[0]?.queue[0]?.transcriptRevision).toEqual({
+      expectedLeafEntryId: "leaf-after-history",
+      sessionId: "session-stable",
+    });
+  });
+
+  it("does not rebind a foreground send across a history-driven session rotation", async () => {
+    const history = createDeferred<unknown>();
+    const sends: Record<string, unknown>[] = [];
+    const host = makeHost({
+      requestHandlers: {
+        "chat.history": () => history.promise,
+        "chat.send": (params: unknown) => {
+          const payload = requireRecord(params, "rotated-session send payload");
+          sends.push(payload);
+          return { runId: payload.idempotencyKey, status: "started" };
+        },
+      },
+      chatDisplayedLeafEntryId: "leaf-before-reset",
+      chatMessage: "keep this in the old session",
+      currentSessionId: "session-before-reset",
+    });
+
+    const refresh = loadChatHistory(host as unknown as Parameters<typeof loadChatHistory>[0]);
+    await waitForFast(() => expect(host.chatLoading).toBe(true));
+    const send = handleSendChat(host);
+
+    history.resolve({
+      messages: [],
+      sessionInfo: row("agent:main", {
+        activeLeafEntryId: "leaf-after-reset",
+        hasActiveRun: false,
+        sessionId: "session-after-reset",
+        status: "done",
+      }),
+    });
+    await Promise.all([refresh, send]);
+
+    expect(sends).toStrictEqual([]);
+    expect(host.chatMessage).toBe("keep this in the old session");
+    expect(host.chatQueue[0]).toMatchObject({
+      sendError: "The thread switched branches  review and resend.",
+      sendState: "failed",
+      transcriptRevision: {
+        expectedLeafEntryId: "leaf-before-reset",
+        sessionId: "session-before-reset",
+      },
+    });
+    expect(listStoredChatOutboxes(host)[0]?.queue[0]?.transcriptRevision).toEqual({
+      expectedLeafEntryId: "leaf-before-reset",
+      sessionId: "session-before-reset",
+    });
+  });
+
+  it("waits for authoritative history before retrying with a fresh leaf and run id", async () => {
+    const history = createDeferred<unknown>();
+    const sends: Record<string, unknown>[] = [];
+    const original = {
+      id: "retry-after-active-leaf",
+      text: "retry on the refreshed leaf",
+      createdAt: 1,
+      sendError: "The thread switched branches  review and resend.",
+      sendRunId: "failed-run",
+      sendState: "failed" as const,
+      sessionKey: "agent:main",
+      transcriptRevision: {
+        expectedLeafEntryId: "leaf-before-retry",
+        sessionId: "session-stable",
+      },
+    };
+    const host = makeHost({
+      requestHandlers: {
+        "chat.history": () => history.promise,
+        "chat.send": (params: unknown) => {
+          const payload = requireRecord(params, "history-aware retry payload");
+          sends.push(payload);
+          return { runId: payload.idempotencyKey, status: "started" };
+        },
+      },
+      chatDisplayedLeafEntryId: "leaf-before-retry",
+      chatQueue: [original],
+      currentSessionId: "session-stable",
+    });
+    expect(admitQueuedMessageForSession(host, original.sessionKey, original)).toBe(true);
+
+    const refresh = loadChatHistory(host as unknown as Parameters<typeof loadChatHistory>[0]);
+    await waitForFast(() => expect(host.chatLoading).toBe(true));
+    const retry = retryQueuedChatMessage(host, original.id);
+    expect(await raceWithMacrotask(retry)).toBe("pending");
+    expect(sends).toStrictEqual([]);
+
+    history.resolve({
+      messages: [],
+      sessionInfo: row("agent:main", {
+        activeLeafEntryId: "leaf-after-retry",
+        hasActiveRun: false,
+        sessionId: "session-stable",
+        status: "done",
+      }),
+    });
+    await Promise.all([refresh, retry]);
+
+    expect(sends).toHaveLength(1);
+    expect(sends[0]).toMatchObject({
+      expectedLeafEntryId: "leaf-after-retry",
+      message: original.text,
+      sessionId: "session-stable",
+    });
+    expect(sends[0]?.idempotencyKey).not.toBe(original.sendRunId);
+    expect(uuidPattern.test(String(sends[0]?.idempotencyKey))).toBe(true);
+    expect(listStoredChatOutboxes(host)[0]?.queue[0]).toMatchObject({
+      sendRunId: sends[0]?.idempotencyKey,
+      sendState: "sending",
+      transcriptRevision: {
+        expectedLeafEntryId: "leaf-after-retry",
+        sessionId: "session-stable",
+      },
+    });
+  });
+
+  it("does not retry an old queued send into a rotated session generation", async () => {
+    const history = createDeferred<unknown>();
+    const sends: Record<string, unknown>[] = [];
+    const original = {
+      id: "retry-before-session-reset",
+      text: "do not move this into the new session",
+      createdAt: 1,
+      sendError: "The thread switched branches  review and resend.",
+      sendRunId: "failed-session-run",
+      sendState: "failed" as const,
+      sessionKey: "agent:main",
+      transcriptRevision: {
+        expectedLeafEntryId: "leaf-before-session-reset",
+        sessionId: "session-before-reset",
+      },
+    };
+    const host = makeHost({
+      requestHandlers: {
+        "chat.history": () => history.promise,
+        "chat.send": (params: unknown) => {
+          const payload = requireRecord(params, "rotated-session retry payload");
+          sends.push(payload);
+          return { runId: payload.idempotencyKey, status: "started" };
+        },
+      },
+      chatDisplayedLeafEntryId: "leaf-before-session-reset",
+      chatQueue: [original],
+      currentSessionId: "session-before-reset",
+    });
+    expect(admitQueuedMessageForSession(host, original.sessionKey, original)).toBe(true);
+
+    const refresh = loadChatHistory(host as unknown as Parameters<typeof loadChatHistory>[0]);
+    await waitForFast(() => expect(host.chatLoading).toBe(true));
+    const retry = retryQueuedChatMessage(host, original.id);
+
+    history.resolve({
+      messages: [],
+      sessionInfo: row("agent:main", {
+        activeLeafEntryId: "leaf-after-session-reset",
+        hasActiveRun: false,
+        sessionId: "session-after-reset",
+        status: "done",
+      }),
+    });
+    await Promise.all([refresh, retry]);
+
+    expect(sends).toStrictEqual([]);
+    expect(listStoredChatOutboxes(host)[0]?.queue[0]).toMatchObject({
+      sendRunId: original.sendRunId,
+      sendState: "failed",
+      transcriptRevision: original.transcriptRevision,
+    });
+  });
+
+  it("ignores stale reconciliation after a durable transcript revision update", async () => {
+    const staleHistory = createDeferred<unknown>();
+    let historyRequests = 0;
+    const original = {
+      id: "revision-reconciliation-cas",
+      text: "keep the newer durable revision",
+      createdAt: 1,
+      sendAttempts: 1,
+      sendRunId: "revision-reconciliation-cas",
+      sendState: "waiting-reconnect" as const,
+      sessionKey: "agent:main",
+      transcriptRevision: {
+        expectedLeafEntryId: "leaf-before-reconcile",
+        sessionId: "session-stable",
+      },
+    };
+    const host = makeHost({
+      requestHandlers: {
+        "chat.history": () => {
+          historyRequests += 1;
+          if (historyRequests === 1) {
+            return staleHistory.promise;
+          }
+          return Promise.resolve({
+            messages: [],
+            sessionInfo: row("agent:main", { hasActiveRun: true, status: "running" }),
+          });
+        },
+        "chat.send": (params: unknown) => {
+          throw new Error(`unexpected chat.send: ${JSON.stringify(params)}`);
+        },
+      },
+      chatQueue: [original],
+    });
+    expect(admitQueuedMessageForSession(host, original.sessionKey, original)).toBe(true);
+
+    const drain = retryReconnectableQueuedChatSends(host);
+    await waitForFast(() => expect(historyRequests).toBe(1));
+    const refreshedRevision = {
+      expectedLeafEntryId: "leaf-after-reconcile",
+      sessionId: "session-stable",
+    };
+    writeChatQueueForScope(host, original.sessionKey, [
+      { ...original, transcriptRevision: refreshedRevision },
+    ]);
+    staleHistory.resolve({
+      messages: [
+        {
+          role: "user",
+          __openclaw: { idempotencyKey: `${original.sendRunId}:user` },
+        },
+      ],
+      sessionInfo: row("agent:main", { hasActiveRun: false, status: "done" }),
+    });
+    await drain;
+
+    expect(historyRequests).toBe(2);
+    expect(host.request.mock.calls.filter(([method]) => method === "chat.send")).toHaveLength(0);
+    expect(listStoredChatOutboxes(host)[0]?.queue[0]).toMatchObject({
+      sendState: "waiting-reconnect",
+      transcriptRevision: refreshedRevision,
     });
   });
 
