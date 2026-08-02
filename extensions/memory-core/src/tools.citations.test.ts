@@ -48,6 +48,21 @@ function collectWikiResultPaths(results: readonly { corpus: string; path: string
   return paths;
 }
 
+type PartialMemorySearchDetails = {
+  results: Array<{ corpus: string; path: string }>;
+  partial?: boolean;
+  disabled?: boolean;
+  unavailable?: boolean;
+  debug?: {
+    partialFailures?: Array<{
+      phase: "memory" | "supplement";
+      kind: "memory-failed" | "memory-cooldown" | "supplement-failed";
+      pluginId?: string;
+      timedOut?: boolean;
+    }>;
+  };
+};
+
 async function waitFor<T>(task: () => Promise<T>, timeoutMs = 1500): Promise<T> {
   let value: T | undefined;
   await vi.waitFor(
@@ -444,14 +459,17 @@ describe("memory tools", () => {
         corpus,
       });
 
-      expect(search).toHaveBeenCalledWith({
-        query: "alpha",
-        maxResults: 3,
-        agentId: "marketing-agent",
-        agentSessionKey: "agent:marketing-agent:main",
-        sandboxed: true,
-        corpus,
-      });
+      expect(search).toHaveBeenCalledWith(
+        expect.objectContaining({
+          query: "alpha",
+          maxResults: 3,
+          agentId: "marketing-agent",
+          agentSessionKey: "agent:marketing-agent:main",
+          sandboxed: true,
+          corpus,
+          signal: expect.any(AbortSignal),
+        }),
+      );
     },
   );
 
@@ -614,10 +632,136 @@ describe("memory tools", () => {
     expect(getMemorySearchManagerMockCalls()).toBe(1);
   });
 
-  it("does not cooldown primary memory when a corpus=all wiki supplement stalls", async () => {
+  it("starts supplements before primary memory settles and preserves both lanes", async () => {
+    let markPrimaryStarted: (() => void) | undefined;
+    const primaryStarted = new Promise<void>((resolve) => {
+      markPrimaryStarted = resolve;
+    });
+    let releasePrimary: (() => void) | undefined;
+    const primaryDeferred = new Promise<void>((resolve) => {
+      releasePrimary = resolve;
+    });
+    let supplementStarted = false;
+    setMemorySearchImpl(async () => {
+      markPrimaryStarted?.();
+      await primaryDeferred;
+      return [
+        {
+          path: "MEMORY.md",
+          startLine: 5,
+          endLine: 7,
+          score: 0.9,
+          snippet: "primary memory",
+          source: "memory" as const,
+        },
+      ];
+    });
+    registerMemoryCorpusSupplement("memory-wiki", {
+      search: async () => {
+        supplementStarted = true;
+        return [
+          {
+            corpus: "wiki",
+            path: "entities/alpha.md",
+            score: 4,
+            snippet: "wiki result",
+          },
+        ];
+      },
+      get: async () => null,
+    });
+
+    const tool = createMemorySearchToolOrThrow();
+    const resultPromise = tool.execute("call_all_parallel_lanes", {
+      query: "alpha",
+      corpus: "all",
+    });
+    await primaryStarted;
+    await Promise.resolve();
+    const supplementStartedBeforePrimaryRelease = supplementStarted;
+    releasePrimary?.();
+    const result = await resultPromise;
+    const details = result.details as PartialMemorySearchDetails;
+
+    expect(supplementStartedBeforePrimaryRelease).toBe(true);
+    expect(details.results.map((entry) => [entry.corpus, entry.path]).toSorted()).toEqual(
+      [
+        ["memory", "MEMORY.md"],
+        ["wiki", "entities/alpha.md"],
+      ].toSorted(),
+    );
+  });
+
+  it("completes corpus=all in the slower lane duration instead of summing both lanes", async () => {
+    vi.useFakeTimers();
+    try {
+      setMemorySearchImpl(
+        async () =>
+          await new Promise((resolve) => {
+            setTimeout(
+              () =>
+                resolve([
+                  {
+                    path: "MEMORY.md",
+                    startLine: 5,
+                    endLine: 7,
+                    score: 0.9,
+                    snippet: "primary memory",
+                    source: "memory" as const,
+                  },
+                ]),
+              10_000,
+            );
+          }),
+      );
+      registerMemoryCorpusSupplement("memory-wiki", {
+        search: async () =>
+          await new Promise((resolve) => {
+            setTimeout(
+              () =>
+                resolve([
+                  {
+                    corpus: "wiki",
+                    path: "entities/alpha.md",
+                    score: 4,
+                    snippet: "wiki result",
+                  },
+                ]),
+              9_000,
+            );
+          }),
+        get: async () => null,
+      });
+
+      const tool = createMemorySearchToolOrThrow();
+      const startedAt = Date.now();
+      let settledAt: number | undefined;
+      const resultPromise = tool
+        .execute("call_all_parallel_duration", { query: "alpha", corpus: "all" })
+        .then((result) => {
+          settledAt = Date.now();
+          return result;
+        });
+      await vi.advanceTimersByTimeAsync(10_000);
+      const settledAtSlowerLane = settledAt;
+      if (settledAt === undefined) {
+        await vi.advanceTimersByTimeAsync(9_000);
+      }
+      const result = await resultPromise;
+      const details = result.details as PartialMemorySearchDetails;
+
+      expect(settledAtSlowerLane).toBe(startedAt + 10_000);
+      expect(details.results).toHaveLength(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps primary memory when a wiki supplement times out and does not cooldown memory", async () => {
     vi.useFakeTimers();
     try {
       let searchCalls = 0;
+      let supplementSignal: AbortSignal | undefined;
       setMemorySearchImpl(async () => {
         searchCalls += 1;
         return [
@@ -626,91 +770,176 @@ describe("memory tools", () => {
             startLine: 5,
             endLine: 7,
             score: 0.9,
-            snippet: "@@ -5,3 @@\nAssistant: noted",
+            snippet: "primary memory",
             source: "memory" as const,
           },
         ];
       });
       registerMemoryCorpusSupplement("memory-wiki", {
-        search: async () => await new Promise(() => {}),
+        search: async (params) => {
+          supplementSignal = params.signal;
+          return await new Promise<never>(() => {});
+        },
         get: async () => null,
       });
 
       const tool = createMemorySearchToolOrThrow();
-      const stalledAllResultPromise = tool.execute("call_all_stalled_wiki", {
+      const resultPromise = tool.execute("call_all_stalled_wiki", {
         query: "alpha",
         corpus: "all",
       });
       await vi.advanceTimersByTimeAsync(15_000);
-      const stalledAllResult = await stalledAllResultPromise;
-      expectUnavailableMemorySearchDetails(stalledAllResult.details, {
-        error: "memory_search timed out after 15s",
-        warning: "Memory search is unavailable due to an embedding/provider error.",
-        action: "Check embedding provider configuration and retry memory_search.",
-      });
+      const result = await resultPromise;
+      const details = result.details as PartialMemorySearchDetails;
 
-      const memoryResult = await tool.execute("call_memory_after_stalled_wiki", {
-        query: "alpha",
-      });
-      const details = memoryResult.details as { results: Array<{ corpus: string; path: string }> };
       expect(details.results.map((entry) => [entry.corpus, entry.path])).toEqual([
         ["memory", "MEMORY.md"],
       ]);
+      expect(details.partial).toBe(true);
+      expect(details).not.toMatchObject({ disabled: true, unavailable: true });
+      expect(details.debug?.partialFailures).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            phase: "supplement",
+            kind: "supplement-failed",
+            pluginId: "memory-wiki",
+            timedOut: true,
+          }),
+        ]),
+      );
+      expect(supplementSignal?.aborted).toBe(true);
+
+      const retry = await tool.execute("call_memory_after_stalled_wiki", {
+        query: "alpha",
+        corpus: "memory",
+      });
+      expect((retry.details as PartialMemorySearchDetails).results).toHaveLength(1);
       expect(searchCalls).toBe(2);
     } finally {
       vi.useRealTimers();
     }
   });
 
-  it("cooldowns primary memory when corpus=all memory search stalls", async () => {
+  it("keeps wiki results when primary memory times out and cooldowns only primary memory", async () => {
     vi.useFakeTimers();
     try {
       let searchCalls = 0;
       setMemorySearchImpl(async () => {
         searchCalls += 1;
-        return await new Promise(() => {});
+        return await new Promise<never>(() => {});
       });
       registerMemoryCorpusSupplement("memory-wiki", {
         search: async () => [
           {
             corpus: "wiki",
             path: "entities/alpha.md",
-            title: "Alpha",
-            kind: "entity",
             score: 4,
-            snippet: "Alpha wiki entry",
+            snippet: "wiki result",
           },
         ],
         get: async () => null,
       });
 
       const tool = createMemorySearchToolOrThrow();
-      const stalledAllResultPromise = tool.execute("call_all_stalled_memory", {
+      const resultPromise = tool.execute("call_all_stalled_memory", {
         query: "alpha",
         corpus: "all",
       });
       await vi.advanceTimersByTimeAsync(15_000);
-      const stalledAllResult = await stalledAllResultPromise;
-      expectUnavailableMemorySearchDetails(stalledAllResult.details, {
-        error: "memory_search timed out after 15s",
-        warning: "Memory search is unavailable due to an embedding/provider error.",
-        action: "Check embedding provider configuration and retry memory_search.",
-      });
+      const result = await resultPromise;
+      const details = result.details as PartialMemorySearchDetails;
 
-      const wikiOnlyResult = await tool.execute("call_all_after_stalled_memory", {
-        query: "alpha",
-        corpus: "all",
-      });
-      const details = wikiOnlyResult.details as {
-        results: Array<{ corpus: string; path: string }>;
-      };
       expect(details.results.map((entry) => [entry.corpus, entry.path])).toEqual([
         ["wiki", "entities/alpha.md"],
       ]);
+      expect(details.partial).toBe(true);
+      expect(details).not.toMatchObject({ disabled: true, unavailable: true });
+      expect(details.debug?.partialFailures).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            phase: "memory",
+            kind: "memory-failed",
+            timedOut: true,
+          }),
+        ]),
+      );
+
+      const retry = await tool.execute("call_all_after_stalled_memory", {
+        query: "alpha",
+        corpus: "all",
+      });
+      expect((retry.details as PartialMemorySearchDetails).results).toHaveLength(1);
       expect(searchCalls).toBe(1);
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("forwards caller abort to supplements and preserves the original reason without cooldown", async () => {
+    const controller = new AbortController();
+    const abortReason = new Error("memory search caller cancelled");
+    let searchCalls = 0;
+    let supplementSignal: AbortSignal | undefined;
+    setMemorySearchImpl(async (options) => {
+      searchCalls += 1;
+      if (searchCalls > 1) {
+        return [
+          {
+            path: "MEMORY.md",
+            startLine: 5,
+            endLine: 7,
+            score: 0.9,
+            snippet: "retry memory",
+            source: "memory" as const,
+          },
+        ];
+      }
+      return await new Promise<never>((_resolve, reject) => {
+        options?.signal?.addEventListener("abort", () => reject(options.signal?.reason), {
+          once: true,
+        });
+      });
+    });
+    registerMemoryCorpusSupplement("memory-wiki", {
+      search: async (params) => {
+        supplementSignal = params.signal;
+        return await new Promise<never>((_resolve, reject) => {
+          params.signal?.addEventListener("abort", () => reject(params.signal?.reason), {
+            once: true,
+          });
+        });
+      },
+      get: async () => null,
+    });
+
+    const tool = createMemorySearchToolOrThrow();
+    const cancelledPromise = tool.execute(
+      "call_all_caller_abort",
+      { query: "alpha", corpus: "all" },
+      controller.signal,
+    );
+    const supplementStarted = await vi
+      .waitFor(() => expect(supplementSignal).toBeInstanceOf(AbortSignal), {
+        interval: 1,
+        timeout: 150,
+      })
+      .then(
+        () => true,
+        () => false,
+      );
+    controller.abort(abortReason);
+
+    await expect(cancelledPromise).rejects.toBe(abortReason);
+    expect(supplementStarted).toBe(true);
+    expect(supplementSignal?.aborted).toBe(true);
+    expect(supplementSignal?.reason).toBe(abortReason);
+
+    const retry = await tool.execute("call_memory_after_caller_abort", {
+      query: "alpha",
+      corpus: "memory",
+    });
+    expect((retry.details as PartialMemorySearchDetails).results).toHaveLength(1);
+    expect(searchCalls).toBe(2);
   });
 
   it("falls back to a wiki corpus supplement for memory_get corpus=all", async () => {

@@ -128,6 +128,8 @@ jobs:
           node scripts/check-workflows.mjs
           if [[ "$TDD_PHASE" == "red" ]]; then
             node_modules/.bin/oxfmt \
+              extensions/memory-core/src/tools.shared.test.ts \
+              extensions/memory-core/src/tools.citations.test.ts \
               extensions/memory-wiki/src/bounded-walk.abort.test.ts \
               extensions/memory-wiki/src/corpus-supplement.test.ts \
               extensions/memory-wiki/src/query.test.ts \
@@ -136,6 +138,8 @@ jobs:
               ui/src/pages/chat/chat-submit-guard.test.ts \
               ui/src/pages/chat/chat-send.test.ts
             git --no-pager diff -- \
+              extensions/memory-core/src/tools.shared.test.ts \
+              extensions/memory-core/src/tools.citations.test.ts \
               extensions/memory-wiki/src/bounded-walk.abort.test.ts \
               extensions/memory-wiki/src/corpus-supplement.test.ts \
               extensions/memory-wiki/src/query.test.ts \
@@ -145,6 +149,12 @@ jobs:
               ui/src/pages/chat/chat-send.test.ts
           fi
           node_modules/.bin/oxfmt --check \
+            extensions/memory-core/src/tools.shared.ts \
+            extensions/memory-core/src/tools.ts \
+            extensions/memory-core/src/tools.shared.test.ts \
+            extensions/memory-core/src/tools.test.ts \
+            extensions/memory-core/src/tools.citations.test.ts \
+            extensions/memory-core/src/memory/search-deadline.test.ts \
             extensions/memory-wiki/src/bounded-walk.abort.test.ts \
             extensions/memory-wiki/src/corpus-supplement.test.ts \
             extensions/memory-wiki/src/query.test.ts \
@@ -243,6 +253,10 @@ jobs:
             beta6-memory-wiki-search)
               node scripts/run-vitest.mjs run \
                 --config test/vitest/vitest.extension-memory.config.ts \
+                memory-core/src/tools.shared.test.ts \
+                memory-core/src/tools.test.ts \
+                memory-core/src/tools.citations.test.ts \
+                memory-core/src/memory/search-deadline.test.ts \
                 memory-wiki/src/bounded-walk.abort.test.ts \
                 memory-wiki/src/corpus-supplement.test.ts \
                 memory-wiki/src/query.test.ts \
