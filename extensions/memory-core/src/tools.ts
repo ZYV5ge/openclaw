@@ -1013,7 +1013,7 @@ export function createMemorySearchTool(options: {
             const warning =
               staleness?.warning && partialWarning
                 ? `${staleness.warning} ${partialWarning}`
-                : staleness?.warning ?? partialWarning;
+                : (staleness?.warning ?? partialWarning);
             return jsonResult({
               results,
               provider,
