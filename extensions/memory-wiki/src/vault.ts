@@ -106,8 +106,9 @@ async function writeFileIfMissing(
 
 export async function initializeMemoryWikiVault(
   config: ResolvedMemoryWikiConfig,
-  options?: { nowMs?: number },
+  options?: { nowMs?: number; signal?: AbortSignal },
 ): Promise<InitializeMemoryWikiVaultResult> {
+  options?.signal?.throwIfAborted();
   const rootDir = config.vault.path;
   const createdDirectories: string[] = [];
   const createdFiles: string[] = [];
@@ -157,7 +158,12 @@ export async function initializeMemoryWikiVault(
     });
   }
   await ensureMemoryWikiVaultGeneration(rootDir);
-  await activateExistingMemoryWikiVault(config);
+  options?.signal?.throwIfAborted();
+  await activateExistingMemoryWikiVault(
+    config,
+    options?.signal ? { signal: options.signal } : undefined,
+  );
+  options?.signal?.throwIfAborted();
 
   return {
     rootDir,
@@ -169,9 +175,12 @@ export async function initializeMemoryWikiVault(
 
 export async function activateExistingMemoryWikiVault(
   config: ResolvedMemoryWikiConfig,
+  options?: { signal?: AbortSignal },
 ): Promise<void> {
+  options?.signal?.throwIfAborted();
   const rootDir = config.vault.path;
-  const identity = await loadMemoryWikiValidatedVaultIdentity(rootDir);
+  const identity = await loadMemoryWikiValidatedVaultIdentity(rootDir, options?.signal);
+  options?.signal?.throwIfAborted();
   if (!identity.vaultGeneration) {
     throw new Error(`Memory Wiki vault generation is missing: ${rootDir}`);
   }
@@ -181,6 +190,7 @@ export async function activateExistingMemoryWikiVault(
     identity.compiledCachePublicationId,
   );
   await reconcileMemoryWikiCompiledCacheOwner(config, () =>
-    loadMemoryWikiValidatedVaultIdentity(rootDir),
+    loadMemoryWikiValidatedVaultIdentity(rootDir, options?.signal),
   );
+  options?.signal?.throwIfAborted();
 }

@@ -46,11 +46,17 @@ export async function appendMemoryWikiLog(
 
 export async function loadMemoryWikiVaultIdentity(
   vaultRoot: string,
+  signal?: AbortSignal,
 ): Promise<MemoryWikiVaultIdentity> {
+  signal?.throwIfAborted();
   let raw: string;
   try {
-    raw = await fs.readFile(path.join(vaultRoot, ".openclaw-wiki", "log.jsonl"), "utf8");
+    raw = await fs.readFile(path.join(vaultRoot, ".openclaw-wiki", "log.jsonl"), {
+      encoding: "utf8",
+      ...(signal ? { signal } : {}),
+    });
   } catch (error) {
+    signal?.throwIfAborted();
     if (error instanceof Error && "code" in error && error.code === "ENOENT") {
       return {
         vaultGeneration: null,
@@ -61,11 +67,13 @@ export async function loadMemoryWikiVaultIdentity(
     }
     throw error;
   }
+  signal?.throwIfAborted();
   let vaultGeneration: string | null = null;
   let compiledCacheReservationId: string | null = null;
   let compiledCachePublicationId: string | null = null;
   let compiledCacheSourceGeneration: string | null = null;
   for (const line of raw.split(/\r?\n/)) {
+    signal?.throwIfAborted();
     try {
       const parsed = JSON.parse(line) as MemoryWikiLogEntry;
       const candidateVaultGeneration = parsed.details?.[VAULT_GENERATION_FIELD];
@@ -124,11 +132,19 @@ export async function loadMemoryWikiVaultIdentity(
   };
 }
 
-export async function resolveMemoryWikiVaultSourceGeneration(vaultRoot: string): Promise<string> {
+export async function resolveMemoryWikiVaultSourceGeneration(
+  vaultRoot: string,
+  signal?: AbortSignal,
+): Promise<string> {
+  signal?.throwIfAborted();
   const files = (
     await Promise.all(
       COMPILED_SOURCE_DIRECTORIES.map(async (relativeDir) => {
-        const entries = await walkMemoryWikiDirectory(vaultRoot, relativeDir);
+        const entries = await walkMemoryWikiDirectory(
+          vaultRoot,
+          relativeDir,
+          signal ? { signal } : {},
+        );
         return entries
           .filter((entry) => entry.kind === "file" && entry.relativePath.endsWith(".md"))
           .map((entry) => {
@@ -143,14 +159,22 @@ export async function resolveMemoryWikiVaultSourceGeneration(vaultRoot: string):
   )
     .flat()
     .toSorted((left, right) => left.relativePath.localeCompare(right.relativePath));
+  signal?.throwIfAborted();
   const hash = createHash("sha256");
   for (const file of files) {
+    signal?.throwIfAborted();
     const relativePath = Buffer.from(file.relativePath);
     const pathLength = Buffer.allocUnsafe(4);
     pathLength.writeUInt32BE(relativePath.byteLength);
-    const contentDigest = createHash("sha256")
-      .update(await fs.readFile(file.absolutePath))
-      .digest();
+    let content: Buffer;
+    try {
+      content = await fs.readFile(file.absolutePath, signal ? { signal } : {});
+    } catch (error) {
+      signal?.throwIfAborted();
+      throw error;
+    }
+    signal?.throwIfAborted();
+    const contentDigest = createHash("sha256").update(content).digest();
     hash.update(pathLength).update(relativePath).update(contentDigest);
   }
   return hash.digest("hex");
@@ -158,13 +182,15 @@ export async function resolveMemoryWikiVaultSourceGeneration(vaultRoot: string):
 
 export async function loadMemoryWikiValidatedVaultIdentity(
   vaultRoot: string,
+  signal?: AbortSignal,
 ): Promise<MemoryWikiVaultIdentity> {
-  const identity = await loadMemoryWikiVaultIdentity(vaultRoot);
+  const identity = await loadMemoryWikiVaultIdentity(vaultRoot, signal);
+  signal?.throwIfAborted();
   if (!identity.compiledCachePublicationId || !identity.compiledCacheSourceGeneration) {
     return identity;
   }
   if (
-    (await resolveMemoryWikiVaultSourceGeneration(vaultRoot)) ===
+    (await resolveMemoryWikiVaultSourceGeneration(vaultRoot, signal)) ===
     identity.compiledCacheSourceGeneration
   ) {
     return identity;

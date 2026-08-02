@@ -1489,7 +1489,10 @@ export async function searchMemoryWiki(params: {
     sandboxed: params.sandboxed,
     operation: "wiki_search",
   });
-  await initializeMemoryWikiVault(effectiveConfig);
+  await initializeMemoryWikiVault(
+    effectiveConfig,
+    params.signal ? { signal: params.signal } : undefined,
+  );
   params.signal?.throwIfAborted();
   const maxResults = normalizePositiveInteger(params.maxResults, 10);
   const mode = params.mode ?? "auto";

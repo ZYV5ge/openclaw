@@ -151,8 +151,10 @@ jobs:
             extensions/memory-wiki/src/tool.test.ts \
             extensions/memory-wiki/src/bounded-walk.ts \
             extensions/memory-wiki/src/corpus-supplement.ts \
+            extensions/memory-wiki/src/log.ts \
             extensions/memory-wiki/src/query.ts \
             extensions/memory-wiki/src/tool.ts \
+            extensions/memory-wiki/src/vault.ts \
             src/plugins/registry-contribution-types.ts \
             extensions/google/src/gemini-web-search-provider.ts \
             extensions/google/web-search-provider.test.ts \
