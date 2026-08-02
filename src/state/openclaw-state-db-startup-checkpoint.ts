@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import type { DatabaseSync } from "node:sqlite";
 import { openNodeSqliteDatabase } from "../infra/node-sqlite.js";
 import { assertSqliteIntegrity } from "../infra/sqlite-integrity.js";
@@ -56,20 +57,47 @@ function ensureStartupMigrationCheckpointSchema(db: DatabaseSync, pathname: stri
   );
 }
 
+export type OpenClawStateStartupMigrationCheckpointDatabasePurpose =
+  | "bootstrap"
+  | "verified-existing"
+  | "lease-metadata";
+
 export function withOpenClawStateStartupMigrationCheckpointDatabase<T>(
   callback: (db: DatabaseSync) => T,
-  options: OpenClawStateDatabaseOptions = {},
+  options: OpenClawStateDatabaseOptions & {
+    purpose?: OpenClawStateStartupMigrationCheckpointDatabasePurpose;
+  } = {},
 ): T {
   const env = options.env ?? process.env;
   const pathname = resolveDatabasePath(options);
+  const purpose = options.purpose ?? "bootstrap";
+  if (purpose !== "bootstrap" && !existsSync(pathname)) {
+    throw new Error(
+      "OpenClaw state database disappeared before startup migration " +
+        purpose +
+        ": " +
+        pathname,
+    );
+  }
   ensureOpenClawStatePermissions(pathname, env);
   const db = openNodeSqliteDatabase(pathname);
   try {
-    configureSqlitePreSchemaPragmas(db, {
-      busyTimeoutMs: OPENCLAW_SQLITE_BUSY_TIMEOUT_MS,
-    });
-    assertSqliteIntegrity(db, pathname);
-    ensureStartupMigrationCheckpointSchema(db, pathname);
+    if (purpose === "bootstrap") {
+      configureSqlitePreSchemaPragmas(db, {
+        busyTimeoutMs: OPENCLAW_SQLITE_BUSY_TIMEOUT_MS,
+      });
+    } else {
+      db.exec("PRAGMA busy_timeout = " + OPENCLAW_SQLITE_BUSY_TIMEOUT_MS + ";");
+    }
+    db.exec("PRAGMA trusted_schema = OFF;");
+    // Gate future schemas before any full integrity check or schema write.
+    assertSupportedSchemaVersion(db, pathname);
+    if (purpose !== "lease-metadata") {
+      assertSqliteIntegrity(db, pathname);
+    }
+    if (purpose === "bootstrap") {
+      ensureStartupMigrationCheckpointSchema(db, pathname);
+    }
     return callback(db);
   } finally {
     db.close();

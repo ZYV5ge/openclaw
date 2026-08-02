@@ -80,12 +80,8 @@ const startupMigrationTempDirs = useAutoCleanupTempDirTracker(afterEach);
 
 type StartupMigrationLeaseTestDatabase = Pick<OpenClawStateKyselyDatabase, "state_leases">;
 
-
-function releaseStartupMigrationLeaseAt(
-  lease: StartupMigrationLease,
-  nowMs: number,
-): void {
-  (lease.release as (params?: { nowMs?: number }) => void)({ nowMs });
+function releaseStartupMigrationLeaseAt(lease: StartupMigrationLease, nowMs: number): void {
+  lease.release({ nowMs });
 }
 
 function withRawStartupMigrationDatabase<T>(
@@ -101,14 +97,13 @@ function withRawStartupMigrationDatabase<T>(
   }
 }
 
-function overwriteStartupMigrationLeaseExpiresAt(
-  env: NodeJS.ProcessEnv,
-  expiresAt: number,
-): void {
+function overwriteStartupMigrationLeaseExpiresAt(env: NodeJS.ProcessEnv, expiresAt: number): void {
   withRawStartupMigrationDatabase(env, (db) => {
-    db.prepare(
-      "UPDATE state_leases SET expires_at = ? WHERE scope = ? AND lease_key = ?",
-    ).run(expiresAt, "startup-migrations", "global");
+    db.prepare("UPDATE state_leases SET expires_at = ? WHERE scope = ? AND lease_key = ?").run(
+      expiresAt,
+      "startup-migrations",
+      "global",
+    );
   });
 }
 
@@ -127,9 +122,7 @@ function overwriteStartupMigrationLeaseOwner(
 function readStartupMigrationLeaseOwner(env: NodeJS.ProcessEnv): string | null {
   return withRawStartupMigrationDatabase(env, (db) => {
     const row = db
-      .prepare(
-        "SELECT owner FROM state_leases WHERE scope = ? AND lease_key = ?",
-      )
+      .prepare("SELECT owner FROM state_leases WHERE scope = ? AND lease_key = ?")
       .get("startup-migrations", "global") as { owner?: unknown } | undefined;
     return typeof row?.owner === "string" ? row.owner : null;
   });
@@ -144,9 +137,7 @@ function dropStartupMigrationCheckpointTable(env: NodeJS.ProcessEnv): void {
 function hasStartupMigrationCheckpointTable(env: NodeJS.ProcessEnv): boolean {
   return withRawStartupMigrationDatabase(env, (db) => {
     const row = db
-      .prepare(
-        "SELECT 1 AS ok FROM sqlite_master WHERE type = 'table' AND name = 'schema_meta'",
-      )
+      .prepare("SELECT 1 AS ok FROM sqlite_master WHERE type = 'table' AND name = 'schema_meta'")
       .get() as { ok?: unknown } | undefined;
     return row?.ok === 1;
   });
@@ -172,7 +163,7 @@ function overwriteStartupMigrationLeaseOwnerStartedAt(
         }),
       );
     },
-    { env },
+    { env, purpose: "lease-metadata" },
   );
 }
 
@@ -421,6 +412,8 @@ describe("startup migration checkpoint", () => {
     expect(() => acquireStartupMigrationLease({ env, nowMs: 1000, owner: "first" })).toThrow(
       `newer schema version ${OPENCLAW_STATE_SCHEMA_VERSION + 1}`,
     );
+    expect(integrityProbe.fullChecks).toBe(0);
+    expect(integrityProbe.tableChecks).toBe(0);
 
     const verify = new sqlite.DatabaseSync(dbPath, { readOnly: true });
     const row = verify
