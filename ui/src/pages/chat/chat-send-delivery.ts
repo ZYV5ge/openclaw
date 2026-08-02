@@ -10,6 +10,7 @@ import type { ChatCommandResetOptions } from "./chat-commands.ts";
 import { loadChatBranches, loadChatHistory, type ChatState } from "./chat-history.ts";
 import {
   flushStoredChatOutbox,
+  parkStoredChatHistoryRefreshUntilReconnect,
   retryableGatewayDelayMs,
   scheduleStoredChatOutboxDrain as scheduleOutboxDrain,
   sameQueuedDeliveryVersion,
@@ -219,6 +220,22 @@ function historyRefreshOriginIsCurrent(
   );
 }
 
+function parkDurableHistoryRefreshUntilReconnect(
+  host: ChatHost,
+  item: ChatQueueItem,
+  queueSessionKey: string,
+): QueuedChatSendResult {
+  parkStoredChatHistoryRefreshUntilReconnect(
+    host,
+    {
+      sessionKey: queueSessionKey,
+      ...(item.agentId ? { agentId: item.agentId } : {}),
+    },
+    item.id,
+  );
+  return "pending";
+}
+
 function failMemoryQueuedSendAfterInvalidHistoryRefresh(
   host: ChatHost,
   item: ChatQueueItem,
@@ -381,7 +398,7 @@ async function sendQueuedChatMessage(
         ? { client: host.client, connectionEpoch: host.connectionEpoch, host }
         : undefined);
     if (!deliveryContext) {
-      return "pending";
+      return parkDurableHistoryRefreshUntilReconnect(host, prepared, queueSessionKey);
     }
     const revisionHost = resolveHistoryRefreshOrigin(host, historyRefresh);
     const revisionState = revisionHost as unknown as ChatState;
@@ -408,7 +425,7 @@ async function sendQueuedChatMessage(
           route,
         );
       }
-      return "pending";
+      return parkDurableHistoryRefreshUntilReconnect(host, prepared, queueSessionKey);
     }
     prepared = rebindQueuedTranscriptRevisionAfterHistory(
       host,

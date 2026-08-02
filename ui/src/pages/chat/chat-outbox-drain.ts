@@ -88,7 +88,14 @@ type StoredChatOutboxDrainLane = {
   rerun: boolean;
 };
 
+type StoredChatHistoryRefreshFence = {
+  client: GatewayBrowserClient;
+  connectionEpoch: ChatHost["connectionEpoch"];
+  host: ChatHost;
+};
+
 type StoredChatOutboxClientState = {
+  historyRefreshFences: Map<string, StoredChatHistoryRefreshFence>;
   lanes: Map<string, StoredChatOutboxDrainLane>;
   retryTimers: Map<string, ReturnType<typeof setTimeout>>;
 };
@@ -108,9 +115,48 @@ function getStoredChatOutboxClientState(client: GatewayBrowserClient): StoredCha
   if (existing) {
     return existing;
   }
-  const created = { lanes: new Map(), retryTimers: new Map() };
+  const created: StoredChatOutboxClientState = {
+    historyRefreshFences: new Map(),
+    lanes: new Map(),
+    retryTimers: new Map(),
+  };
   storedChatOutboxClients.set(client, created);
   return created;
+}
+
+function storedChatHistoryRefreshFenceKey(scope: StoredChatOutboxScope, itemId: string): string {
+  return `${storedChatOutboxScopeKey(scope)}\0${itemId}`;
+}
+
+function clearStoredChatHistoryRefreshFencesForScope(
+  state: StoredChatOutboxClientState,
+  scope: StoredChatOutboxScope,
+): void {
+  const prefix = `${storedChatOutboxScopeKey(scope)}\0`;
+  for (const key of state.historyRefreshFences.keys()) {
+    if (key.startsWith(prefix)) {
+      state.historyRefreshFences.delete(key);
+    }
+  }
+}
+
+export function parkStoredChatHistoryRefreshUntilReconnect(
+  host: ChatHost,
+  scope: StoredChatOutboxScope,
+  itemId: string,
+): void {
+  const client = host.client;
+  if (!client) {
+    return;
+  }
+  getStoredChatOutboxClientState(client).historyRefreshFences.set(
+    storedChatHistoryRefreshFenceKey(scope, itemId),
+    {
+      client,
+      connectionEpoch: host.connectionEpoch,
+      host,
+    },
+  );
 }
 
 export function retryableGatewayDelayMs(err: unknown): number | null {
@@ -296,11 +342,14 @@ async function drainStoredChatOutbox(
 ): Promise<StoredChatOutboxDrainResult> {
   while (true) {
     const host = lane.host;
-    if (!host.connected || !host.client) {
+    const client = host.client;
+    if (!host.connected || !client) {
       return "blocked";
     }
+    const clientState = getStoredChatOutboxClientState(client);
     const outbox = readStoredChatOutbox(host, scope);
     if (!outbox) {
+      clearStoredChatHistoryRefreshFencesForScope(clientState, scope);
       return "empty";
     }
     const storedItem = outbox.queue.find(
@@ -314,7 +363,28 @@ async function drainStoredChatOutbox(
       ? (readQueuedMessageById(host, storedItem.id) ?? storedItem)
       : storedItem;
     if (!item || (item.sendState === "failed" && !freshItem)) {
+      if (item) {
+        clientState.historyRefreshFences.delete(
+          storedChatHistoryRefreshFenceKey(scope, item.id),
+        );
+      } else {
+        clearStoredChatHistoryRefreshFencesForScope(clientState, scope);
+      }
       return "empty";
+    }
+    const historyRefreshFenceKey = storedChatHistoryRefreshFenceKey(scope, item.id);
+    const historyRefreshFence = clientState.historyRefreshFences.get(historyRefreshFenceKey);
+    if (historyRefreshFence) {
+      const reconnected =
+        historyRefreshFence.host.connected &&
+        Boolean(historyRefreshFence.host.client) &&
+        (historyRefreshFence.host.client !== historyRefreshFence.client ||
+          historyRefreshFence.host.connectionEpoch !== historyRefreshFence.connectionEpoch);
+      if (!reconnected) {
+        syncVisibleChatQueueProjection(host);
+        return "blocked";
+      }
+      clientState.historyRefreshFences.delete(historyRefreshFenceKey);
     }
     if (
       item.sendState === "unconfirmed" ||
