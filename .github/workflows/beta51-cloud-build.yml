@@ -210,8 +210,14 @@ jobs:
             src/auto-reply/reply/restart-recovery-claim.test.ts \
             src/auto-reply/reply/agent-runner.runreplyagent.e2e.test.ts \
             src/gateway/session-utils.test.ts \
+            packages/gateway-protocol/src/schema/logs-chat.ts \
             packages/gateway-protocol/src/schema/logs-chat.test.ts \
+            src/config/sessions/session-accessor.sqlite-active-events.ts \
             src/config/sessions/session-accessor.sqlite-active-events.test.ts \
+            src/config/sessions/session-accessor.sqlite-active-path.ts \
+            src/config/sessions/session-accessor.ts \
+            src/config/sessions/session-transcript-index.ts \
+            src/gateway/server-methods/chat-send-admission.ts \
             src/gateway/server-methods/chat.directive-tags.test.ts \
             ui/src/lib/chat/outbox-store.test.ts \
             ui/src/pages/chat/chat-send-contract.ts \
@@ -329,8 +335,16 @@ jobs:
               pnpm tsgo:ui || ui_type_status=$?
               ui_test_type_status=0
               pnpm tsgo:test:ui || ui_test_type_status=$?
-              if (( protocol_status != 0 || accessor_status != 0 || gateway_status != 0 || ui_status != 0 || core_type_status != 0 || src_test_type_status != 0 || package_test_type_status != 0 || ui_type_status != 0 || ui_test_type_status != 0 )); then
-                echo "::error::active-path status protocol=$protocol_status accessor=$accessor_status gateway=$gateway_status ui=$ui_status core=$core_type_status src-test=$src_test_type_status package-test=$package_test_type_status ui-types=$ui_type_status ui-test-types=$ui_test_type_status"
+              kysely_lint_status=0
+              pnpm lint:kysely || kysely_lint_status=$?
+              accessor_boundary_status=0
+              pnpm lint:tmp:session-accessor-boundary || accessor_boundary_status=$?
+              reader_boundary_status=0
+              pnpm lint:tmp:session-transcript-reader-boundary || reader_boundary_status=$?
+              sqlite_boundary_status=0
+              pnpm lint:tmp:sqlite-transaction-boundary || sqlite_boundary_status=$?
+              if (( protocol_status != 0 || accessor_status != 0 || gateway_status != 0 || ui_status != 0 || core_type_status != 0 || src_test_type_status != 0 || package_test_type_status != 0 || ui_type_status != 0 || ui_test_type_status != 0 || kysely_lint_status != 0 || accessor_boundary_status != 0 || reader_boundary_status != 0 || sqlite_boundary_status != 0 )); then
+                echo "::error::active-path status protocol=$protocol_status accessor=$accessor_status gateway=$gateway_status ui=$ui_status core=$core_type_status src-test=$src_test_type_status package-test=$package_test_type_status ui-types=$ui_type_status ui-test-types=$ui_test_type_status kysely=$kysely_lint_status accessor-boundary=$accessor_boundary_status reader-boundary=$reader_boundary_status sqlite-boundary=$sqlite_boundary_status"
                 exit 1
               fi
               ;;
