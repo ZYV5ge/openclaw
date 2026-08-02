@@ -1,6 +1,7 @@
 // Memory Core plugin module implements tools behavior.
 import { formatErrorMessage } from "openclaw/plugin-sdk/error-runtime";
 import {
+  resolveMemorySearchStaleness,
   stripMemoryAnnotationCarriers,
   type MemoryReadResult,
   type MemorySource,
@@ -508,7 +509,7 @@ export function createMemorySearchTool(options: {
     label: "Memory Search",
     name: "memory_search",
     description:
-      "Mandatory recall step: semantically search MEMORY.md + memory/*.md (and optional session transcripts) before answering questions about prior work, decisions, dates, people, preferences, or todos. Optional `corpus=wiki` or `corpus=all` also searches registered compiled-wiki supplements. `corpus=memory` restricts hits to indexed memory files (excludes session transcript chunks from ranking). `corpus=sessions` restricts hits to indexed session transcripts (same visibility rules as session history tools). If response has disabled=true, memory retrieval is unavailable; you must tell the user and include the warning/action guidance.",
+      "Mandatory recall step: semantically search MEMORY.md + memory/*.md (and optional session transcripts) before answering questions about prior work, decisions, dates, people, preferences, or todos. Optional `corpus=wiki` or `corpus=all` also searches registered compiled-wiki supplements. `corpus=memory` restricts hits to indexed memory files (excludes session transcript chunks from ranking). `corpus=sessions` restricts hits to indexed session transcripts (same visibility rules as session history tools). If response has disabled=true or stale=true, memory retrieval is unavailable; you must tell the user and include the warning/action guidance.",
     parameters: MemorySearchSchema,
     execute:
       ({ cfg, agentId }) =>
@@ -704,6 +705,9 @@ export function createMemorySearchTool(options: {
             let fallback: unknown;
             let searchMode: string | undefined;
             let pausedIndexIdentityReason: string | undefined;
+            let staleness:
+              | Exclude<ReturnType<typeof resolveMemorySearchStaleness>, null>
+              | undefined;
             let managerMs: number | undefined;
             let managerCacheState: string | undefined;
             let searchDebug:
@@ -855,6 +859,7 @@ export function createMemorySearchTool(options: {
                     rawResults = rawResults.filter((hit) => hit.source === "memory");
                   }
                   const status = activeMemory.manager.status();
+                  staleness = resolveMemorySearchStaleness(status, agentId) ?? undefined;
                   const payloadResults = rawResults.map((result) => ({
                     ...result,
                     snippet: stripMemoryAnnotationCarriers(result.snippet),
@@ -1008,6 +1013,7 @@ export function createMemorySearchTool(options: {
               fallback,
               citations: citationsMode,
               mode: searchMode,
+              ...staleness,
               debug,
               ...(partialFailures.length > 0
                 ? {
