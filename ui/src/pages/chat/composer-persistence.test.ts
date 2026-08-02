@@ -372,8 +372,8 @@ describe("chat composer persistence", () => {
     const refreshed = {
       ...original,
       transcriptRevision: {
-        expectedLeafEntryId: "leaf-after-remove",
-        sessionId: "session-stable",
+        expectedLeafEntryId: "leaf-before-remove",
+        sessionId: "session-after-remove",
       },
     };
     expect(admitStoredChatComposerQueueItem(state, state.sessionKey, original)).toBe(true);
