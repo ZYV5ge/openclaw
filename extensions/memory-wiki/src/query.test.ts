@@ -666,12 +666,15 @@ describe("searchMemoryWiki", () => {
       });
     }) as ReadFile);
 
-    const searchPromise = searchMemoryWiki({
+    const outcomePromise = searchMemoryWiki({
       config,
       query: DIGEST_UNDERFILL_QUERY,
       maxResults: 1,
       signal: controller.signal,
-    });
+    }).then(
+      (results) => ({ status: "fulfilled" as const, results }),
+      (reason: unknown) => ({ status: "rejected" as const, reason }),
+    );
     await firstReadStarted;
     await new Promise<void>((resolve) => setTimeout(resolve, 0));
     const readsAtAbort = fallbackReadCount;
@@ -682,10 +685,7 @@ describe("searchMemoryWiki", () => {
     for (const pendingRead of pendingReads) {
       pendingRead.reject(cleanupReason);
     }
-    const outcome = await searchPromise.then(
-      (results) => ({ status: "fulfilled" as const, results }),
-      (reason: unknown) => ({ status: "rejected" as const, reason }),
-    );
+    const outcome = await outcomePromise;
 
     expect.soft(readsAtAbort).toBeGreaterThan(0);
     expect.soft(readsAtAbort).toBeLessThan(fallbackPaths.length);
