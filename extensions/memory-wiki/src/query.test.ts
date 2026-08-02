@@ -135,6 +135,7 @@ async function writeDigestUnderfillPage(
   rootDir: string,
   relativePath: string,
   title: string,
+  body = "Digest-underfill fixture.",
 ): Promise<void> {
   await fs.writeFile(
     path.join(rootDir, relativePath),
@@ -144,39 +145,133 @@ async function writeDigestUnderfillPage(
         id: `entity.${path.basename(relativePath, ".md")}`,
         title,
       },
-      body: `# ${title}\n\nDigest-underfill fixture.\n`,
+      body: `# ${title}\n\n${body}\n`,
     }),
     "utf8",
   );
+}
+
+async function writeDigestUnderfillFallbackPages(rootDir: string) {
+  const fallbackPaths = Array.from(
+    { length: DIGEST_UNDERFILL_FALLBACK_COUNT },
+    (_, index) => `entities/fallback-${String(index).padStart(2, "0")}.md`,
+  );
+  const uniqueRelativePath = fallbackPaths[DIGEST_UNDERFILL_FALLBACK_COUNT - 1];
+  await Promise.all(
+    fallbackPaths.map((relativePath, index) =>
+      writeDigestUnderfillPage(
+        rootDir,
+        relativePath,
+        `Ordinary Fallback ${index}`,
+        index === DIGEST_UNDERFILL_FALLBACK_COUNT - 1
+          ? `Only this body contains ${DIGEST_UNDERFILL_QUERY}.`
+          : "Digest-underfill fixture.",
+      ),
+    ),
+  );
+  return { fallbackPaths, uniqueRelativePath };
+}
+
+async function createSourceGenerationMismatchFixture() {
+  const { rootDir, config } = await createQueryVault({ initialize: true });
+  const candidatePath = "entities/digest-candidate.md";
+  await writeDigestUnderfillPage(rootDir, candidatePath, "Needlequartz Digest Candidate");
+  await compileMemoryWikiVault(config);
+  await writeDigestUnderfillPage(rootDir, candidatePath, "Expired Digest Candidate");
+  const fallback = await writeDigestUnderfillFallbackPages(rootDir);
+  return { config, candidatePath, ...fallback };
 }
 
 async function createDigestUnderfillFixture() {
   const { rootDir, config } = await createQueryVault({ initialize: true });
   const candidatePath = "entities/digest-candidate.md";
   await writeDigestUnderfillPage(rootDir, candidatePath, "Needlequartz Digest Candidate");
+  const fallback = await writeDigestUnderfillFallbackPages(rootDir);
   await compileMemoryWikiVault(config);
-  await writeDigestUnderfillPage(rootDir, candidatePath, "Expired Digest Candidate");
+  return { config, candidatePath, ...fallback };
+}
 
-  const fallbackPaths = Array.from(
-    { length: DIGEST_UNDERFILL_FALLBACK_COUNT },
-    (_, index) => `entities/fallback-${String(index).padStart(2, "0")}.md`,
+async function expectSearchCancellationStopsTargetReads(params: {
+  fallbackPaths: string[];
+  readKind: "source-generation" | "query-page";
+  runSearch: (signal: AbortSignal) => Promise<unknown>;
+}): Promise<void> {
+  const controller = new AbortController();
+  const abortReason = new Error(`memory wiki ${params.readKind} cancelled`);
+  const pendingReads: Array<{
+    resolve: (value: string) => void;
+    reject: (reason: unknown) => void;
+  }> = [];
+  const observedSignals: Array<AbortSignal | undefined> = [];
+  let observedReadAbortReason: unknown;
+  let markFirstReadStarted: (() => void) | undefined;
+  const firstReadStarted = new Promise<void>((resolve) => {
+    markFirstReadStarted = resolve;
+  });
+  let targetReadCount = 0;
+  fsMocks.readFile.mockImplementation((async (...args: Parameters<ReadFile>) => {
+    if (!String(args[0]).includes(`${path.sep}entities${path.sep}fallback-`)) {
+      return await Reflect.apply(getActualReadFile(), undefined, args);
+    }
+    const options = args[1];
+    const isUtf8PageRead =
+      typeof options === "object" &&
+      options !== null &&
+      "encoding" in options &&
+      options.encoding === "utf8";
+    const isTargetRead =
+      params.readKind === "query-page" ? isUtf8PageRead : !isUtf8PageRead;
+    if (!isTargetRead) {
+      return await Reflect.apply(getActualReadFile(), undefined, args);
+    }
+
+    targetReadCount += 1;
+    const signal =
+      typeof options === "object" && options !== null && "signal" in options
+        ? options.signal
+        : undefined;
+    observedSignals.push(signal);
+    if (targetReadCount === 1) {
+      markFirstReadStarted?.();
+    }
+    return await new Promise<string>((resolve, reject) => {
+      pendingReads.push({ resolve, reject });
+      signal?.addEventListener(
+        "abort",
+        () => {
+          observedReadAbortReason ??= signal.reason;
+          reject(signal.reason);
+        },
+        { once: true },
+      );
+    });
+  }) as ReadFile);
+
+  const outcomePromise = params.runSearch(controller.signal).then(
+    (result) => ({ status: "fulfilled" as const, result }),
+    (reason: unknown) => ({ status: "rejected" as const, reason }),
   );
-  await Promise.all(
-    fallbackPaths.map((relativePath, index) =>
-      writeDigestUnderfillPage(
-        rootDir,
-        relativePath,
-        index === DIGEST_UNDERFILL_FALLBACK_COUNT - 1
-          ? "Needlequartz Only Hit"
-          : `Ordinary Fallback ${index}`,
-      ),
-    ),
-  );
-  return {
-    config,
-    fallbackPaths,
-    uniqueRelativePath: fallbackPaths[DIGEST_UNDERFILL_FALLBACK_COUNT - 1],
-  };
+  await firstReadStarted;
+  await new Promise<void>((resolve) => setTimeout(resolve, 0));
+  const readsAtAbort = targetReadCount;
+  controller.abort(abortReason);
+  pendingReads[0]?.resolve("");
+  await new Promise<void>((resolve) => setTimeout(resolve, 0));
+  const cleanupReason = new Error("test cleanup");
+  for (const pendingRead of pendingReads) {
+    pendingRead.reject(cleanupReason);
+  }
+  const outcome = await outcomePromise;
+
+  expect.soft(readsAtAbort).toBeGreaterThan(0);
+  expect.soft(readsAtAbort).toBeLessThan(params.fallbackPaths.length);
+  expect.soft(targetReadCount).toBe(readsAtAbort);
+  expect.soft(observedSignals).toHaveLength(readsAtAbort);
+  for (const signal of observedSignals) {
+    expect.soft(signal).toBe(controller.signal);
+  }
+  expect.soft(observedReadAbortReason).toBe(abortReason);
+  expect(outcome.status === "rejected" ? outcome.reason : undefined).toBe(abortReason);
 }
 
 function createAppConfig(): OpenClawConfig {
@@ -614,88 +709,50 @@ describe("searchMemoryWiki", () => {
     expect(routeResults[0]?.path).toBe("entities/brad.md");
   });
 
-  it("keeps exhaustive fallback reachable and finds the only hit outside stale digest candidates", async () => {
-    const { config, uniqueRelativePath } = await createDigestUnderfillFixture();
+  it("keeps real digest-underfill fallback reachable for the only body hit", async () => {
+    const { config, candidatePath, uniqueRelativePath } = await createDigestUnderfillFixture();
 
     const results = await searchMemoryWiki({
       config,
       query: DIGEST_UNDERFILL_QUERY,
-      maxResults: 1,
+      maxResults: 2,
     });
 
-    expect(collectWikiResultPaths(results)).toEqual([uniqueRelativePath]);
+    expect(collectWikiResultPaths(results).toSorted()).toEqual(
+      [candidatePath, uniqueRelativePath].toSorted(),
+    );
   });
 
-  it("aborts digest-underfill fallback without starting another page read", async () => {
-    const { config, fallbackPaths } = await createDigestUnderfillFixture();
-    const controller = new AbortController();
-    const abortReason = new Error("memory wiki fallback cancelled");
-    const pendingReads: Array<{
-      resolve: (value: string) => void;
-      reject: (reason: unknown) => void;
-    }> = [];
-    const observedSignals: Array<AbortSignal | undefined> = [];
-    let observedReadAbortReason: unknown;
-    let markFirstReadStarted: (() => void) | undefined;
-    const firstReadStarted = new Promise<void>((resolve) => {
-      markFirstReadStarted = resolve;
+  it("aborts source-generation validation without starting another page read", async () => {
+    const { config, fallbackPaths } = await createSourceGenerationMismatchFixture();
+
+    await expectSearchCancellationStopsTargetReads({
+      fallbackPaths,
+      readKind: "source-generation",
+      runSearch: (signal) =>
+        searchMemoryWiki({
+          config,
+          query: DIGEST_UNDERFILL_QUERY,
+          maxResults: 1,
+          signal,
+        }),
     });
-    let fallbackReadCount = 0;
-    fsMocks.readFile.mockImplementation((async (...args: Parameters<ReadFile>) => {
-      if (!String(args[0]).includes(`${path.sep}entities${path.sep}fallback-`)) {
-        return await Reflect.apply(getActualReadFile(), undefined, args);
-      }
-      fallbackReadCount += 1;
-      const options = args[1];
-      const signal =
-        options && typeof options === "object" && "signal" in options ? options.signal : undefined;
-      observedSignals.push(signal);
-      if (fallbackReadCount === 1) {
-        markFirstReadStarted?.();
-      }
-      return await new Promise<string>((resolve, reject) => {
-        pendingReads.push({ resolve, reject });
-        signal?.addEventListener(
-          "abort",
-          () => {
-            observedReadAbortReason ??= signal.reason;
-            reject(signal.reason);
-          },
-          { once: true },
-        );
-      });
-    }) as ReadFile);
+  });
 
-    const outcomePromise = searchMemoryWiki({
-      config,
-      query: DIGEST_UNDERFILL_QUERY,
-      maxResults: 1,
-      signal: controller.signal,
-    }).then(
-      (results) => ({ status: "fulfilled" as const, results }),
-      (reason: unknown) => ({ status: "rejected" as const, reason }),
-    );
-    await firstReadStarted;
-    await new Promise<void>((resolve) => setTimeout(resolve, 0));
-    const readsAtAbort = fallbackReadCount;
-    controller.abort(abortReason);
-    pendingReads[0]?.resolve("");
-    await new Promise<void>((resolve) => setTimeout(resolve, 0));
-    const cleanupReason = new Error("test cleanup");
-    for (const pendingRead of pendingReads) {
-      pendingRead.reject(cleanupReason);
-    }
-    const outcome = await outcomePromise;
+  it("aborts real digest-underfill fallback without starting another query page read", async () => {
+    const { config, fallbackPaths } = await createDigestUnderfillFixture();
 
-    expect.soft(readsAtAbort).toBeGreaterThan(0);
-    expect.soft(readsAtAbort).toBeLessThan(fallbackPaths.length);
-    expect.soft(fallbackReadCount).toBe(readsAtAbort);
-    expect.soft(observedSignals).toHaveLength(readsAtAbort);
-    for (const signal of observedSignals) {
-      expect.soft(signal).toBe(controller.signal);
-    }
-    expect.soft(observedReadAbortReason).toBe(abortReason);
-    expect(outcome.status === "rejected" ? outcome.reason : undefined).toBe(abortReason);
+    await expectSearchCancellationStopsTargetReads({
+      fallbackPaths,
+      readKind: "query-page",
+      runSearch: (signal) =>
+        searchMemoryWiki({
+          config,
+          query: DIGEST_UNDERFILL_QUERY,
+          maxResults: 2,
+          signal,
+        }),
+    });
   });
 
   it("uses body text instead of frontmatter for fallback snippets", async () => {
