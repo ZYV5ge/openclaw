@@ -1077,13 +1077,16 @@ jobs:
           RUNTIME_UI="$runtime_package/dist/control-ui" \
           MANIFEST_DIR="$BUNDLE_DIR" \
           node --input-type=module <<'NODE'
+          import fs from "node:fs";
           import { writeControlUiReleaseParityReport } from "./scripts/verify-control-ui-release-parity.mjs";
 
+          const packageJson = JSON.parse(fs.readFileSync("package.json", "utf8"));
           writeControlUiReleaseParityReport({
             rootUi: process.env.ROOT_UI,
             appUi: process.env.APP_UI,
             runtimeUi: process.env.RUNTIME_UI,
             manifestDir: process.env.MANIFEST_DIR,
+            packageFiles: packageJson.files,
           });
           NODE
           RUNTIME_ROOT="$runtime_package" node --input-type=module <<'NODE'

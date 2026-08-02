@@ -5,6 +5,7 @@ import fs from "node:fs";
 import path from "node:path";
 
 const SOURCE_MAP_SUFFIX = ".map";
+const PACKAGE_SOURCE_MAP_EXCLUSION = "!dist/**/*.map";
 
 const sha256 = (body) => crypto.createHash("sha256").update(body).digest("hex");
 
@@ -69,11 +70,30 @@ function requireMatchingManifest(expected, actual, label) {
   );
 }
 
-export function verifyControlUiReleaseParity({ rootUi, appUi, runtimeUi }) {
+export function verifyControlUiReleaseParity({
+  rootUi,
+  appUi,
+  runtimeUi,
+  packageFiles,
+}) {
+  if (
+    !Array.isArray(packageFiles) ||
+    !packageFiles.includes(PACKAGE_SOURCE_MAP_EXCLUSION)
+  ) {
+    throw new Error(
+      "Control UI package files contract must exclude dist/**/*.map before runtime normalization",
+    );
+  }
+
   const root = buildControlUiManifest(rootUi);
   const app = buildControlUiManifest(appUi);
   const runtime = buildControlUiManifest(runtimeUi);
   requireMatchingManifest(root, app, "root versus app");
+
+  const rootSourceMaps = root.filter((entry) => !isRuntimePackagedControlUiPath(entry.path));
+  if (rootSourceMaps.length === 0) {
+    throw new Error("Root and App Control UI must retain source maps");
+  }
 
   const unexpectedRuntimeSourceMaps = runtime
     .filter((entry) => !isRuntimePackagedControlUiPath(entry.path))
@@ -101,8 +121,14 @@ export function writeControlUiReleaseParityReport({
   appUi,
   runtimeUi,
   manifestDir,
+  packageFiles,
 }) {
-  const manifests = verifyControlUiReleaseParity({ rootUi, appUi, runtimeUi });
+  const manifests = verifyControlUiReleaseParity({
+    rootUi,
+    appUi,
+    runtimeUi,
+    packageFiles,
+  });
   const filenames = {
     root: "control-ui-root.manifest.json",
     app: "control-ui-app.manifest.json",
