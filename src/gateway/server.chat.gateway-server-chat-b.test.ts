@@ -1523,66 +1523,62 @@ describe("gateway server chat", () => {
     });
   });
 
-  test(
-    "chat.metadata preserves configured models when text commands require exec approvals migration",
-    async () => {
-      await withGatewayChatHarness(async ({ ws }) => {
-        await writeGatewayConfig({
-          agents: {
-            defaults: {
-              model: {
-                primary: "openai/gpt-main",
-              },
-              models: {
-                "openai/gpt-main": {},
-                "openai/gpt-secondary": {},
-              },
+  test("chat.metadata preserves configured models when text commands require exec approvals migration", async () => {
+    await withGatewayChatHarness(async ({ ws }) => {
+      await writeGatewayConfig({
+        agents: {
+          defaults: {
+            model: {
+              primary: "openai/gpt-main",
             },
-            entries: {
-              main: { default: true },
+            models: {
+              "openai/gpt-main": {},
+              "openai/gpt-secondary": {},
             },
           },
-          models: {
-            providers: {
-              openai: {
-                baseUrl: "https://openai.example.com/v1",
-                models: [
-                  { id: "gpt-main", name: "GPT Main" },
-                  { id: "gpt-secondary", name: "GPT Secondary" },
-                ],
-              },
+          entries: {
+            main: { default: true },
+          },
+        },
+        models: {
+          providers: {
+            openai: {
+              baseUrl: "https://openai.example.com/v1",
+              models: [
+                { id: "gpt-main", name: "GPT Main" },
+                { id: "gpt-secondary", name: "GPT Secondary" },
+              ],
             },
           },
-        });
-        await connectOk(ws);
-
-        const legacyExecApprovalsPath = path.join(
-          autoCleanupTempDirs.make("openclaw-chat-metadata-exec-approvals-"),
-          "exec-approvals.json",
-        );
-        const commandsListResult = await import(
-          "./server-methods/commands-list-result.js"
-        );
-        vi.spyOn(commandsListResult, "buildCommandsListResult").mockImplementationOnce(() => {
-          throw new ExecApprovalsMigrationRequiredError(legacyExecApprovalsPath);
-        });
-
-        const metadata = await rpcReq<{
-          commands?: Array<{ name?: string }>;
-          models?: Array<{ id?: string; provider?: string }>;
-        }>(ws, "chat.metadata", { agentId: "main" });
-
-        expect(metadata.ok).toBe(true);
-        expect(metadata.payload?.commands).toBeUndefined();
-        expect(metadata.payload?.models).toEqual(
-          expect.arrayContaining([
-            expect.objectContaining({ id: "gpt-main", provider: "openai" }),
-            expect.objectContaining({ id: "gpt-secondary", provider: "openai" }),
-          ]),
-        );
+        },
       });
-    },
-  );
+      await connectOk(ws);
+
+      const legacyExecApprovalsPath = path.join(
+        autoCleanupTempDirs.make("openclaw-chat-metadata-exec-approvals-"),
+        "exec-approvals.json",
+      );
+      const commandsListResult = await import("./server-methods/commands-list-result.js");
+      vi.spyOn(commandsListResult, "buildCommandsListResult").mockImplementationOnce(() => {
+        throw new ExecApprovalsMigrationRequiredError(legacyExecApprovalsPath);
+      });
+
+      const metadata = await rpcReq<{
+        commands?: Array<{ name?: string }>;
+        models?: Array<{ id?: string; provider?: string }>;
+      }>(ws, "chat.metadata", { agentId: "main" });
+
+      expect(metadata.ok).toBe(true);
+      expect(metadata.payload?.commands).toBeUndefined();
+      expect(metadata.payload?.models).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ id: "gpt-main", provider: "openai" }),
+          expect.objectContaining({ id: "gpt-secondary", provider: "openai" }),
+        ]),
+      );
+    });
+  });
+
 
   test("chat.metadata remains unavailable when configured models fail", async () => {
     await withGatewayChatHarness(async ({ ws }) => {
@@ -1601,7 +1597,6 @@ describe("gateway server chat", () => {
       });
     });
   });
-
 
   test("chat.send returns in_flight when duplicate attachment send wins parsing race", async () => {
     openDirectChatSession();

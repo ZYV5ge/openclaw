@@ -1,7 +1,7 @@
 import {
   DEFAULT_GATEWAY_REQUEST_TIMEOUT_MS,
   gatewayStartupUnavailableDetails,
-} from "/gateway-client/browser";
+} from "@openclaw/gateway-client/browser";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { GatewayRequestError } from "../../api/gateway.ts";
 import type { GatewayAgentRow, ModelCatalogEntry } from "../../api/types.ts";
@@ -45,7 +45,6 @@ function startupUnavailableError(retryAfterMs = 250): GatewayRequestError {
 afterEach(() => {
   vi.useRealTimers();
 });
-
 
 describe("new-session model runtime", () => {
   it("restores a browser preference only after the model and thinking level validate", async () => {
@@ -245,9 +244,7 @@ describe("new-session model runtime", () => {
     ];
     const { context, request } = contextWith(models);
     request.mockReset();
-    request
-      .mockRejectedValueOnce(startupUnavailableError(250))
-      .mockResolvedValueOnce({ models });
+    request.mockRejectedValueOnce(startupUnavailableError(250)).mockResolvedValueOnce({ models });
     const control = new NewSessionModelControl(() => undefined);
 
     control.load(context, "main", true, {
@@ -355,5 +352,4 @@ describe("new-session model runtime", () => {
     await vi.advanceTimersByTimeAsync(10_000);
     expect(request).toHaveBeenCalledTimes(30);
   });
-
 });
