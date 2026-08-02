@@ -1189,6 +1189,72 @@ describe("memory_search unavailable payloads", () => {
     expect(getMemorySyncMockCalls()).toBe(0);
   });
 
+  it("aborts and settles concurrent supplements before returning paused-index metadata", async () => {
+    let searchCalls = 0;
+    setMemorySearchImpl(async () => {
+      searchCalls += 1;
+      return [];
+    });
+    const reason = "index was built for provider openai, expected ollama";
+    setMemoryCustomStatus({
+      indexIdentity: {
+        status: "mismatched",
+        reason,
+      },
+    });
+    let supplementStarted = false;
+    let supplementSignal: AbortSignal | undefined;
+    let supplementSettled = false;
+    registerMemoryCorpusSupplement("memory-wiki", {
+      search: async (params) => {
+        supplementStarted = true;
+        supplementSignal = params.signal;
+        try {
+          if (!params.signal) {
+            throw new Error("expected supplement abort signal");
+          }
+          const signal = params.signal;
+          return await new Promise<never>((_resolve, reject) => {
+            const rejectOnAbort = () => reject(signal.reason);
+            if (signal.aborted) {
+              rejectOnAbort();
+              return;
+            }
+            signal.addEventListener("abort", rejectOnAbort, { once: true });
+          });
+        } finally {
+          supplementSettled = true;
+        }
+      },
+      get: async () => null,
+    });
+
+    const tool = createMemorySearchToolOrThrow({
+      config: {
+        agents: { list: [{ id: "main", default: true }] },
+        memory: { citations: "off" },
+      },
+    });
+    const result = await tool.execute("paused-index-with-supplement", {
+      query: "hidden thread codename",
+      corpus: "all",
+    });
+
+    expectUnavailableMemorySearchDetails(result.details, {
+      error: reason,
+      warning:
+        "Tell the user: memory search is paused because the memory index was built with a different embedding provider/model/settings.",
+      action:
+        "Tell the user to run: openclaw memory status --index or openclaw memory index --force.",
+    });
+    expect(searchCalls).toBe(1);
+    expect(supplementStarted).toBe(true);
+    expect(supplementSignal).toBeInstanceOf(AbortSignal);
+    expect(supplementSignal?.aborted).toBe(true);
+    expect(supplementSettled).toBe(true);
+    expect(getMemorySyncMockCalls()).toBe(0);
+  });
+
   it("returns structured search debug metadata for qmd results", async () => {
     setMemoryBackend("qmd");
     setMemorySearchImpl(async (opts) => {

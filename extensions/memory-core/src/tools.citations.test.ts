@@ -692,6 +692,42 @@ describe("memory tools", () => {
     );
   });
 
+  it("returns unavailable with both failures when no search backend succeeds", async () => {
+    setMemorySearchImpl(async () => {
+      throw new Error("primary memory failed");
+    });
+    registerMemoryCorpusSupplement("memory-wiki", {
+      search: async () => {
+        throw new Error("wiki supplement failed");
+      },
+      get: async () => null,
+    });
+
+    const tool = createMemorySearchToolOrThrow();
+    const result = await tool.execute("call_all_both_backends_failed", {
+      query: "alpha",
+      corpus: "all",
+    });
+    const details = result.details as PartialMemorySearchDetails;
+
+    expect(details.results).toEqual([]);
+    expect(details.disabled).toBe(true);
+    expect(details.unavailable).toBe(true);
+    expect(details.debug?.partialFailures).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          phase: "memory",
+          kind: "memory-failed",
+        }),
+        expect.objectContaining({
+          phase: "supplement",
+          kind: "supplement-failed",
+          pluginId: "memory-wiki",
+        }),
+      ]),
+    );
+  });
+
   it("completes corpus=all in the slower lane duration instead of summing both lanes", async () => {
     vi.useFakeTimers();
     try {
