@@ -369,6 +369,7 @@ jobs:
       - name: Run fixed focused suite
         env:
           SUITE: ${{ inputs.suite }}
+          TDD_PHASE: ${{ inputs.phase }}
           OPENCLAW_VITEST_MAX_WORKERS: "2"
         run: |
           set -euo pipefail
@@ -581,6 +582,27 @@ jobs:
               ;;
 
             beta6-i18n)
+              if [[ "$TDD_PHASE" == "red" ]]; then
+                pnpm native:i18n:sync
+                evidence_dir="$RUNNER_TEMP/native-i18n-refresh"
+                mkdir -p "$evidence_dir/files"
+                git status --short > "$evidence_dir/status.txt"
+                git diff --binary > "$evidence_dir/tracked.patch"
+                {
+                  git diff --name-only
+                  git ls-files --others --exclude-standard
+                } | LC_ALL=C sort -u > "$evidence_dir/changed-files.txt"
+                while IFS= read -r changed_path; do
+                  [[ -n "$changed_path" ]] || continue
+                  if [[ -f "$changed_path" ]]; then
+                    target="$evidence_dir/files/$changed_path"
+                    mkdir -p "$(dirname "$target")"
+                    cp "$changed_path" "$target"
+                  fi
+                done < "$evidence_dir/changed-files.txt"
+                echo "::error::Intentional RED after cloud-only native i18n refresh evidence generation."
+                exit 1
+              fi
               ui_verify_status=0
               pnpm ui:i18n:verify || ui_verify_status=$?
               native_verify_status=0
@@ -651,6 +673,16 @@ jobs:
               exit 1
               ;;
           esac
+
+      - name: Upload native i18n RED refresh evidence
+        if: ${{ always() && inputs.suite == 'beta6-i18n' && inputs.phase == 'red' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: native-i18n-refresh-${{ inputs.source_sha }}
+          path: ${{ runner.temp }}/native-i18n-refresh
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
 
   macos_ui_validation:
     if: ${{ inputs.suite == 'beta6-mac-ui' }}
