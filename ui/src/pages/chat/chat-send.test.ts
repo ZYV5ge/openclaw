@@ -5208,6 +5208,35 @@ describe("handleSendChat", () => {
     expect(host.chatQueue).toStrictEqual([]);
   });
 
+  it("keeps a repeated fresh submission queued when the first ACK starts a run", async () => {
+    const firstAck = createDeferred<unknown>();
+    const sends: Record<string, unknown>[] = [];
+    const host = makeHost({
+      requestHandlers: {
+        "chat.send": (params: unknown) => {
+          const payload = requireRecord(params, "active repeated chat send payload");
+          sends.push(payload);
+          return firstAck.promise;
+        },
+      },
+    });
+
+    const first = handleSendChat(host, "same prompt");
+    await waitForFast(() => expect(sends).toHaveLength(1));
+    const second = handleSendChat(host, "same prompt");
+    await waitForFast(() => expect(host.chatQueue).toHaveLength(2));
+
+    const firstRunId = String(sends[0]?.idempotencyKey);
+    firstAck.resolve({ runId: firstRunId, status: "started" });
+    await Promise.all([first, second]);
+
+    expect(sends).toHaveLength(1);
+    expect(host.chatRunId).toBe(firstRunId);
+    expect(host.chatQueue.filter((item) => item.sendState === "waiting-idle")).toEqual([
+      expect.objectContaining({ text: "same prompt" }),
+    ]);
+  });
+
   it("queues two identical local commands and executes both in FIFO order", async () => {
     const firstCommand = createDeferred<{ content: string }>();
     const secondCommand = createDeferred<{ content: string }>();
