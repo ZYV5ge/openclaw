@@ -7661,9 +7661,7 @@ describe("handleSendChat", () => {
     });
     await Promise.all([draining, successorSend]);
 
-    expect(sendPayloads.map((payload) => payload.message)).toEqual([
-      "earlier reconnect row",
-    ]);
+    expect(sendPayloads.map((payload) => payload.message)).toEqual(["earlier reconnect row"]);
     expect(listStoredChatOutboxes(ownerHost)[0]?.queue).toEqual([
       expect.objectContaining({
         id: fenced.id,
@@ -7711,7 +7709,9 @@ describe("handleSendChat", () => {
     const retry = retryQueuedChatMessage(host, original.id);
 
     await waitForFast(() =>
-      expect(host.request.mock.calls.filter(([method]) => method === "chat.history")).toHaveLength(1),
+      expect(host.request.mock.calls.filter(([method]) => method === "chat.history")).toHaveLength(
+        1,
+      ),
     );
     expect(sends).toStrictEqual([]);
 
@@ -9945,5 +9945,3 @@ describe("handleAbortChat", () => {
   });
 });
 /* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */
-
-

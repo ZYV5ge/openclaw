@@ -392,7 +392,10 @@ async function drainStoredChatOutbox(
         Boolean(historyRefreshFence.host.client) &&
         (historyRefreshFence.host.client !== historyRefreshFence.client ||
           historyRefreshFence.host.connectionEpoch !== historyRefreshFence.connectionEpoch);
-      if (!reconnected && lane.freshAdmissions.size === 0) {
+      const hasLiveFreshAdmission = outbox.queue.some((entry) =>
+        lane.freshAdmissions.has(entry.id),
+      );
+      if (!reconnected && !hasLiveFreshAdmission) {
         syncVisibleChatQueueProjection(host);
         return "blocked";
       }
