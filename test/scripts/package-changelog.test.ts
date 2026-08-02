@@ -48,6 +48,11 @@ describe("package-changelog", () => {
       "2026.5.28",
       "Unreleased",
     ]);
+    expect(resolvePackageChangelogVersions("2026.5.28-beta.1.1")).toEqual([
+      "2026.5.28-beta.1.1",
+      "2026.5.28",
+      "Unreleased",
+    ]);
     expect(resolvePackageChangelogVersions("2026.5.29", { allowUnreleased: true })).toEqual([
       "2026.5.29",
       "Unreleased",
@@ -85,6 +90,23 @@ Docs: https://docs.openclaw.ai
 
 ## 2026.5.28-beta.2
 - Beta 2 package notes with enough release detail.
+`);
+  });
+
+  it("prefers an exact personal beta correction section when it exists", () => {
+    const source = changelog`
+# Changelog
+## 2026.5.28-beta.2.1
+- Personal beta correction package notes with enough release detail.
+## 2026.5.28
+- Stable.
+`;
+
+    expect(extractCurrentPackageChangelog(source, "2026.5.28-beta.2.1")).toBe(changelog`
+# Changelog
+
+## 2026.5.28-beta.2.1
+- Personal beta correction package notes with enough release detail.
 `);
   });
 
