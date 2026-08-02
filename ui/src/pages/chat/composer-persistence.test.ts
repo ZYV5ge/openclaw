@@ -345,9 +345,9 @@ describe("chat composer persistence", () => {
       },
     };
     expect(admitStoredChatComposerQueueItem(state, state.sessionKey, original)).toBe(true);
-    expect(
-      updateStoredChatComposerQueueItem(state, state.sessionKey, original, refreshed),
-    ).toBe(true);
+    expect(updateStoredChatComposerQueueItem(state, state.sessionKey, original, refreshed)).toBe(
+      true,
+    );
 
     expect(
       updateStoredChatComposerQueueItem(state, state.sessionKey, original, {
@@ -377,13 +377,13 @@ describe("chat composer persistence", () => {
       },
     };
     expect(admitStoredChatComposerQueueItem(state, state.sessionKey, original)).toBe(true);
-    expect(
-      updateStoredChatComposerQueueItem(state, state.sessionKey, original, refreshed),
-    ).toBe(true);
+    expect(updateStoredChatComposerQueueItem(state, state.sessionKey, original, refreshed)).toBe(
+      true,
+    );
 
-    expect(
-      removeStoredChatComposerQueueItem(state, state.sessionKey, original.id, original),
-    ).toBe(false);
+    expect(removeStoredChatComposerQueueItem(state, state.sessionKey, original.id, original)).toBe(
+      false,
+    );
     expect(loadChatComposerSnapshot(state, state.sessionKey)?.queue[0]?.transcriptRevision).toEqual(
       refreshed.transcriptRevision,
     );
@@ -545,8 +545,8 @@ describe("chat composer persistence", () => {
         JSON.stringify({
           version: 1,
           sessions: {
-            "workspace^@agent:alpha": { queue: [customAliasItem], updatedAt: 1 },
-            "main^@agent:beta": { queue: [mainAliasItem], updatedAt: 2 },
+            "workspace\u0000agent:alpha": { queue: [customAliasItem], updatedAt: 1 },
+            "main\u0000agent:beta": { queue: [mainAliasItem], updatedAt: 2 },
           },
         }),
       );
@@ -569,8 +569,8 @@ describe("chat composer persistence", () => {
           sessionKey: "global",
         },
       ]);
-      expect(sessionStorage.getItem(storageKey)).not.toContain("workspace\\^@agent:alpha");
-      expect(sessionStorage.getItem(storageKey)).not.toContain("main\\^@agent:beta");
+      expect(sessionStorage.getItem(storageKey)).not.toContain("workspace\\u0000agent:alpha");
+      expect(sessionStorage.getItem(storageKey)).not.toContain("main\\u0000agent:beta");
       expect(sessionStorage.getItem(legacyStorageKey)).toBeNull();
     },
   );
@@ -608,12 +608,12 @@ describe("chat composer persistence", () => {
       JSON.stringify({
         version: 1,
         sessions: {
-          [`${sessionKey}^@agent:work`]: {
+          [`${sessionKey}\u0000agent:work`]: {
             draft: "older draft",
             queue: [first],
             updatedAt: 1,
           },
-          [`${sessionKey}^@agent:alpha`]: {
+          [`${sessionKey}\u0000agent:alpha`]: {
             draft: "newer draft",
             queue: [second],
             updatedAt: 2,
@@ -652,7 +652,7 @@ describe("chat composer persistence", () => {
     const stored = JSON.parse(sessionStorage.getItem(storageKey) ?? "{}") as {
       sessions?: Record<string, unknown>;
     };
-    expect(Object.keys(stored.sessions ?? {})).toEqual([`${sessionKey}^@agent:main`]);
+    expect(Object.keys(stored.sessions ?? {})).toEqual([`${sessionKey}\u0000agent:main`]);
   });
 
   it("does not retarget an explicit agent when a custom main alias becomes known", () => {
@@ -933,8 +933,8 @@ describe("chat composer persistence", () => {
       JSON.stringify({
         version: 1,
         sessions: {
-          "global^@agent:work": { queue: first, updatedAt: 2 },
-          "agent:work:main^@agent:work": { queue: second, updatedAt: 1 },
+          "global\u0000agent:work": { queue: first, updatedAt: 2 },
+          "agent:work:main\u0000agent:work": { queue: second, updatedAt: 1 },
         },
       }),
     );
@@ -957,8 +957,8 @@ describe("chat composer persistence", () => {
       JSON.stringify({
         version: 1,
         sessions: {
-          "global^@agent:work": { queue: [item], updatedAt: 2 },
-          "agent:work:main^@agent:work": { draft: "keep this draft", updatedAt: 1 },
+          "global\u0000agent:work": { queue: [item], updatedAt: 2 },
+          "agent:work:main\u0000agent:work": { draft: "keep this draft", updatedAt: 1 },
         },
       }),
     );
@@ -1017,7 +1017,7 @@ describe("chat composer persistence", () => {
       JSON.stringify({
         version: 1,
         sessions: {
-          "agent:work:main^@agent:work": {
+          "agent:work:main\u0000agent:work": {
             queue: [{ ...item, sessionKey: "agent:work:main", agentId: "work" }],
             updatedAt: 1,
           },
@@ -1128,7 +1128,7 @@ describe("chat composer persistence", () => {
       JSON.stringify({
         version: 1,
         sessions: {
-          "agent:work:main^@agent:work": {
+          "agent:work:main\u0000agent:work": {
             draft: "legacy draft",
             queue: [
               reconnectItem("removed", 1),
@@ -1303,7 +1303,7 @@ describe("chat composer persistence", () => {
       JSON.stringify({
         version: 1,
         sessions: {
-          "agent:lily:main^@agent:lily": { queue: [item], updatedAt: 1 },
+          "agent:lily:main\u0000agent:lily": { queue: [item], updatedAt: 1 },
         },
       }),
     );
@@ -1326,7 +1326,7 @@ describe("chat composer persistence", () => {
       JSON.stringify({
         version: 1,
         sessions: {
-          "agent:lily:main^@agent:lily": {
+          "agent:lily:main\u0000agent:lily": {
             draft: "shipped gateway draft",
             queue: [item],
             updatedAt: 1,
