@@ -12,9 +12,11 @@ import {
   flushStoredChatOutbox,
   retryableGatewayDelayMs,
   scheduleStoredChatOutboxDrain as scheduleOutboxDrain,
+  sameQueuedDeliveryVersion,
   scheduleStoredChatOutboxRetry,
   UNCONFIRMED_CHAT_SEND_ERROR,
   type ChatOutboxDrainDependencies,
+  type QueuedChatHistoryRefreshContext,
   type QueuedChatSendOptions,
   type QueuedChatSendResult,
   type QueuedChatStorageMode,
@@ -41,6 +43,7 @@ import {
   requestChatSend,
   requestSkillWorkshopRevisionChatSend,
   resolveDisplayedTranscriptRevision,
+  resolveRefreshedTranscriptRevision,
 } from "./chat-send-request.ts";
 import {
   chatSendAckServerTimingEventFields,
@@ -179,34 +182,101 @@ function finishDeliveryAdmission(
   return options?.routingSessionKey ? { ...current, sessionKey: route } : current;
 }
 
+function resolveHistoryRefreshOrigin(
+  host: ChatHost,
+  context: true | QueuedChatHistoryRefreshContext,
+): ChatHost {
+  return context === true ? host : context.host;
+}
+
+function historyRefreshOriginIsCurrent(
+  origin: ChatHost,
+  context: true | QueuedChatHistoryRefreshContext,
+  route: string,
+  agentId?: string,
+): boolean {
+  const connectionIsCurrent =
+    context === true ||
+    (origin.client === context.client && origin.connectionEpoch === context.connectionEpoch);
+  const scope = context === true ? { sessionKey: route, agentId } : context.scope;
+  return (
+    connectionIsCurrent &&
+    origin.connected &&
+    Boolean(origin.client) &&
+    scope.sessionKey === route &&
+    origin.sessionKey === route &&
+    visibleSessionMatches(origin, scope.sessionKey, scope.agentId) &&
+    visibleSessionMatches(origin, route, agentId)
+  );
+}
+
 function rebindQueuedTranscriptRevisionAfterHistory(
   host: ChatHost,
   item: ChatQueueItem,
   storageMode: QueuedChatStorageMode,
   queueSessionKey: string,
   options: QueuedChatSendOptions,
+  revisionHost: ChatHost,
 ): ChatQueueItem | QueuedChatSendResult {
   const route = options.routingSessionKey ?? queueSessionKey;
   const current = readQueuedMessageById(host, item.id);
   if (!current) {
     return "failed";
   }
-  if (
-    options.routingSessionKey &&
-    (host.sessionKey !== route || !visibleSessionMatches(host, route, current.agentId))
-  ) {
+  if (!sameQueuedDeliveryVersion(current, item)) {
+    return "pending";
+  }
+  const routeVisible =
+    revisionHost.sessionKey === route &&
+    visibleSessionMatches(revisionHost, route, current.agentId);
+  if (options.routingSessionKey && !routeVisible) {
     return finishDeliveryAdmission(host, current, storageMode, queueSessionKey, options);
   }
-  const transcriptRevision = resolveDisplayedTranscriptRevision(host as unknown as ChatState);
-  if (!transcriptRevision) {
+  const resolution = resolveRefreshedTranscriptRevision(
+    current.transcriptRevision,
+    resolveDisplayedTranscriptRevision(revisionHost as unknown as ChatState),
+  );
+  if (resolution.action === "keep") {
     return current;
+  }
+  if (resolution.action === "generation-mismatch") {
+    const error = t("chat.sendErrors.activeLeafChanged");
+    const failed = updateQueuedSendItem(
+      host,
+      storageMode,
+      queueSessionKey,
+      current.id,
+      (entry) => ({
+        ...entry,
+        sendError: error,
+        sendState: "failed",
+      }),
+    );
+    if (!failed) {
+      if (routeVisible) {
+        setChatError(revisionHost, OFFLINE_QUEUE_STORAGE_ERROR);
+        revisionHost.requestUpdate?.();
+      }
+      return "pending";
+    }
+    if (routeVisible) {
+      setChatError(revisionHost, error);
+      if (canRestoreComposer(revisionHost, options)) {
+        restoreComposer(revisionHost, options);
+      }
+      revisionHost.requestUpdate?.();
+    }
+    return "failed";
   }
   const rebound = updateQueuedSendItem(host, storageMode, queueSessionKey, current.id, (entry) => ({
     ...entry,
-    transcriptRevision,
+    transcriptRevision: resolution.transcriptRevision,
   }));
   if (!rebound) {
-    setChatError(host, OFFLINE_QUEUE_STORAGE_ERROR);
+    if (routeVisible) {
+      setChatError(revisionHost, OFFLINE_QUEUE_STORAGE_ERROR);
+      revisionHost.requestUpdate?.();
+    }
     return "pending";
   }
   return rebound;
@@ -262,10 +332,15 @@ async function sendQueuedChatMessage(
       return prepared;
     }
   }
-  if (options?.refreshDisplayedTranscriptRevisionAfterHistory) {
-    const state = host as unknown as ChatState;
-    while (state.chatLoading && host.connected && host.client) {
-      await loadChatHistory(state);
+  const historyRefresh = options?.refreshDisplayedTranscriptRevisionAfterHistory;
+  if (historyRefresh) {
+    const revisionHost = resolveHistoryRefreshOrigin(host, historyRefresh);
+    const revisionState = revisionHost as unknown as ChatState;
+    while (revisionState.chatLoading && revisionHost.connected && revisionHost.client) {
+      await loadChatHistory(revisionState);
+    }
+    if (!historyRefreshOriginIsCurrent(revisionHost, historyRefresh, route, prepared.agentId)) {
+      return "pending";
     }
     prepared = rebindQueuedTranscriptRevisionAfterHistory(
       host,
@@ -273,6 +348,7 @@ async function sendQueuedChatMessage(
       storageMode,
       queueSessionKey,
       options,
+      revisionHost,
     );
     if (typeof prepared === "string") {
       return prepared;
@@ -679,8 +755,9 @@ export async function deliverChatQueueItem(
     const routeVisible =
       host.sessionKey === routingSessionKey &&
       visibleSessionMatches(host, routingSessionKey, admittedItem.agentId);
-    const waitsForAuthoritativeRevision =
-      sendOptions.refreshDisplayedTranscriptRevisionAfterHistory === true;
+    const waitsForAuthoritativeRevision = Boolean(
+      sendOptions.refreshDisplayedTranscriptRevisionAfterHistory,
+    );
     if (
       drainResult === undefined &&
       !waitsForAuthoritativeRevision &&

@@ -79,6 +79,29 @@ export function resolveDisplayedTranscriptRevision(
   return { expectedLeafEntryId, ...(sessionId ? { sessionId } : {}) };
 }
 
+export type RefreshedTranscriptRevisionResolution =
+  | { action: "generation-mismatch" }
+  | { action: "keep" }
+  | { action: "rebind"; transcriptRevision: ChatTranscriptRevision };
+
+export function resolveRefreshedTranscriptRevision(
+  captured: ChatTranscriptRevision | undefined,
+  refreshed: ChatTranscriptRevision | undefined,
+): RefreshedTranscriptRevisionResolution {
+  if (!refreshed) {
+    return { action: "keep" };
+  }
+  const capturedSessionId = captured?.sessionId;
+  const refreshedSessionId = refreshed.sessionId;
+  if (capturedSessionId && refreshedSessionId && capturedSessionId !== refreshedSessionId) {
+    return { action: "generation-mismatch" };
+  }
+  if (capturedSessionId && !refreshedSessionId) {
+    return { action: "keep" };
+  }
+  return { action: "rebind", transcriptRevision: refreshed };
+}
+
 const ACTIVE_LEAF_CHANGED_ERROR_REASON = "active-leaf-changed";
 
 export function isActiveLeafChangedError(err: unknown): err is GatewayRequestError {

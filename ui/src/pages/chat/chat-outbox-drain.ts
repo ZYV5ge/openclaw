@@ -33,9 +33,15 @@ import {
 
 export type QueuedChatSendResult = "sent" | "pending" | "failed";
 export type QueuedChatStorageMode = "durable" | "memory";
+export type QueuedChatHistoryRefreshContext = {
+  client: ChatHost["client"];
+  connectionEpoch: ChatHost["connectionEpoch"];
+  host: ChatHost;
+  scope: StoredChatOutboxScope;
+};
 export type QueuedChatSendOptions = {
-  /** Rebind the queued revision after a history load that was already active at submit time. */
-  refreshDisplayedTranscriptRevisionAfterHistory?: boolean;
+  /** Rebind against the submitting pane after its in-flight history refresh. */
+  refreshDisplayedTranscriptRevisionAfterHistory?: true | QueuedChatHistoryRefreshContext;
   pendingSettings?: Promise<boolean>;
   previousAttachments?: ChatAttachment[];
   previousDraft?: string;
@@ -142,7 +148,10 @@ function readStoredChatOutbox(
   );
 }
 
-function sameQueuedDeliveryVersion(left: ChatQueueItem, right: ChatQueueItem): boolean {
+export function sameQueuedDeliveryVersion(
+  left: ChatQueueItem,
+  right: ChatQueueItem,
+): boolean {
   return (
     left.id === right.id &&
     left.sendRunId === right.sendRunId &&

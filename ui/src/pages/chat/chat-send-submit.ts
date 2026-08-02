@@ -214,8 +214,15 @@ async function handleSendChatSubmission(
   const submitTranscriptRevision = !skillWorkshopRevision
     ? resolveDisplayedTranscriptRevision(chatState)
     : undefined;
-  const refreshTranscriptRevisionAfterHistory =
-    !skillWorkshopRevision && Boolean(chatState.chatLoading);
+  const submitTranscriptRevisionRefresh =
+    !skillWorkshopRevision && chatState.chatLoading
+      ? {
+          client: host.client,
+          connectionEpoch: host.connectionEpoch,
+          host,
+          scope: resolveStoredChatOutboxScope(host, submittedSessionKey),
+        }
+      : undefined;
   const attachmentsToSend =
     messageOverride == null ? snapshotChatAttachments(host.chatAttachments) : [];
   const hasAttachments = attachmentsToSend.length > 0;
@@ -486,8 +493,10 @@ async function handleSendChatSubmission(
     const sendResult = await deliverChatQueueItem(host, queued, {
       previousDraft: cleared.previousDraft,
       previousAttachments: cleared.previousAttachments,
-      ...(refreshTranscriptRevisionAfterHistory
-        ? { refreshDisplayedTranscriptRevisionAfterHistory: true }
+      ...(submitTranscriptRevisionRefresh
+        ? {
+            refreshDisplayedTranscriptRevisionAfterHistory: submitTranscriptRevisionRefresh,
+          }
         : {}),
       ...(pendingSettings ? { pendingSettings } : {}),
       restoreAttachments: Boolean(messageOverride && opts?.restoreDraft),

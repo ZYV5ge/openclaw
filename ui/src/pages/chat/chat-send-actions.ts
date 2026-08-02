@@ -10,12 +10,14 @@ import { loadChatBranches, loadChatHistory, type ChatState } from "./chat-histor
 import {
   flushStoredChatOutbox,
   resumeStoredChatOutboxes as resumeStoredChatOutboxesDrain,
+  sameQueuedDeliveryVersion,
   scheduleStoredChatOutboxDrain,
 } from "./chat-outbox-drain.ts";
 import {
   admitQueuedMessageForSession,
   isVolatileQueuedMessage,
-  updateQueuedMessage,
+  readQueuedMessageById,
+  updateQueuedMessageForSession,
   updateVolatileQueuedMessage,
 } from "./chat-queue.ts";
 import type { ChatHost } from "./chat-send-contract.ts";
@@ -29,6 +31,7 @@ import {
   isActiveLeafChangedError,
   requestChatSend,
   resolveDisplayedTranscriptRevision,
+  resolveRefreshedTranscriptRevision,
 } from "./chat-send-request.ts";
 import { listStoredChatOutboxes, storedChatOutboxScopeKey } from "./composer-persistence.ts";
 import { formatConnectError } from "./connect-error.ts";
@@ -100,6 +103,16 @@ const resetRetryState = (
   sendState,
 });
 
+function queuedChatMessageRetryIsBlocked(item: ChatQueueItem): boolean {
+  return Boolean(
+    item.pendingRunId ||
+    item.sendState === "executing-command" ||
+    isInflightSteer(item) ||
+    item.sendState === "sending" ||
+    item.sendState === "waiting-model",
+  );
+}
+
 export const steerSendDependencies: SteerSendDependencies = {
   loadChatHistory: (host) => void loadChatHistory(host as unknown as ChatState),
   resumeRestoredOutbox: (host, itemId) => {
@@ -128,30 +141,71 @@ export const flushChatQueueForEvent = (host: ChatHost) =>
 export const retryReconnectableQueuedChatSends = resumeStoredChatOutboxes;
 
 export async function retryQueuedChatMessage(host: ChatHost, id: string) {
-  let item = host.chatQueue.find((entry) => entry.id === id);
-  if (
-    !item ||
-    item.pendingRunId ||
-    item.sendState === "executing-command" ||
-    isInflightSteer(item) ||
-    item.sendState === "sending" ||
-    item.sendState === "waiting-model"
-  ) {
+  let item = readQueuedMessageById(host, id);
+  if (!item || queuedChatMessageRetryIsBlocked(item)) {
     return;
   }
+  const retryVersion = item;
   let transcriptRevision: ChatTranscriptRevision | undefined;
   const retrySessionKey = item.sessionKey ?? host.sessionKey;
   if (!item.localCommandName && visibleSessionMatches(host, retrySessionKey, item.agentId)) {
     const state = host as unknown as ChatState;
+    const historyWasLoading = state.chatLoading;
+    const historyClient = host.client;
+    const historyConnectionEpoch = host.connectionEpoch;
     while (state.chatLoading && host.connected && host.client) {
       await loadChatHistory(state);
     }
-    const refreshedItem = host.chatQueue.find((entry) => entry.id === id);
-    if (!refreshedItem || !visibleSessionMatches(host, retrySessionKey, refreshedItem.agentId)) {
+    const refreshedItem = readQueuedMessageById(host, id);
+    if (
+      (historyWasLoading &&
+        (!host.connected ||
+          !host.client ||
+          host.client !== historyClient ||
+          host.connectionEpoch !== historyConnectionEpoch)) ||
+      !refreshedItem ||
+      !sameQueuedDeliveryVersion(refreshedItem, retryVersion) ||
+      refreshedItem.localCommandName !== retryVersion.localCommandName ||
+      queuedChatMessageRetryIsBlocked(refreshedItem) ||
+      !visibleSessionMatches(host, retrySessionKey, refreshedItem.agentId)
+    ) {
       return;
     }
     item = refreshedItem;
-    transcriptRevision = resolveDisplayedTranscriptRevision(state);
+    const resolution = resolveRefreshedTranscriptRevision(
+      item.transcriptRevision,
+      resolveDisplayedTranscriptRevision(state),
+    );
+    if (resolution.action === "generation-mismatch") {
+      const error = t("chat.sendErrors.activeLeafChanged");
+      const failed = isVolatileQueuedMessage(host, item.id)
+        ? updateVolatileQueuedMessage(
+            host,
+            item.id,
+            (entry) => ({
+              ...entry,
+              sendError: error,
+              sendState: "failed",
+            }),
+            { retryable: true },
+          )
+        : updateQueuedMessageForSession(host, retrySessionKey, item.id, (entry) => ({
+            ...entry,
+            sendError: error,
+            sendState: "failed",
+          }));
+      if (!failed) {
+        setChatError(host, OFFLINE_QUEUE_STORAGE_ERROR);
+        return;
+      }
+      if (visibleSessionMatches(host, retrySessionKey, failed.agentId)) {
+        setChatError(host, error);
+      }
+      return;
+    }
+    if (resolution.action === "rebind") {
+      transcriptRevision = resolution.transcriptRevision;
+    }
   }
   let outbox = findStoredOutbox(host, item.id);
   if (!outbox) {
@@ -181,7 +235,7 @@ export async function retryQueuedChatMessage(host: ChatHost, id: string) {
       return;
     }
   }
-  const retry = updateQueuedMessage(host, id, (entry) =>
+  const retry = updateQueuedMessageForSession(host, retrySessionKey, id, (entry) =>
     resetRetryState(entry, reconnectSafeQueuedSendState(host), transcriptRevision),
   );
   if (!retry) {
