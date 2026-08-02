@@ -7422,6 +7422,130 @@ describe("handleSendChat", () => {
     });
   });
 
+  it("keeps a history-fenced split-pane send on its submitting pane", async () => {
+    const firstAck = createDeferred<unknown>();
+    const history = createDeferred<unknown>();
+    const sends: Record<string, unknown>[] = [];
+    const request = makeRequestMock({
+      "chat.history": () => history.promise,
+      "chat.send": (params: unknown) => {
+        const payload = requireRecord(params, "history-fenced split-pane payload");
+        sends.push(payload);
+        return sends.length === 1
+          ? firstAck.promise
+          : Promise.resolve({ runId: payload.idempotencyKey, status: "ok" });
+      },
+    });
+    const client = clientWithRequest(request);
+    const firstHost = makeHost({ client });
+    const secondHost = makeHost({
+      client,
+      chatDisplayedLeafEntryId: "leaf-second-before",
+      chatMessage: "second pane draft",
+      currentSessionId: "session-second-before",
+    });
+
+    const firstSend = handleSendChat(firstHost, "first pane turn");
+    await waitForFast(() => expect(sends).toHaveLength(1));
+    const refresh = loadChatHistory(
+      secondHost as unknown as Parameters<typeof loadChatHistory>[0],
+    );
+    await waitForFast(() => expect(secondHost.chatLoading).toBe(true));
+    const secondSend = handleSendChat(secondHost);
+    await waitForFast(() => expect(secondHost.chatMessage).toBe(""));
+
+    history.resolve({
+      messages: [],
+      sessionInfo: row("agent:main", {
+        activeLeafEntryId: "leaf-second-after",
+        hasActiveRun: false,
+        sessionId: "session-second-after",
+        status: "done",
+      }),
+    });
+    await refresh;
+    expect(sends).toHaveLength(1);
+
+    firstAck.resolve({ runId: sends[0]?.idempotencyKey, status: "ok" });
+    await Promise.all([firstSend, secondSend]);
+
+    expect(sends.map((payload) => payload.message)).toEqual(["first pane turn"]);
+    expect(firstHost.chatError).toBeNull();
+    expect(firstHost.chatMessage).toBe("");
+    expect(secondHost.chatError).toBe("The thread switched branches — review and resend.");
+    expect(secondHost.chatMessage).toBe("second pane draft");
+    expect(listStoredChatOutboxes(secondHost)[0]?.queue[0]).toMatchObject({
+      sendState: "failed",
+      text: "second pane draft",
+      transcriptRevision: {
+        expectedLeafEntryId: "leaf-second-before",
+        sessionId: "session-second-before",
+      },
+    });
+  });
+
+  it("does not let a stale history fence overwrite newer delivery ownership", async () => {
+    const history = createDeferred<unknown>();
+    const sends: Record<string, unknown>[] = [];
+    const host = makeHost({
+      requestHandlers: {
+        "chat.history": () => history.promise,
+        "chat.send": (params: unknown) => {
+          const payload = requireRecord(params, "stale history fence payload");
+          sends.push(payload);
+          return { runId: payload.idempotencyKey, status: "started" };
+        },
+      },
+      chatDisplayedLeafEntryId: "leaf-before-owner-change",
+      chatMessage: "do not overwrite the newer owner",
+      currentSessionId: "session-stable",
+    });
+
+    const refresh = loadChatHistory(host as unknown as Parameters<typeof loadChatHistory>[0]);
+    await waitForFast(() => expect(host.chatLoading).toBe(true));
+    const send = handleSendChat(host);
+    await waitForFast(() => expect(host.chatQueue).toHaveLength(1));
+    const queued = host.chatQueue[0]!;
+    const claimed = updateQueuedMessage(host, queued.id, (entry) => ({
+      ...entry,
+      sendAttempts: 2,
+      sendRunId: "newer-owner-run",
+      sendState: "sending",
+      transcriptRevision: {
+        expectedLeafEntryId: "leaf-newer-owner",
+        sessionId: "session-stable",
+      },
+    }));
+    expect(claimed).toMatchObject({
+      sendAttempts: 2,
+      sendRunId: "newer-owner-run",
+      sendState: "sending",
+    });
+
+    history.resolve({
+      messages: [],
+      sessionInfo: row("agent:main", {
+        activeLeafEntryId: "leaf-after-owner-change",
+        hasActiveRun: false,
+        sessionId: "session-stable",
+        status: "done",
+      }),
+    });
+    await Promise.all([refresh, send]);
+
+    expect(sends).toStrictEqual([]);
+    expect(host.chatError).not.toBe("The thread switched branches — review and resend.");
+    expect(host.chatMessage).toBe("");
+    expect(listStoredChatOutboxes(host)[0]?.queue[0]).toMatchObject({
+      sendAttempts: 2,
+      sendRunId: "newer-owner-run",
+      transcriptRevision: {
+        expectedLeafEntryId: "leaf-newer-owner",
+        sessionId: "session-stable",
+      },
+    });
+  });
+
   it("waits for authoritative history before retrying with a fresh leaf and run id", async () => {
     const history = createDeferred<unknown>();
     const sends: Record<string, unknown>[] = [];
@@ -7545,6 +7669,81 @@ describe("handleSendChat", () => {
       sendRunId: original.sendRunId,
       sendState: "failed",
       transcriptRevision: original.transcriptRevision,
+    });
+  });
+
+  it("does not let a stale retry overwrite newer delivery ownership", async () => {
+    const history = createDeferred<unknown>();
+    const sends: Record<string, unknown>[] = [];
+    const original = {
+      id: "retry-owner-fence",
+      text: "keep the newer retry owner",
+      createdAt: 1,
+      sendAttempts: 1,
+      sendError: "retry this",
+      sendRunId: "failed-owner-run",
+      sendState: "failed" as const,
+      sessionKey: "agent:main",
+      transcriptRevision: {
+        expectedLeafEntryId: "leaf-before-retry-owner",
+        sessionId: "session-stable",
+      },
+    };
+    const host = makeHost({
+      requestHandlers: {
+        "chat.history": () => history.promise,
+        "chat.send": (params: unknown) => {
+          const payload = requireRecord(params, "stale retry owner payload");
+          sends.push(payload);
+          return { runId: payload.idempotencyKey, status: "started" };
+        },
+      },
+      chatDisplayedLeafEntryId: "leaf-before-retry-owner",
+      chatQueue: [original],
+      currentSessionId: "session-stable",
+    });
+    expect(admitQueuedMessageForSession(host, original.sessionKey, original)).toBe(true);
+
+    const refresh = loadChatHistory(host as unknown as Parameters<typeof loadChatHistory>[0]);
+    await waitForFast(() => expect(host.chatLoading).toBe(true));
+    const retry = retryQueuedChatMessage(host, original.id);
+    const claimed = updateQueuedMessage(host, original.id, (entry) => ({
+      ...entry,
+      sendAttempts: 3,
+      sendError: undefined,
+      sendRunId: "newer-retry-owner-run",
+      sendState: "sending",
+      transcriptRevision: {
+        expectedLeafEntryId: "leaf-newer-retry-owner",
+        sessionId: "session-stable",
+      },
+    }));
+    expect(claimed).toMatchObject({
+      sendAttempts: 3,
+      sendRunId: "newer-retry-owner-run",
+      sendState: "sending",
+    });
+
+    history.resolve({
+      messages: [],
+      sessionInfo: row("agent:main", {
+        activeLeafEntryId: "leaf-after-retry-owner",
+        hasActiveRun: false,
+        sessionId: "session-stable",
+        status: "done",
+      }),
+    });
+    await Promise.all([refresh, retry]);
+
+    expect(sends).toStrictEqual([]);
+    expect(host.chatError).not.toBe("The thread switched branches — review and resend.");
+    expect(listStoredChatOutboxes(host)[0]?.queue[0]).toMatchObject({
+      sendAttempts: 3,
+      sendRunId: "newer-retry-owner-run",
+      transcriptRevision: {
+        expectedLeafEntryId: "leaf-newer-retry-owner",
+        sessionId: "session-stable",
+      },
     });
   });
 
