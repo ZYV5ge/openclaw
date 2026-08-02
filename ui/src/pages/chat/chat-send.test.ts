@@ -7537,6 +7537,117 @@ describe("handleSendChat", () => {
     });
   });
 
+  it("parks a history fence when its split-pane lane owner reconnects", async () => {
+    const firstAck = createDeferred<unknown>();
+    const history = createDeferred<unknown>();
+    const sends: Record<string, unknown>[] = [];
+    const request = makeRequestMock({
+      "chat.history": () => history.promise,
+      "chat.send": (params: unknown) => {
+        const payload = requireRecord(params, "reconnected lane owner payload");
+        sends.push(payload);
+        return sends.length === 1
+          ? firstAck.promise
+          : Promise.resolve({ runId: payload.idempotencyKey, status: "ok" });
+      },
+    });
+    const client = clientWithRequest(request);
+    const firstHost = makeHost({ client, connectionEpoch: 1 });
+    const secondHost = makeHost({
+      client,
+      chatDisplayedLeafEntryId: "leaf-second-before-reconnect",
+      chatMessage: "keep this behind the reconnect fence",
+      connectionEpoch: 1,
+      currentSessionId: "session-stable",
+    });
+
+    const firstSend = handleSendChat(firstHost, "first pane before reconnect");
+    await waitForFast(() => expect(sends).toHaveLength(1));
+    const refresh = loadChatHistory(
+      secondHost as unknown as Parameters<typeof loadChatHistory>[0],
+    );
+    await waitForFast(() => expect(secondHost.chatLoading).toBe(true));
+    const secondSend = handleSendChat(secondHost);
+
+    firstAck.resolve({ runId: sends[0]?.idempotencyKey, status: "ok" });
+    expect(await raceWithMacrotask(secondSend)).toBe("pending");
+    firstHost.connectionEpoch = 2;
+    history.resolve({
+      messages: [],
+      sessionInfo: row("agent:main", {
+        activeLeafEntryId: "leaf-second-after-reconnect",
+        hasActiveRun: false,
+        sessionId: "session-stable",
+        status: "done",
+      }),
+    });
+    await Promise.all([firstSend, refresh, secondSend]);
+
+    expect(sends.map((payload) => payload.message)).toEqual([
+      "first pane before reconnect",
+    ]);
+    expect(listStoredChatOutboxes(secondHost)[0]?.queue[0]).toMatchObject({
+      text: "keep this behind the reconnect fence",
+      transcriptRevision: {
+        expectedLeafEntryId: "leaf-second-before-reconnect",
+        sessionId: "session-stable",
+      },
+    });
+  });
+
+  it("recovers a memory fallback when its history connection changes", async () => {
+    const storage = createStorageMock();
+    vi.spyOn(storage, "setItem").mockImplementation(() => {
+      throw new DOMException("quota exceeded", "QuotaExceededError");
+    });
+    vi.stubGlobal("sessionStorage", storage);
+    const history = createDeferred<unknown>();
+    const sends: Record<string, unknown>[] = [];
+    const host = makeHost({
+      requestHandlers: {
+        "chat.history": () => history.promise,
+        "chat.send": (params: unknown) => {
+          const payload = requireRecord(params, "memory history fence payload");
+          sends.push(payload);
+          return { runId: payload.idempotencyKey, status: "ok" };
+        },
+      },
+      chatDisplayedLeafEntryId: "leaf-before-memory-refresh",
+      chatMessage: "recover this memory fallback",
+      connectionEpoch: 1,
+      currentSessionId: "session-stable",
+    });
+
+    const refresh = loadChatHistory(
+      host as unknown as Parameters<typeof loadChatHistory>[0],
+    );
+    await waitForFast(() => expect(host.chatLoading).toBe(true));
+    const send = handleSendChat(host);
+    await waitForFast(() => expect(host.chatQueue).toHaveLength(1));
+
+    host.connectionEpoch = 2;
+    history.resolve({
+      messages: [],
+      sessionInfo: row("agent:main", {
+        activeLeafEntryId: "leaf-after-memory-refresh",
+        hasActiveRun: false,
+        sessionId: "session-stable",
+        status: "done",
+      }),
+    });
+    await Promise.all([refresh, send]);
+
+    expect(sends).toStrictEqual([]);
+    expect(host.chatQueue[0]).toMatchObject({
+      sendError:
+        "Could not store this message for reconnect. Free browser storage or reconnect before sending.",
+      sendState: "failed",
+      text: "recover this memory fallback",
+    });
+    expect(host.chatMessage).toBe("recover this memory fallback");
+    expect(listStoredChatOutboxes(host)).toStrictEqual([]);
+  });
+
   it("does not let a stale history fence overwrite newer delivery ownership", async () => {
     const history = createDeferred<unknown>();
     const sends: Record<string, unknown>[] = [];
@@ -7599,6 +7710,81 @@ describe("handleSendChat", () => {
         sessionId: "session-stable",
       },
     });
+  });
+
+  it("ignores retry for a durable row outside the visible pane", async () => {
+    const hiddenSessionKey = "agent:main:hidden-durable";
+    const sends: Record<string, unknown>[] = [];
+    const original = {
+      id: "hidden-durable-retry",
+      text: "do not retry this hidden durable row",
+      createdAt: 1,
+      sendAttempts: 1,
+      sendError: "retry this",
+      sendRunId: "hidden-durable-run",
+      sendState: "failed" as const,
+      sessionKey: hiddenSessionKey,
+    };
+    const host = makeHost({
+      requestHandlers: {
+        "chat.history": () => idleChatHistory(hiddenSessionKey),
+        "chat.send": (params: unknown) => {
+          const payload = requireRecord(params, "hidden durable retry payload");
+          sends.push(payload);
+          return { runId: payload.idempotencyKey, status: "ok" };
+        },
+      },
+      sessionKey: "agent:main:visible",
+    });
+    writeChatQueueForScope(host, hiddenSessionKey, [original]);
+    expect(admitQueuedMessageForSession(host, hiddenSessionKey, original)).toBe(true);
+    expect(host.chatQueue).toStrictEqual([]);
+
+    await retryQueuedChatMessage(host, original.id);
+
+    expect(sends).toStrictEqual([]);
+    expect(
+      listStoredChatOutboxes(host).find((outbox) => outbox.sessionKey === hiddenSessionKey)
+        ?.queue[0],
+    ).toMatchObject({
+      sendAttempts: original.sendAttempts,
+      sendRunId: original.sendRunId,
+      sendState: original.sendState,
+    });
+  });
+
+  it("ignores retry for a pane-local row outside the visible pane", async () => {
+    const hiddenSessionKey = "agent:main:hidden-local";
+    const sends: Record<string, unknown>[] = [];
+    const original = {
+      id: "hidden-local-retry",
+      text: "do not retry this hidden local row",
+      createdAt: 1,
+      sendAttempts: 1,
+      sendError: "retry this",
+      sendRunId: "hidden-local-run",
+      sendState: "failed" as const,
+      sessionKey: hiddenSessionKey,
+    };
+    const host = makeHost({
+      requestHandlers: {
+        "chat.history": () => idleChatHistory(hiddenSessionKey),
+        "chat.send": (params: unknown) => {
+          const payload = requireRecord(params, "hidden local retry payload");
+          sends.push(payload);
+          return { runId: payload.idempotencyKey, status: "ok" };
+        },
+      },
+      sessionKey: "agent:main:visible",
+    });
+    writeChatQueueForScope(host, hiddenSessionKey, [original]);
+    expect(host.chatQueue).toStrictEqual([]);
+    expect(listStoredChatOutboxes(host)).toStrictEqual([]);
+
+    await retryQueuedChatMessage(host, original.id);
+
+    expect(sends).toStrictEqual([]);
+    expect(listStoredChatOutboxes(host)).toStrictEqual([]);
   });
 
   it("waits for authoritative history before retrying with a fresh leaf and run id", async () => {
