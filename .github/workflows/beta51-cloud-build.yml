@@ -1077,48 +1077,14 @@ jobs:
           RUNTIME_UI="$runtime_package/dist/control-ui" \
           MANIFEST_DIR="$BUNDLE_DIR" \
           node --input-type=module <<'NODE'
-          import crypto from "node:crypto";
-          import fs from "node:fs";
-          import path from "node:path";
-          const sha256 = (body) => crypto.createHash("sha256").update(body).digest("hex");
-          function walk(root, relative = "") {
-            const current = path.join(root, relative);
-            const result = [];
-            for (const entry of fs.readdirSync(current, { withFileTypes: true }).toSorted((a, b) => a.name.localeCompare(b.name))) {
-              const next = relative ? relative + "/" + entry.name : entry.name;
-              if (entry.isDirectory()) {
-                result.push(...walk(root, next));
-              } else if (entry.isFile()) {
-                const body = fs.readFileSync(path.join(root, next));
-                result.push({ path: next, bytes: body.length, sha256: sha256(body) });
-              } else {
-                throw new Error("Unexpected Control UI entry: " + next);
-              }
-            }
-            return result;
-          }
-          const roots = {
-            root: process.env.ROOT_UI,
-            app: process.env.APP_UI,
-            runtime: process.env.RUNTIME_UI,
-          };
-          const manifests = Object.fromEntries(Object.entries(roots).map(([name, root]) => [name, walk(root)]));
-          const canonical = JSON.stringify(manifests.root);
-          for (const [name, manifest] of Object.entries(manifests)) {
-            if (JSON.stringify(manifest) !== canonical) {
-              throw new Error("Control UI manifest mismatch: root versus " + name);
-            }
-            fs.writeFileSync(
-              path.join(process.env.MANIFEST_DIR, "control-ui-" + name + ".manifest.json"),
-              JSON.stringify(manifest, null, 2) + "\n",
-            );
-          }
-          if (!manifests.root.some((entry) => entry.path === "index.html")) {
-            throw new Error("Control UI manifest is missing index.html");
-          }
-          if (!manifests.root.some((entry) => entry.path.startsWith("assets/"))) {
-            throw new Error("Control UI manifest contains no assets");
-          }
+          import { writeControlUiReleaseParityReport } from "./scripts/verify-control-ui-release-parity.mjs";
+
+          writeControlUiReleaseParityReport({
+            rootUi: process.env.ROOT_UI,
+            appUi: process.env.APP_UI,
+            runtimeUi: process.env.RUNTIME_UI,
+            manifestDir: process.env.MANIFEST_DIR,
+          });
           NODE
           RUNTIME_ROOT="$runtime_package" node --input-type=module <<'NODE'
           import fs from "node:fs";
@@ -1143,12 +1109,20 @@ jobs:
           NODE
           root_manifest_sha="$(shasum -a 256 "$BUNDLE_DIR/control-ui-root.manifest.json" | awk '{print $1}')"
           app_manifest_sha="$(shasum -a 256 "$BUNDLE_DIR/control-ui-app.manifest.json" | awk '{print $1}')"
+          root_runtime_manifest_sha="$(shasum -a 256 "$BUNDLE_DIR/control-ui-root-runtime.manifest.json" | awk '{print $1}')"
           runtime_manifest_sha="$(shasum -a 256 "$BUNDLE_DIR/control-ui-runtime.manifest.json" | awk '{print $1}')"
-          if [[ "$root_manifest_sha" != "$app_manifest_sha" || "$root_manifest_sha" != "$runtime_manifest_sha" ]]; then
-            echo "::error::Control UI manifest SHA mismatch."
+          if [[ "$root_manifest_sha" != "$app_manifest_sha" ]]; then
+            echo "::error::Root and App Control UI manifests differ."
             exit 1
           fi
-          printf '%s  control-ui-manifest\n' "$root_manifest_sha" >"$BUNDLE_DIR/control-ui-manifest.sha256"
+          if [[ "$root_runtime_manifest_sha" != "$runtime_manifest_sha" ]]; then
+            echo "::error::Packable root and runtime Control UI manifests differ."
+            exit 1
+          fi
+          printf '%s  control-ui-root-app-full\n%s  control-ui-root-runtime-package\n' \
+            "$root_manifest_sha" \
+            "$root_runtime_manifest_sha" \
+            >"$BUNDLE_DIR/control-ui-manifest.sha256"
 
       - name: Write provenance and SHA256SUMS
         env:
