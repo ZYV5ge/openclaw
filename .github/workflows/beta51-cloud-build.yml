@@ -23,6 +23,7 @@ on:
           - beta6-mac-ui
           - beta6-control-ui-send
           - beta6-memory-wiki-search
+          - beta6-postcutoff-file-mutations
       phase:
         description: TDD evidence phase; does not alter the test command
         required: true
@@ -45,8 +46,8 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
   NODE_VERSION: "24.15.0"
   PERSONAL_VERSION: "2026.7.2-beta.6.1"
-  UPSTREAM_VERSION: "2026.7.2-beta.6"
-  FROZEN_UPSTREAM_SHA: "2fcb1f728028085197f322dfcd61ea7dba174102"
+  UPSTREAM_VERSION: "2026.7.2"
+  FROZEN_UPSTREAM_SHA: "d328b02ab8b14663698a05cdc3a41bc3b5c98809"
   PERSONAL_RELEASE_REPOSITORY: "ZYV5ge/openclaw"
 
 jobs:
@@ -258,6 +259,7 @@ jobs:
             extensions/telegram/src/bot/body-helpers.ts \
             extensions/telegram/src/bot-message-context.body.ts \
             extensions/telegram/src/bot-message-context.body.test.ts \
+            src/agents/agent-tools.read.host-tilde-expansion.test.ts \
             src/agents/session-write-lock-error.ts \
             src/agents/main-session-recovery-state.ts \
             src/agents/main-session-recovery-store.test.ts \
@@ -401,6 +403,26 @@ jobs:
               pnpm tsgo:extensions:test || extension_test_type_status=$?
               if (( memory_test_status != 0 || core_type_status != 0 || extension_type_status != 0 || extension_test_type_status != 0 )); then
                 echo "::error::memory test status=$memory_test_status core types=$core_type_status extension types=$extension_type_status extension test types=$extension_test_type_status"
+                exit 1
+              fi
+              ;;
+            beta6-postcutoff-file-mutations)
+              adapter_status=0
+              node scripts/run-vitest.mjs run \
+                --config test/vitest/vitest.agents-core.config.ts \
+                src/agents/agent-tools.read.host-tilde-expansion.test.ts \
+                src/agents/agent-tools.read.host-edit-access.test.ts || adapter_status=$?
+              mutation_status=0
+              node scripts/run-vitest.mjs run \
+                --config test/vitest/vitest.agents-support.config.ts \
+                src/agents/sessions/tools/edit.test.ts \
+                src/agents/sessions/tools/write.test.ts || mutation_status=$?
+              core_type_status=0
+              pnpm tsgo:core || core_type_status=$?
+              src_test_type_status=0
+              pnpm tsgo:test:src || src_test_type_status=$?
+              if (( adapter_status != 0 || mutation_status != 0 || core_type_status != 0 || src_test_type_status != 0 )); then
+                echo "::error::file mutation status adapter=$adapter_status mutation=$mutation_status core-types=$core_type_status src-test-types=$src_test_type_status"
                 exit 1
               fi
               ;;
