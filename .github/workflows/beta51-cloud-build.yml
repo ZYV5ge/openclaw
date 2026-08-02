@@ -140,6 +140,9 @@ jobs:
               extensions/memory-wiki/src/query.test.ts \
               extensions/memory-wiki/src/tool.test.ts \
               extensions/google/web-search-provider.test.ts \
+              packages/gateway-protocol/src/schema/logs-chat.test.ts \
+              src/gateway/server-methods/chat.directive-tags.test.ts \
+              ui/src/lib/chat/outbox-store.test.ts \
               ui/src/pages/chat/chat-submit-guard.test.ts \
               ui/src/pages/chat/chat-send.test.ts
             git --no-pager diff -- \
@@ -155,6 +158,9 @@ jobs:
               extensions/memory-wiki/src/query.test.ts \
               extensions/memory-wiki/src/tool.test.ts \
               extensions/google/web-search-provider.test.ts \
+              packages/gateway-protocol/src/schema/logs-chat.test.ts \
+              src/gateway/server-methods/chat.directive-tags.test.ts \
+              ui/src/lib/chat/outbox-store.test.ts \
               ui/src/pages/chat/chat-submit-guard.test.ts \
               ui/src/pages/chat/chat-send.test.ts
           fi
@@ -202,6 +208,9 @@ jobs:
             src/auto-reply/reply/restart-recovery-claim.test.ts \
             src/auto-reply/reply/agent-runner.runreplyagent.e2e.test.ts \
             src/gateway/session-utils.test.ts \
+            packages/gateway-protocol/src/schema/logs-chat.test.ts \
+            src/gateway/server-methods/chat.directive-tags.test.ts \
+            ui/src/lib/chat/outbox-store.test.ts \
             ui/src/pages/chat/chat-send-contract.ts \
             ui/src/pages/chat/chat-send-delivery.ts \
             ui/src/pages/chat/chat-send-submit.ts \
@@ -289,10 +298,23 @@ jobs:
               fi
               ;;
             beta6-control-ui-send)
+              node scripts/run-vitest.mjs run \
+                --config test/vitest/vitest.gateway-client.config.ts \
+                packages/gateway-protocol/src/schema/logs-chat.test.ts
+              node scripts/run-vitest.mjs run \
+                --config test/vitest/vitest.runtime-config.config.ts \
+                src/config/sessions/session-accessor.sqlite-active-events.test.ts
+              OPENCLAW_VITEST_MAX_WORKERS=1 node scripts/run-vitest.mjs run \
+                --config test/vitest/vitest.gateway-methods.config.ts \
+                src/gateway/server-methods/chat.directive-tags.test.ts
               pnpm --dir ui exec vitest run --config vitest.config.ts \
+                src/lib/chat/outbox-store.test.ts \
                 src/pages/chat/chat-submit-guard.test.ts \
                 src/pages/chat/chat-send.test.ts \
                 src/pages/chat/chat-composer.test.ts
+              pnpm tsgo:core
+              pnpm tsgo:test:src
+              pnpm tsgo:test:packages
               pnpm tsgo:ui
               pnpm tsgo:test:ui
               ;;

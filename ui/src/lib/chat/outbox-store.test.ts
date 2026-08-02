@@ -1,6 +1,7 @@
 /* @vitest-environment jsdom */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createStorageMock } from "../../test-helpers/storage.ts";
+import { normalizeStoredQueueItem } from "./outbox-store-codec.ts";
 import {
   listStoredChatOutboxes,
   resolveStoredChatOutboxScope,
@@ -19,6 +20,25 @@ afterEach(() => {
 });
 
 describe("stored outbox summaries", () => {
+  it("retains a paired transcript revision in a durable queue row", () => {
+    expect(
+      normalizeStoredQueueItem({
+        id: "queued-with-revision",
+        text: "send on the rendered branch",
+        createdAt: 1,
+        transcriptRevision: {
+          expectedLeafEntryId: "leaf-before-reconnect",
+          sessionId: "session-before-reconnect",
+        },
+      }),
+    ).toMatchObject({
+      transcriptRevision: {
+        expectedLeafEntryId: "leaf-before-reconnect",
+        sessionId: "session-before-reconnect",
+      },
+    });
+  });
+
   it("bridges matching storage events until the last subscriber leaves", () => {
     const addEventListener = vi.spyOn(window, "addEventListener");
     const removeEventListener = vi.spyOn(window, "removeEventListener");
