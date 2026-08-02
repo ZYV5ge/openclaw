@@ -74,9 +74,7 @@ type MemorySearchMemoryFailure = {
   error: string;
   timedOut: boolean;
 };
-type MemorySearchPartialFailure =
-  | MemorySearchMemoryFailure
-  | MemoryCorpusSupplementSearchFailure;
+type MemorySearchPartialFailure = MemorySearchMemoryFailure | MemoryCorpusSupplementSearchFailure;
 type MemorySearchLaneOutcome<T> =
   | { status: "fulfilled"; value: T }
   | { status: "rejected"; reason: unknown };
@@ -570,9 +568,7 @@ export function createMemorySearchTool(options: {
         };
         const createMemoryFailure = (error: unknown): MemorySearchMemoryFailure => {
           const timedOut =
-            error !== null &&
-            typeof error === "object" &&
-            deadlineTimeoutErrors.has(error);
+            error !== null && typeof error === "object" && deadlineTimeoutErrors.has(error);
           return {
             phase: "memory",
             kind: "memory-failed",
@@ -737,12 +733,14 @@ export function createMemorySearchTool(options: {
                   );
                   const memorySearchConfig = resolveMemorySearchConfig(cfg, agentId);
                   const defaultSearchSources = memorySearchConfig?.searchSources;
-                  const trustedConfiguredRecall = options.conversationRecall?.corpus === "configured";
+                  const trustedConfiguredRecall =
+                    options.conversationRecall?.corpus === "configured";
                   const effectiveSearchSources = trustedConfiguredRecall
                     ? memorySearchConfig?.sources
                     : defaultSearchSources;
                   const trustedTranscriptRecall = options.conversationRecall !== undefined;
-                  const configuredSessionSearch = defaultSearchSources?.includes("sessions") === true;
+                  const configuredSessionSearch =
+                    defaultSearchSources?.includes("sessions") === true;
                   // Product recall may index transcripts without adding them to ordinary model search.
                   // Only trusted recall or explicit configuration may search those indexed transcripts.
                   const searchSources: MemorySource[] | undefined =
@@ -968,7 +966,7 @@ export function createMemorySearchTool(options: {
                 firstFailure?.error ?? "memory search unavailable",
               );
               return jsonResult(
-                shouldQuerySupplements
+                requestedCorpus === "all"
                   ? {
                       ...unavailable,
                       debug: {

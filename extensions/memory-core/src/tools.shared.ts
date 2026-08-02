@@ -247,9 +247,7 @@ export async function searchMemoryCorpusSupplements(params: {
     };
   }
 
-  const fulfilled = settled.flatMap((entry) =>
-    entry.status === "fulfilled" ? [entry.value] : [],
-  );
+  const fulfilled = settled.flatMap((entry) => (entry.status === "fulfilled" ? [entry.value] : []));
   const failures: MemoryCorpusSupplementSearchFailure[] = settled.flatMap((entry, index) => {
     if (entry.status === "fulfilled") {
       return [];
