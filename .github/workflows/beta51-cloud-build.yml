@@ -940,6 +940,66 @@ jobs:
           }
           NODE
 
+      - name: Package current runtime candidate for RED evidence
+        if: ${{ inputs.phase == 'red' }}
+        id: runtime_red
+        run: |
+          set -euo pipefail
+          runtime_dir=".artifacts/personal-release/runtime-red"
+          runtime_name="openclaw-$APP_VERSION-runtime-red.tgz"
+          mkdir -p "$runtime_dir"
+          node scripts/package-openclaw-for-docker.mjs \
+            --skip-build \
+            --allow-unreleased-changelog \
+            --output-dir "$runtime_dir" \
+            --output-name "$runtime_name"
+          runtime_path="$PWD/$runtime_dir/$runtime_name"
+          test -s "$runtime_path"
+          echo "runtime_path=$runtime_path" >> "$GITHUB_OUTPUT"
+
+      - name: Verify current runtime candidate dependency closure
+        if: ${{ inputs.phase == 'red' }}
+        env:
+          RUNTIME_TGZ: ${{ steps.runtime_red.outputs.runtime_path }}
+        run: |
+          set -euo pipefail
+          runtime_check="$RUNNER_TEMP/openclaw-runtime-red-check"
+          rm -rf "$runtime_check"
+          mkdir -p "$runtime_check"
+          tar -xzf "$RUNTIME_TGZ" -C "$runtime_check"
+          runtime_package="$runtime_check/package"
+          test -s "$runtime_package/package.json"
+          env -u NODE_PATH RUNTIME_ROOT="$runtime_package" node --input-type=module <<'NODE'
+          import { createRequire } from "node:module";
+          import fs from "node:fs";
+          import path from "node:path";
+
+          const runtimeRoot = process.env.RUNTIME_ROOT;
+          const runtimePackage = JSON.parse(
+            fs.readFileSync(path.join(runtimeRoot, "package.json"), "utf8"),
+          );
+          const runtimeRequire = createRequire(path.join(runtimeRoot, "package.json"));
+          const missing = Object.keys(runtimePackage.dependencies ?? {}).filter((name) => {
+            try {
+              runtimeRequire.resolve(name);
+              return false;
+            } catch {
+              return true;
+            }
+          });
+          if (missing.length > 0) {
+            throw new Error(
+              "packaged runtime has unresolved production dependencies: " + missing.join(", "),
+            );
+          }
+          NODE
+          runtime_smoke_home="$RUNNER_TEMP/openclaw-runtime-red-home"
+          mkdir -p "$runtime_smoke_home"
+          env -u NODE_PATH \
+            HOME="$runtime_smoke_home" \
+            OPENCLAW_STATE_DIR="$runtime_smoke_home/.openclaw" \
+            node "$runtime_package/openclaw.mjs" doctor --non-interactive
+
       - name: Build universal ad-hoc signed App ZIP and DMG
         env:
           BUILD_ARCHS: "all"
@@ -1066,7 +1126,7 @@ jobs:
           test -s "$runtime_package/package.json"
           test -s "$runtime_package/dist/build-info.json"
           test -s "$runtime_package/dist/control-ui/index.html"
-          RUNTIME_ROOT="$runtime_package" node --input-type=module <<'NODE'
+          env -u NODE_PATH RUNTIME_ROOT="$runtime_package" node --input-type=module <<'NODE'
           import { createRequire } from "node:module";
           import fs from "node:fs";
           import path from "node:path";
