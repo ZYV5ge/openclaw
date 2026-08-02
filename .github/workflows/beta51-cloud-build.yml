@@ -298,8 +298,11 @@ jobs:
               sqlite_test_status=0
               OPENCLAW_VITEST_MAX_WORKERS=1 node scripts/run-vitest.mjs run \
                 --config test/vitest/vitest.unit-src.config.ts \
-                src/state/openclaw-state-db.test.ts \
-                src/infra/startup-migration-checkpoint.test.ts || sqlite_test_status=$?
+                src/state/openclaw-state-db.test.ts || sqlite_test_status=$?
+              startup_test_status=0
+              OPENCLAW_VITEST_MAX_WORKERS=1 node scripts/run-vitest.mjs run \
+                --config test/vitest/vitest.infra.config.ts \
+                src/infra/startup-migration-checkpoint.test.ts || startup_test_status=$?
               core_type_status=0
               pnpm tsgo:core || core_type_status=$?
               src_test_type_status=0
@@ -308,8 +311,8 @@ jobs:
               pnpm lint:kysely || kysely_lint_status=$?
               sqlite_boundary_status=0
               pnpm lint:tmp:sqlite-transaction-boundary || sqlite_boundary_status=$?
-              if (( sqlite_test_status != 0 || core_type_status != 0 || src_test_type_status != 0 || kysely_lint_status != 0 || sqlite_boundary_status != 0 )); then
-                echo "::error::SQLite status tests=$sqlite_test_status core-types=$core_type_status src-test-types=$src_test_type_status kysely=$kysely_lint_status sqlite-boundary=$sqlite_boundary_status"
+              if (( sqlite_test_status != 0 || startup_test_status != 0 || core_type_status != 0 || src_test_type_status != 0 || kysely_lint_status != 0 || sqlite_boundary_status != 0 )); then
+                echo "::error::SQLite status state-tests=$sqlite_test_status startup-tests=$startup_test_status core-types=$core_type_status src-test-types=$src_test_type_status kysely=$kysely_lint_status sqlite-boundary=$sqlite_boundary_status"
                 exit 1
               fi
               ;;
