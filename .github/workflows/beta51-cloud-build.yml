@@ -251,6 +251,7 @@ jobs:
               node scripts/run-vitest.mjs run src/gateway/session-utils.test.ts
               ;;
             beta6-memory-wiki-search)
+              memory_test_status=0
               node scripts/run-vitest.mjs run \
                 --config test/vitest/vitest.extension-memory.config.ts \
                 memory-core/src/tools.shared.test.ts \
@@ -260,10 +261,17 @@ jobs:
                 memory-wiki/src/bounded-walk.abort.test.ts \
                 memory-wiki/src/corpus-supplement.test.ts \
                 memory-wiki/src/query.test.ts \
-                memory-wiki/src/tool.test.ts
-              pnpm tsgo:core
-              pnpm tsgo:extensions
-              pnpm tsgo:extensions:test
+                memory-wiki/src/tool.test.ts || memory_test_status=$?
+              core_type_status=0
+              pnpm tsgo:core || core_type_status=$?
+              extension_type_status=0
+              pnpm tsgo:extensions || extension_type_status=$?
+              extension_test_type_status=0
+              pnpm tsgo:extensions:test || extension_test_type_status=$?
+              if (( memory_test_status != 0 || core_type_status != 0 || extension_type_status != 0 || extension_test_type_status != 0 )); then
+                echo "::error::memory test status=$memory_test_status core types=$core_type_status extension types=$extension_type_status extension test types=$extension_test_type_status"
+                exit 1
+              fi
               ;;
             beta6-control-ui-send)
               pnpm --dir ui exec vitest run --config vitest.config.ts \

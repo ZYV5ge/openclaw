@@ -796,7 +796,8 @@ describe("memory tools", () => {
         ["memory", "MEMORY.md"],
       ]);
       expect(details.partial).toBe(true);
-      expect(details).not.toMatchObject({ disabled: true, unavailable: true });
+      expect(details.disabled).not.toBe(true);
+      expect(details.unavailable).not.toBe(true);
       expect(details.debug?.partialFailures).toEqual(
         expect.arrayContaining([
           expect.objectContaining({
@@ -815,6 +816,60 @@ describe("memory tools", () => {
       });
       expect((retry.details as PartialMemorySearchDetails).results).toHaveLength(1);
       expect(searchCalls).toBe(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps a fulfilled wiki supplement when a sibling times out", async () => {
+    vi.useFakeTimers();
+    try {
+      let stalledSignal: AbortSignal | undefined;
+      registerMemoryCorpusSupplement("healthy-wiki", {
+        search: async () => [
+          {
+            corpus: "wiki",
+            path: "entities/alpha.md",
+            score: 4,
+            snippet: "healthy wiki result",
+          },
+        ],
+        get: async () => null,
+      });
+      registerMemoryCorpusSupplement("stalled-wiki", {
+        search: async (params) => {
+          stalledSignal = params.signal;
+          return await new Promise<never>(() => {});
+        },
+        get: async () => null,
+      });
+
+      const tool = createMemorySearchToolOrThrow();
+      const resultPromise = tool.execute("call_wiki_partial_timeout", {
+        query: "alpha",
+        corpus: "wiki",
+      });
+      await vi.advanceTimersByTimeAsync(15_000);
+      const result = await resultPromise;
+      const details = result.details as PartialMemorySearchDetails;
+
+      expect(details.results.map((entry) => [entry.corpus, entry.path])).toEqual([
+        ["wiki", "entities/alpha.md"],
+      ]);
+      expect(details.partial).toBe(true);
+      expect(details.disabled).not.toBe(true);
+      expect(details.unavailable).not.toBe(true);
+      expect(details.debug?.partialFailures).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            phase: "supplement",
+            kind: "supplement-failed",
+            pluginId: "stalled-wiki",
+            timedOut: true,
+          }),
+        ]),
+      );
+      expect(stalledSignal?.aborted).toBe(true);
     } finally {
       vi.useRealTimers();
     }
@@ -853,7 +908,8 @@ describe("memory tools", () => {
         ["wiki", "entities/alpha.md"],
       ]);
       expect(details.partial).toBe(true);
-      expect(details).not.toMatchObject({ disabled: true, unavailable: true });
+      expect(details.disabled).not.toBe(true);
+      expect(details.unavailable).not.toBe(true);
       expect(details.debug?.partialFailures).toEqual(
         expect.arrayContaining([
           expect.objectContaining({
@@ -868,7 +924,19 @@ describe("memory tools", () => {
         query: "alpha",
         corpus: "all",
       });
-      expect((retry.details as PartialMemorySearchDetails).results).toHaveLength(1);
+      const retryDetails = retry.details as PartialMemorySearchDetails;
+      expect(retryDetails.results).toHaveLength(1);
+      expect(retryDetails.partial).toBe(true);
+      expect(retryDetails.disabled).not.toBe(true);
+      expect(retryDetails.unavailable).not.toBe(true);
+      expect(retryDetails.debug?.partialFailures).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            phase: "memory",
+            kind: "memory-cooldown",
+          }),
+        ]),
+      );
       expect(searchCalls).toBe(1);
     } finally {
       vi.useRealTimers();
@@ -921,7 +989,7 @@ describe("memory tools", () => {
     const supplementStarted = await vi
       .waitFor(() => expect(supplementSignal).toBeInstanceOf(AbortSignal), {
         interval: 1,
-        timeout: 150,
+        timeout: 1500,
       })
       .then(
         () => true,
