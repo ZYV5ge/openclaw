@@ -7316,7 +7316,7 @@ describe("handleSendChat", () => {
     expect(sends).toStrictEqual([]);
     expect(host.chatMessage).toBe("keep this in the old session");
     expect(host.chatQueue[0]).toMatchObject({
-      sendError: "The thread switched branches  review and resend.",
+      sendError: "The thread switched branches \u2014 review and resend.",
       sendState: "failed",
       transcriptRevision: {
         expectedLeafEntryId: "leaf-before-reset",
@@ -7336,7 +7336,7 @@ describe("handleSendChat", () => {
       id: "retry-after-active-leaf",
       text: "retry on the refreshed leaf",
       createdAt: 1,
-      sendError: "The thread switched branches  review and resend.",
+      sendError: "The thread switched branches \u2014 review and resend.",
       sendRunId: "failed-run",
       sendState: "failed" as const,
       sessionKey: "agent:main",
@@ -7402,7 +7402,7 @@ describe("handleSendChat", () => {
       id: "retry-before-session-reset",
       text: "do not move this into the new session",
       createdAt: 1,
-      sendError: "The thread switched branches  review and resend.",
+      sendError: "The thread switched branches \u2014 review and resend.",
       sendRunId: "failed-session-run",
       sendState: "failed" as const,
       sessionKey: "agent:main",
