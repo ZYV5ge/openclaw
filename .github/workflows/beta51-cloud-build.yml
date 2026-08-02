@@ -219,9 +219,14 @@ jobs:
             src/config/sessions/session-transcript-index.ts \
             src/gateway/server-methods/chat-send-admission.ts \
             src/gateway/server-methods/chat.directive-tags.test.ts \
+            ui/src/lib/chat/chat-types.ts \
+            ui/src/lib/chat/outbox-store-codec.ts \
             ui/src/lib/chat/outbox-store.test.ts \
+            ui/src/pages/chat/chat-send-actions.ts \
             ui/src/pages/chat/chat-send-contract.ts \
             ui/src/pages/chat/chat-send-delivery.ts \
+            ui/src/pages/chat/chat-send-queue-state.ts \
+            ui/src/pages/chat/chat-send-request.ts \
             ui/src/pages/chat/chat-send-submit.ts \
             ui/src/pages/chat/chat-outbox-drain.ts \
             ui/src/pages/chat/chat-pane-render.ts \
@@ -230,6 +235,7 @@ jobs:
             ui/src/pages/chat/chat-submit-guard.test.ts \
             ui/src/pages/chat/chat-send.test.ts \
             ui/src/pages/chat/chat-composer.test.ts \
+            ui/src/pages/chat/steer-lifecycle.ts \
             ui/src/pages/chat/components/chat-composer.ts \
             ui/src/pages/chat/components/chat-composer-types.ts \
             ui/src/pages/chat/components/chat-composer-slash-menu.ts
