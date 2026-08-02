@@ -7771,6 +7771,49 @@ describe("handleSendChat", () => {
     expect(listStoredChatOutboxes(host)).toStrictEqual([]);
   });
 
+  it.each([
+    { kind: "message", localCommandName: undefined, text: "stale projected message" },
+    { kind: "local command", localCommandName: "compact", text: "/compact" },
+  ] as const)(
+    "ignores a stale $kind retry projection after a route switch",
+    async ({ kind, localCommandName, text }) => {
+      const staleSessionKey = `agent:main:stale-${kind.replace(" ", "-")}`;
+      const original = {
+        id: `stale-projection-${kind.replace(" ", "-")}`,
+        text,
+        createdAt: 1,
+        sendAttempts: 1,
+        sendError: "retry this",
+        sendRunId: `stale-projection-run-${kind.replace(" ", "-")}`,
+        sendState: "failed" as const,
+        sessionKey: staleSessionKey,
+        ...(localCommandName ? { localCommandArgs: "", localCommandName } : {}),
+      };
+      const host = makeHost({
+        requestHandlers: {
+          "chat.history": () => idleChatHistory(staleSessionKey),
+          "chat.send": { runId: "must-not-send", status: "ok" },
+        },
+        sessionKey: staleSessionKey,
+      });
+      expect(admitQueuedMessageForSession(host, staleSessionKey, original)).toBe(true);
+      expect(host.chatQueue[0]?.id).toBe(original.id);
+
+      host.sessionKey = "agent:main:replacement";
+      await retryQueuedChatMessage(host, original.id);
+
+      expect(host.request).not.toHaveBeenCalled();
+      expect(
+        listStoredChatOutboxes(host).find((outbox) => outbox.sessionKey === staleSessionKey)
+          ?.queue[0],
+      ).toMatchObject({
+        sendAttempts: original.sendAttempts,
+        sendRunId: original.sendRunId,
+        sendState: original.sendState,
+      });
+    },
+  );
+
   it("waits for authoritative history before retrying with a fresh leaf and run id", async () => {
     const history = createDeferred<unknown>();
     const sends: Record<string, unknown>[] = [];
