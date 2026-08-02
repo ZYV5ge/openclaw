@@ -147,6 +147,14 @@ jobs:
               src/gateway/server.chat.gateway-server-chat-b.test.ts \
               src/infra/startup-migration-checkpoint.ts \
               src/infra/startup-migration-checkpoint.test.ts \
+              src/commands/doctor-session-sqlite-compact.ts \
+              src/commands/doctor-session-sqlite-migration-run.ts \
+              src/commands/doctor-session-sqlite-types.ts \
+              src/commands/doctor-session-sqlite.test.ts \
+              src/commands/doctor-session-sqlite.ts \
+              src/commands/doctor-sqlite-compact.ts \
+              src/commands/doctor-state-sqlite-compact.test.ts \
+              src/commands/doctor-state-sqlite-compact.ts \
               src/state/openclaw-state-db-startup-checkpoint.ts \
               src/state/openclaw-state-db.ts \
               ui/src/lib/chat/outbox-store-codec.ts \
@@ -180,6 +188,14 @@ jobs:
               src/gateway/server.chat.gateway-server-chat-b.test.ts \
               src/infra/startup-migration-checkpoint.ts \
               src/infra/startup-migration-checkpoint.test.ts \
+              src/commands/doctor-session-sqlite-compact.ts \
+              src/commands/doctor-session-sqlite-migration-run.ts \
+              src/commands/doctor-session-sqlite-types.ts \
+              src/commands/doctor-session-sqlite.test.ts \
+              src/commands/doctor-session-sqlite.ts \
+              src/commands/doctor-sqlite-compact.ts \
+              src/commands/doctor-state-sqlite-compact.test.ts \
+              src/commands/doctor-state-sqlite-compact.ts \
               src/state/openclaw-state-db-startup-checkpoint.ts \
               src/state/openclaw-state-db.ts \
               ui/src/lib/chat/outbox-store-codec.ts \
@@ -303,6 +319,11 @@ jobs:
               OPENCLAW_VITEST_MAX_WORKERS=1 node scripts/run-vitest.mjs run \
                 --config test/vitest/vitest.infra.config.ts \
                 src/infra/startup-migration-checkpoint.test.ts || startup_test_status=$?
+              doctor_test_status=0
+              OPENCLAW_VITEST_MAX_WORKERS=1 node scripts/run-vitest.mjs run \
+                --config test/vitest/vitest.commands.config.ts \
+                src/commands/doctor-state-sqlite-compact.test.ts \
+                src/commands/doctor-session-sqlite.test.ts || doctor_test_status=$?
               core_type_status=0
               pnpm tsgo:core || core_type_status=$?
               src_test_type_status=0
@@ -311,8 +332,8 @@ jobs:
               pnpm lint:kysely || kysely_lint_status=$?
               sqlite_boundary_status=0
               pnpm lint:tmp:sqlite-transaction-boundary || sqlite_boundary_status=$?
-              if (( sqlite_test_status != 0 || startup_test_status != 0 || core_type_status != 0 || src_test_type_status != 0 || kysely_lint_status != 0 || sqlite_boundary_status != 0 )); then
-                echo "::error::SQLite status state-tests=$sqlite_test_status startup-tests=$startup_test_status core-types=$core_type_status src-test-types=$src_test_type_status kysely=$kysely_lint_status sqlite-boundary=$sqlite_boundary_status"
+              if (( sqlite_test_status != 0 || startup_test_status != 0 || doctor_test_status != 0 || core_type_status != 0 || src_test_type_status != 0 || kysely_lint_status != 0 || sqlite_boundary_status != 0 )); then
+                echo "::error::SQLite status state-tests=$sqlite_test_status startup-tests=$startup_test_status doctor-tests=$doctor_test_status core-types=$core_type_status src-test-types=$src_test_type_status kysely=$kysely_lint_status sqlite-boundary=$sqlite_boundary_status"
                 exit 1
               fi
               ;;
