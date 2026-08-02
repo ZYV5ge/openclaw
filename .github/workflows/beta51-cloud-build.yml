@@ -144,6 +144,8 @@ jobs:
               src/config/sessions/session-accessor.sqlite-active-events.test.ts \
               src/gateway/server-methods/chat.directive-tags.test.ts \
               ui/src/lib/chat/outbox-store-codec.ts \
+              ui/src/pages/chat/chat-outbox-drain.ts \
+              ui/src/pages/chat/chat-send-actions.ts \
               ui/src/pages/chat/chat-send-delivery.ts \
               ui/src/pages/chat/composer-persistence.ts \
               ui/src/pages/chat/composer-persistence.test.ts \
@@ -167,6 +169,8 @@ jobs:
               src/config/sessions/session-accessor.sqlite-active-events.test.ts \
               src/gateway/server-methods/chat.directive-tags.test.ts \
               ui/src/lib/chat/outbox-store-codec.ts \
+              ui/src/pages/chat/chat-outbox-drain.ts \
+              ui/src/pages/chat/chat-send-actions.ts \
               ui/src/pages/chat/chat-send-delivery.ts \
               ui/src/pages/chat/composer-persistence.ts \
               ui/src/pages/chat/composer-persistence.test.ts \
