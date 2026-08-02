@@ -878,12 +878,6 @@ jobs:
             test/scripts/package-changelog.test.ts \
             test/scripts/verify-control-ui-release-parity.test.ts
 
-      - name: Stop after package RED evidence
-        if: ${{ inputs.phase == 'red' }}
-        run: |
-          echo "::error::Package regressions unexpectedly passed in RED; stopping before Core/native build."
-          exit 1
-
       - name: Freeze version and build provenance
         id: release_meta
         run: |
@@ -1072,6 +1066,36 @@ jobs:
           test -s "$runtime_package/package.json"
           test -s "$runtime_package/dist/build-info.json"
           test -s "$runtime_package/dist/control-ui/index.html"
+          RUNTIME_ROOT="$runtime_package" node --input-type=module <<'NODE'
+          import { createRequire } from "node:module";
+          import fs from "node:fs";
+          import path from "node:path";
+
+          const runtimeRoot = process.env.RUNTIME_ROOT;
+          const runtimePackage = JSON.parse(
+            fs.readFileSync(path.join(runtimeRoot, "package.json"), "utf8"),
+          );
+          const runtimeRequire = createRequire(path.join(runtimeRoot, "package.json"));
+          const missing = Object.keys(runtimePackage.dependencies ?? {}).filter((name) => {
+            try {
+              runtimeRequire.resolve(name);
+              return false;
+            } catch {
+              return true;
+            }
+          });
+          if (missing.length > 0) {
+            throw new Error(
+              "packaged runtime has unresolved production dependencies: " + missing.join(", "),
+            );
+          }
+          NODE
+          runtime_smoke_home="$RUNNER_TEMP/openclaw-runtime-smoke-home"
+          mkdir -p "$runtime_smoke_home"
+          env -u NODE_PATH \
+            HOME="$runtime_smoke_home" \
+            OPENCLAW_STATE_DIR="$runtime_smoke_home/.openclaw" \
+            node "$runtime_package/openclaw.mjs" doctor --non-interactive
           ROOT_UI="$PWD/dist/control-ui" \
           APP_UI="$PWD/$app/Contents/Resources/control-ui" \
           RUNTIME_UI="$runtime_package/dist/control-ui" \
