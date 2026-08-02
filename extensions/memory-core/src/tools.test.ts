@@ -1028,6 +1028,55 @@ describe("memory_search unavailable payloads", () => {
     expect(getMemorySyncMockCalls()).toBe(1);
   });
 
+  it("preserves stale metadata when corpus=all also returns partial results", async () => {
+    setMemoryStatusDirty(true);
+    setMemorySearchImpl(async () => [
+      {
+        path: "MEMORY.md",
+        startLine: 1,
+        endLine: 1,
+        score: 0.9,
+        snippet: "primary memory result",
+        source: "memory" as const,
+      },
+    ]);
+    registerMemoryCorpusSupplement("broken-wiki", {
+      search: async () => {
+        throw new Error("wiki supplement failed");
+      },
+      get: async () => null,
+    });
+    const tool = createMemorySearchToolOrThrow({
+      config: {
+        agents: { list: [{ id: "main", default: true }] },
+        memory: { citations: "off" },
+      },
+    });
+
+    const result = await tool.execute("dirty-index-partial", {
+      query: "hidden codeword",
+      corpus: "all",
+    });
+
+    expect(result.details).toMatchObject({
+      results: [expect.objectContaining({ corpus: "memory", path: "MEMORY.md" })],
+      stale: true,
+      partial: true,
+      warning:
+        "Memory index is dirty. Search results may be incomplete. Memory search returned partial results because one or more configured corpora were unavailable.",
+      action: "Run: openclaw memory status --index --agent main",
+      debug: {
+        partialFailures: expect.arrayContaining([
+          expect.objectContaining({
+            phase: "supplement",
+            kind: "supplement-failed",
+            pluginId: "broken-wiki",
+          }),
+        ]),
+      },
+    });
+  });
+
   it("keeps the zero-hit bootstrap retry for one-shot qmd searches", async () => {
     setMemoryBackend("qmd");
     let searchCalls = 0;
