@@ -1006,6 +1006,14 @@ export function createMemorySearchTool(options: {
                     partialFailures: partialFailures.map((failure) => ({ ...failure })),
                   }
                 : searchDebug;
+            const partialWarning =
+              partialFailures.length > 0
+                ? "Memory search returned partial results because one or more configured corpora were unavailable."
+                : undefined;
+            const warning =
+              staleness?.warning && partialWarning
+                ? `${staleness.warning} ${partialWarning}`
+                : staleness?.warning ?? partialWarning;
             return jsonResult({
               results,
               provider,
@@ -1015,13 +1023,8 @@ export function createMemorySearchTool(options: {
               mode: searchMode,
               ...staleness,
               debug,
-              ...(partialFailures.length > 0
-                ? {
-                    partial: true,
-                    warning:
-                      "Memory search returned partial results because one or more configured corpora were unavailable.",
-                  }
-                : {}),
+              ...(partialFailures.length > 0 ? { partial: true } : {}),
+              ...(warning ? { warning } : {}),
             });
           } finally {
             if (!supplementSignal.aborted) {
