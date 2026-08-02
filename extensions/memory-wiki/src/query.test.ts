@@ -219,8 +219,7 @@ async function expectSearchCancellationStopsTargetReads(params: {
       options !== null &&
       "encoding" in options &&
       options.encoding === "utf8";
-    const isTargetRead =
-      params.readKind === "query-page" ? isUtf8PageRead : !isUtf8PageRead;
+    const isTargetRead = params.readKind === "query-page" ? isUtf8PageRead : !isUtf8PageRead;
     if (!isTargetRead) {
       return await Reflect.apply(getActualReadFile(), undefined, args);
     }
