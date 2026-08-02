@@ -1,8 +1,8 @@
+import { initialState, Task, TaskStatus } from "@lit/task";
 import {
   DEFAULT_GATEWAY_REQUEST_TIMEOUT_MS,
   resolveGatewayStartupRetryAfterMs,
 } from "@openclaw/gateway-client/browser";
-import { initialState, Task, TaskStatus } from "@lit/task";
 import type { ReactiveController, ReactiveControllerHost } from "lit";
 import type { GatewayAgentRow, GatewaySessionRow, ModelCatalogEntry } from "../../api/types.ts";
 import type { ApplicationContext } from "../../app/context.ts";
@@ -18,9 +18,7 @@ import type { NewSessionPreference } from "./preferences.ts";
 
 const NEW_SESSION_METADATA_RETRY_WINDOW_MS = 60_000;
 
-type NewSessionMetadataClient = NonNullable<
-  ApplicationContext["gateway"]["snapshot"]["client"]
->;
+type NewSessionMetadataClient = NonNullable<ApplicationContext["gateway"]["snapshot"]["client"]>;
 
 function abortError(signal: AbortSignal): Error {
   return signal.reason instanceof Error
