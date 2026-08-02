@@ -23,7 +23,13 @@ on:
           - beta6-mac-ui
           - beta6-control-ui-send
           - beta6-memory-wiki-search
+          - beta6-postcutoff-inference
+          - beta6-postcutoff-gateway-lifecycle
+          - beta6-postcutoff-media-policy
           - beta6-postcutoff-file-mutations
+          - beta6-postcutoff-service-ca
+          - beta6-i18n
+          - beta6-macos-package
       phase:
         description: TDD evidence phase; does not alter the test command
         required: true
@@ -46,13 +52,14 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
   NODE_VERSION: "24.15.0"
   PERSONAL_VERSION: "2026.7.2-beta.6.1"
+  PERSONAL_APP_BUILD: "2607000206"
   UPSTREAM_VERSION: "2026.7.2"
   FROZEN_UPSTREAM_SHA: "d328b02ab8b14663698a05cdc3a41bc3b5c98809"
   PERSONAL_RELEASE_REPOSITORY: "ZYV5ge/openclaw"
 
 jobs:
   focused_validation:
-    if: ${{ inputs.suite != 'beta6-mac-ui' }}
+    if: ${{ inputs.suite != 'beta6-mac-ui' && inputs.suite != 'beta6-macos-package' }}
     name: ${{ inputs.suite }} (${{ inputs.phase }})
     runs-on: ubuntu-24.04
     timeout-minutes: 45
@@ -259,6 +266,55 @@ jobs:
             extensions/telegram/src/bot/body-helpers.ts \
             extensions/telegram/src/bot-message-context.body.ts \
             extensions/telegram/src/bot-message-context.body.test.ts \
+            extensions/codex/src/app-server/run-attempt-notification-controller.ts \
+            extensions/codex/src/app-server/run-attempt.test.ts \
+            extensions/codex/src/app-server/run-attempt-cleanup.ts \
+            extensions/codex/src/app-server/run-attempt-thread-cleanup.test.ts \
+            extensions/codex/src/app-server/turn-router.ts \
+            extensions/codex/src/app-server/turn-router.test.ts \
+            extensions/qa-lab/src/providers/mock-openai/mock-anthropic-wire.ts \
+            extensions/qa-lab/src/providers/mock-openai/mock-openai-directives.ts \
+            extensions/qa-lab/src/providers/mock-openai/mock-openai-input.ts \
+            extensions/qa-lab/src/providers/mock-openai/mock-openai-responses-websocket.test.ts \
+            extensions/qa-lab/src/providers/mock-openai/mock-openai-tooling.ts \
+            extensions/qa-lab/src/providers/mock-openai/server.ts \
+            extensions/qa-lab/src/providers/mock-openai/server.test.ts \
+            extensions/logbook/index.ts \
+            extensions/logbook/index.test.ts \
+            extensions/telegram/src/bot-handlers.inbound-media-group.runtime.ts \
+            extensions/telegram/src/bot-handlers.inbound.runtime.ts \
+            extensions/telegram/src/bot.create-telegram-bot.channel-post-media.test.ts \
+            extensions/telegram/src/bot.create-telegram-bot.test-support.ts \
+            extensions/telegram/src/group-config-helpers.ts \
+            src/agents/embedded-agent-runner/stream-resolution.ts \
+            src/agents/embedded-agent-runner/stream-resolution.test.ts \
+            src/agents/subagent-announce-handoff.ts \
+            src/agents/subagent-registry-requester-yield.ts \
+            src/agents/subagent-registry-requester-yield.test.ts \
+            src/agents/agent-tools.read.ts \
+            src/agents/sessions/tools/edit.ts \
+            src/agents/sessions/tools/edit.test.ts \
+            src/agents/sessions/tools/file-write-verification.ts \
+            src/agents/sessions/tools/write.ts \
+            src/agents/sessions/tools/write.test.ts \
+            src/gateway/chat-abort.ts \
+            src/gateway/chat-abort.test.ts \
+            src/gateway/openai-http.ts \
+            src/gateway/openai-http.test.ts \
+            src/gateway/openresponses-http.ts \
+            src/gateway/openresponses-http.test.ts \
+            src/gateway/server-chat.ts \
+            src/gateway/session-lifecycle-state.ts \
+            src/gateway/session-lifecycle-state.test.ts \
+            src/gateway/server-methods/agent-run-admission-phase.ts \
+            src/gateway/server-methods/agent-run-execution-phase.ts \
+            src/gateway/server-methods/agent-run-model-selection.ts \
+            src/gateway/server-methods/agent.media-and-routing.test-utils.ts \
+            src/infra/agent-events.ts \
+            src/infra/agent-events.test.ts \
+            src/cli/daemon-cli/install.ts \
+            src/cli/daemon-cli/install.test.ts \
+            src/daemon/launchd.test.ts \
             src/agents/agent-tools.read.host-tilde-expansion.test.ts \
             src/agents/session-write-lock-error.ts \
             src/agents/main-session-recovery-state.ts \
@@ -406,6 +462,89 @@ jobs:
                 exit 1
               fi
               ;;
+            beta6-postcutoff-inference)
+              codex_status=0
+              OPENCLAW_VITEST_MAX_WORKERS=1 node scripts/run-vitest.mjs run \
+                --config test/vitest/vitest.extension-codex.config.ts \
+                codex/src/app-server/run-attempt.test.ts \
+                codex/src/app-server/run-attempt-thread-cleanup.test.ts \
+                codex/src/app-server/turn-router.test.ts || codex_status=$?
+              qa_status=0
+              OPENCLAW_VITEST_MAX_WORKERS=1 node scripts/run-vitest.mjs run \
+                --config test/vitest/vitest.extension-qa.config.ts \
+                qa-lab/src/providers/mock-openai/mock-openai-responses-websocket.test.ts \
+                qa-lab/src/providers/mock-openai/server.test.ts || qa_status=$?
+              stream_status=0
+              OPENCLAW_VITEST_MAX_WORKERS=1 node scripts/run-vitest.mjs run \
+                --config test/vitest/vitest.agents-embedded-agent.config.ts \
+                src/agents/embedded-agent-runner/stream-resolution.test.ts || stream_status=$?
+              handoff_status=0
+              node scripts/run-vitest.mjs run \
+                --config test/vitest/vitest.agents-core.config.ts \
+                src/agents/subagent-registry-requester-yield.test.ts \
+                src/agents/subagent-announce-handoff.test.ts || handoff_status=$?
+              core_type_status=0
+              pnpm tsgo:core || core_type_status=$?
+              src_test_type_status=0
+              pnpm tsgo:test:src || src_test_type_status=$?
+              extension_type_status=0
+              pnpm tsgo:extensions || extension_type_status=$?
+              extension_test_type_status=0
+              pnpm tsgo:extensions:test || extension_test_type_status=$?
+              if (( codex_status != 0 || qa_status != 0 || stream_status != 0 || handoff_status != 0 || core_type_status != 0 || src_test_type_status != 0 || extension_type_status != 0 || extension_test_type_status != 0 )); then
+                echo "::error::inference status codex=$codex_status qa=$qa_status stream=$stream_status handoff=$handoff_status core-types=$core_type_status src-test-types=$src_test_type_status extension-types=$extension_type_status extension-test-types=$extension_test_type_status"
+                exit 1
+              fi
+              ;;
+
+            beta6-postcutoff-gateway-lifecycle)
+              gateway_core_status=0
+              OPENCLAW_VITEST_MAX_WORKERS=1 node scripts/run-vitest.mjs run \
+                --config test/vitest/vitest.gateway-core.config.ts \
+                src/gateway/session-lifecycle-state.test.ts \
+                src/gateway/chat-abort.test.ts || gateway_core_status=$?
+              gateway_server_status=0
+              OPENCLAW_VITEST_MAX_WORKERS=1 node scripts/run-vitest.mjs run \
+                --config test/vitest/vitest.gateway-server.config.ts \
+                src/gateway/openai-http.test.ts \
+                src/gateway/openresponses-http.test.ts \
+                src/gateway/server-chat.agent-events.test.ts \
+                src/gateway/server-chat-state.test.ts || gateway_server_status=$?
+              gateway_method_status=0
+              OPENCLAW_VITEST_MAX_WORKERS=1 node scripts/run-vitest.mjs run \
+                --config test/vitest/vitest.gateway-methods.config.ts \
+                src/gateway/server-methods/agent.test.ts || gateway_method_status=$?
+              infra_status=0
+              node scripts/run-vitest.mjs run \
+                --config test/vitest/vitest.infra.config.ts \
+                src/infra/agent-events.test.ts || infra_status=$?
+              core_type_status=0
+              pnpm tsgo:core || core_type_status=$?
+              src_test_type_status=0
+              pnpm tsgo:test:src || src_test_type_status=$?
+              if (( gateway_core_status != 0 || gateway_server_status != 0 || gateway_method_status != 0 || infra_status != 0 || core_type_status != 0 || src_test_type_status != 0 )); then
+                echo "::error::gateway lifecycle status core=$gateway_core_status server=$gateway_server_status methods=$gateway_method_status infra=$infra_status core-types=$core_type_status src-test-types=$src_test_type_status"
+                exit 1
+              fi
+              ;;
+
+            beta6-postcutoff-media-policy)
+              telegram_status=0
+              OPENCLAW_VITEST_MAX_WORKERS=1 node scripts/run-vitest.mjs run \
+                --config test/vitest/vitest.extension-telegram.config.ts \
+                telegram/src/bot-message-context.body.test.ts \
+                telegram/src/bot.create-telegram-bot.channel-post-media.test.ts || telegram_status=$?
+              logbook_status=0
+              node scripts/run-vitest.mjs run extensions/logbook/index.test.ts || logbook_status=$?
+              extension_type_status=0
+              pnpm tsgo:extensions || extension_type_status=$?
+              extension_test_type_status=0
+              pnpm tsgo:extensions:test || extension_test_type_status=$?
+              if (( telegram_status != 0 || logbook_status != 0 || extension_type_status != 0 || extension_test_type_status != 0 )); then
+                echo "::error::media policy status telegram=$telegram_status logbook=$logbook_status extension-types=$extension_type_status extension-test-types=$extension_test_type_status"
+                exit 1
+              fi
+              ;;
             beta6-postcutoff-file-mutations)
               adapter_status=0
               node scripts/run-vitest.mjs run \
@@ -423,6 +562,37 @@ jobs:
               pnpm tsgo:test:src || src_test_type_status=$?
               if (( adapter_status != 0 || mutation_status != 0 || core_type_status != 0 || src_test_type_status != 0 )); then
                 echo "::error::file mutation status adapter=$adapter_status mutation=$mutation_status core-types=$core_type_status src-test-types=$src_test_type_status"
+                exit 1
+              fi
+              ;;
+            beta6-postcutoff-service-ca)
+              service_status=0
+              node scripts/run-vitest.mjs run \
+                src/cli/daemon-cli/install.test.ts \
+                src/daemon/launchd.test.ts || service_status=$?
+              core_type_status=0
+              pnpm tsgo:core || core_type_status=$?
+              src_test_type_status=0
+              pnpm tsgo:test:src || src_test_type_status=$?
+              if (( service_status != 0 || core_type_status != 0 || src_test_type_status != 0 )); then
+                echo "::error::service CA status tests=$service_status core-types=$core_type_status src-test-types=$src_test_type_status"
+                exit 1
+              fi
+              ;;
+
+            beta6-i18n)
+              ui_verify_status=0
+              pnpm ui:i18n:verify || ui_verify_status=$?
+              native_verify_status=0
+              pnpm native:i18n:verify || native_verify_status=$?
+              apple_check_status=0
+              pnpm apple:i18n:check || apple_check_status=$?
+              native_check_status=0
+              pnpm native:i18n:check || native_check_status=$?
+              ui_lint_status=0
+              pnpm lint:ui:i18n || ui_lint_status=$?
+              if (( ui_verify_status != 0 || native_verify_status != 0 || apple_check_status != 0 || native_check_status != 0 || ui_lint_status != 0 )); then
+                echo "::error::i18n status ui-verify=$ui_verify_status native-verify=$native_verify_status apple-check=$apple_check_status native-check=$native_check_status ui-lint=$ui_lint_status"
                 exit 1
               fi
               ;;
@@ -561,3 +731,476 @@ jobs:
             echo "::error::macOS suite status=$macos_status shared UI suite status=$shared_status"
             exit 1
           fi
+
+  macos_package:
+    if: ${{ inputs.suite == 'beta6-macos-package' }}
+    permissions:
+      contents: read
+    name: Build OpenClaw 2026.7.2-beta.6.1 macOS universal package
+    runs-on: macos-26-intel
+    timeout-minutes: 180
+    env:
+      SOURCE_SHA: ${{ inputs.source_sha }}
+      GIT_COMMIT: ${{ inputs.source_sha }}
+      APP_VERSION: "2026.7.2-beta.6.1"
+      APP_BUILD: "2607000206"
+      BUNDLE_ID: "ai.openclaw.mac"
+      NODE_OPTIONS: "--max-old-space-size=6144"
+      PNPM_CONFIG_CHILD_CONCURRENCY: "2"
+      PNPM_CONFIG_NETWORK_CONCURRENCY: "8"
+      OPENCLAW_CONTROL_UI_RELEASE_BUILD: "1"
+
+    steps:
+      - name: Validate immutable public-repository build dispatch
+        env:
+          EVENT_SHA: ${{ github.sha }}
+          CURRENT_REPOSITORY: ${{ github.repository }}
+          REPOSITORY_IS_PRIVATE: ${{ github.event.repository.private }}
+          CURRENT_REF: ${{ github.ref }}
+          TDD_PHASE: ${{ inputs.phase }}
+        run: |
+          set -euo pipefail
+          if [[ "$CURRENT_REPOSITORY" != "$PERSONAL_RELEASE_REPOSITORY" ]]; then
+            echo "::error::This workflow is restricted to $PERSONAL_RELEASE_REPOSITORY."
+            exit 1
+          fi
+          if [[ "$REPOSITORY_IS_PRIVATE" != "false" ]]; then
+            echo "::error::The personal build must use a public repository and standard free runners."
+            exit 1
+          fi
+          if [[ "$CURRENT_REF" != "refs/heads/agent/openclaw-beta-5-1" ]]; then
+            echo "::error::Dispatch the one existing personal repair branch."
+            exit 1
+          fi
+          if [[ "$TDD_PHASE" != "green" ]]; then
+            echo "::error::macOS packaging is permitted only after GREEN validation."
+            exit 1
+          fi
+          if [[ ! "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::source_sha must be a full lowercase Git SHA."
+            exit 1
+          fi
+          if [[ "$EVENT_SHA" != "$SOURCE_SHA" ]]; then
+            echo "::error::The dispatched ref resolved to $EVENT_SHA, expected $SOURCE_SHA."
+            exit 1
+          fi
+
+      - name: Checkout exact frozen source
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          ref: ${{ inputs.source_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify frozen official ancestry
+        run: |
+          set -euo pipefail
+          if [[ "$(git rev-parse HEAD)" != "$SOURCE_SHA" ]]; then
+            echo "::error::Checkout did not resolve to $SOURCE_SHA."
+            exit 1
+          fi
+          official_remote="official-openclaw"
+          official_url="https://github.com/openclaw/openclaw.git"
+          if git remote get-url "$official_remote" >/dev/null 2>&1; then
+            git remote set-url "$official_remote" "$official_url"
+          else
+            git remote add "$official_remote" "$official_url"
+          fi
+          git fetch --no-tags --filter=blob:none "$official_remote" "$FROZEN_UPSTREAM_SHA"
+          if ! git merge-base --is-ancestor "$FROZEN_UPSTREAM_SHA" "$SOURCE_SHA"; then
+            echo "::error::Source does not contain frozen official main $FROZEN_UPSTREAM_SHA."
+            exit 1
+          fi
+          if [[ -n "$(git status --porcelain=v1 --untracked-files=all)" ]]; then
+            echo "::error::The build checkout is not clean."
+            exit 1
+          fi
+
+      - name: Select pinned Xcode 26.1.1
+        run: |
+          set -euo pipefail
+          xcode_app="/Applications/Xcode_26.1.1.app"
+          if [[ ! -d "$xcode_app/Contents/Developer" ]]; then
+            xcode_app="/Applications/Xcode_26.1.app"
+          fi
+          if [[ ! -d "$xcode_app/Contents/Developer" ]]; then
+            echo "::error::Pinned Xcode 26.1.1 is unavailable on this runner image."
+            exit 1
+          fi
+          sudo xcode-select -s "$xcode_app/Contents/Developer"
+          xcodebuild -version
+          xcode_version="$(xcodebuild -version | awk 'NR == 1 { print $2 }')"
+          if [[ "$xcode_version" != "26.1.1" ]]; then
+            echo "::error::Expected Xcode 26.1.1, got $xcode_version."
+            exit 1
+          fi
+          source scripts/lib/swift-toolchain.sh
+          require_swift_toolchain
+          swift --version
+          echo "OPENCLAW_XCODE_VERSION=$xcode_version" >> "$GITHUB_ENV"
+
+      - name: Setup pinned Node and pnpm without Actions caches
+        uses: ./.github/actions/setup-node-env
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          install-bun: "false"
+          use-actions-cache: "false"
+          save-actions-cache: "false"
+
+      - name: Freeze version and build provenance
+        id: release_meta
+        run: |
+          set -euo pipefail
+          actual_version="$(node -p "require('./package.json').version")"
+          if [[ "$actual_version" != "$APP_VERSION" ]]; then
+            echo "::error::package.json version is $actual_version, expected $APP_VERSION."
+            exit 1
+          fi
+          commit_epoch="$(git show -s --format=%ct "$SOURCE_SHA")"
+          build_timestamp="$(
+            node -e \
+              'process.stdout.write(new Date(Number(process.argv[1]) * 1000).toISOString())' \
+              "$commit_epoch"
+          )"
+          if [[ ! "$build_timestamp" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3}Z$ ]]; then
+            echo "::error::Could not derive a fixed UTC build timestamp."
+            exit 1
+          fi
+          short_sha="$(printf '%.12s' "$SOURCE_SHA")"
+          artifact_name="OpenClaw-$APP_VERSION-macos-universal-$short_sha"
+          bundle_dir=".artifacts/personal-release/upload"
+          mkdir -p "$bundle_dir"
+          echo "OPENCLAW_BUILD_TIMESTAMP=$build_timestamp" >> "$GITHUB_ENV"
+          echo "artifact_name=$artifact_name" >> "$GITHUB_OUTPUT"
+          echo "bundle_dir=$bundle_dir" >> "$GITHUB_OUTPUT"
+          {
+            echo "Source SHA: $SOURCE_SHA"
+            echo "Frozen official SHA: $FROZEN_UPSTREAM_SHA"
+            echo "Version: $APP_VERSION"
+            echo "Build: $APP_BUILD"
+            echo "Build timestamp: $build_timestamp"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Check workflow and available disk
+        run: |
+          set -euo pipefail
+          node scripts/check-workflows.mjs
+          df -h .
+          du -sh node_modules 2>/dev/null || true
+
+      - name: Build Core Gateway Control UI and package metadata once
+        run: |
+          set -euo pipefail
+          pnpm build
+          test -s dist/build-info.json
+          test -s dist/control-ui/index.html
+          node --input-type=module <<'NODE'
+          import fs from "node:fs";
+          const info = JSON.parse(fs.readFileSync("dist/build-info.json", "utf8"));
+          const expected = {
+            version: process.env.APP_VERSION,
+            commit: process.env.SOURCE_SHA,
+            builtAt: process.env.OPENCLAW_BUILD_TIMESTAMP,
+          };
+          for (const [key, value] of Object.entries(expected)) {
+            if (info[key] !== value) {
+              throw new Error("dist/build-info.json " + key + "=" + info[key] + ", expected " + value);
+            }
+          }
+          NODE
+
+      - name: Build universal ad-hoc signed App ZIP and DMG
+        env:
+          BUILD_ARCHS: "all"
+          BUILD_CONFIG: "release"
+          SIGN_IDENTITY: "-"
+          ALLOW_ADHOC_SIGNING: "1"
+          CODESIGN_TIMESTAMP: "off"
+          SKIP_NOTARIZE: "1"
+          SKIP_DSYM: "1"
+          SKIP_PNPM_INSTALL: "1"
+          SKIP_TSC: "1"
+          SKIP_UI_BUILD: "1"
+        run: |
+          set -euo pipefail
+          bash scripts/package-mac-dist.sh
+          test -d dist/OpenClaw.app
+          test -s "dist/OpenClaw-$APP_VERSION.zip"
+          test -s "dist/OpenClaw-$APP_VERSION.dmg"
+          df -h .
+
+      - name: Package same-checkout Core Gateway runtime
+        id: runtime
+        run: |
+          set -euo pipefail
+          runtime_dir=".artifacts/personal-release/runtime"
+          short_sha="$(printf '%.12s' "$SOURCE_SHA")"
+          runtime_name="openclaw-$APP_VERSION-runtime-$short_sha.tgz"
+          mkdir -p "$runtime_dir"
+          node scripts/package-openclaw-for-docker.mjs \
+            --skip-build \
+            --allow-unreleased-changelog \
+            --output-dir "$runtime_dir" \
+            --output-name "$runtime_name"
+          runtime_path="$PWD/$runtime_dir/$runtime_name"
+          test -s "$runtime_path"
+          echo "runtime_path=$runtime_path" >> "$GITHUB_OUTPUT"
+          echo "runtime_name=$runtime_name" >> "$GITHUB_OUTPUT"
+
+      - name: Verify App runtime Control UI signing and architectures
+        env:
+          RUNTIME_TGZ: ${{ steps.runtime.outputs.runtime_path }}
+          RUNTIME_NAME: ${{ steps.runtime.outputs.runtime_name }}
+          BUNDLE_DIR: ${{ steps.release_meta.outputs.bundle_dir }}
+        run: |
+          set -euo pipefail
+          app="dist/OpenClaw.app"
+          zip="dist/OpenClaw-$APP_VERSION.zip"
+          dmg="dist/OpenClaw-$APP_VERSION.dmg"
+          plist_value() {
+            /usr/libexec/PlistBuddy -c "Print :$2" "$1/Contents/Info.plist"
+          }
+          verify_app_metadata() {
+            local candidate="$1"
+            [[ "$(plist_value "$candidate" CFBundleIdentifier)" == "$BUNDLE_ID" ]]
+            [[ "$(plist_value "$candidate" CFBundleShortVersionString)" == "$APP_VERSION" ]]
+            [[ "$(plist_value "$candidate" CFBundleVersion)" == "$APP_BUILD" ]]
+            [[ "$(plist_value "$candidate" OpenClawGitCommit)" == "$SOURCE_SHA" ]]
+            [[ "$(plist_value "$candidate" OpenClawBuildTimestamp)" == "$OPENCLAW_BUILD_TIMESTAMP" ]]
+            codesign --verify --deep --strict --verbose=4 "$candidate"
+          }
+          require_universal() {
+            local candidate="$1"
+            local architectures
+            architectures="$(lipo -archs "$candidate")"
+            printf '%s\t%s\n' "$candidate" "$architectures" >> "$BUNDLE_DIR/architectures.txt"
+            if [[ " $architectures " != *" arm64 "* || " $architectures " != *" x86_64 "* ]]; then
+              echo "::error::$candidate is not universal arm64+x86_64: $architectures"
+              exit 1
+            fi
+          }
+          mkdir -p "$BUNDLE_DIR"
+          cp "$zip" "$BUNDLE_DIR/"
+          cp "$dmg" "$BUNDLE_DIR/"
+          cp "$RUNTIME_TGZ" "$BUNDLE_DIR/"
+          verify_app_metadata "$app"
+          codesign -dv --verbose=4 "$app" >"$BUNDLE_DIR/signature.txt" 2>&1
+          cat "$BUNDLE_DIR/signature.txt"
+          if ! grep -Fxq "Signature=adhoc" "$BUNDLE_DIR/signature.txt"; then
+            echo "::error::Expected an ad-hoc signed application."
+            exit 1
+          fi
+          : >"$BUNDLE_DIR/architectures.txt"
+          require_universal "$app/Contents/MacOS/OpenClaw"
+          require_universal "$app/Contents/MacOS/openclaw-mlx-tts"
+          sparkle_root="$app/Contents/Frameworks/Sparkle.framework"
+          sparkle_macho_count=0
+          while IFS= read -r -d '' candidate; do
+            if file "$candidate" | grep -q "Mach-O"; then
+              require_universal "$candidate"
+              ((sparkle_macho_count += 1))
+            fi
+          done < <(find "$sparkle_root" -type f -print0)
+          if (( sparkle_macho_count == 0 )); then
+            echo "::error::No Sparkle Mach-O binaries were found."
+            exit 1
+          fi
+          zip_check="$RUNNER_TEMP/openclaw-zip-check"
+          rm -rf "$zip_check"
+          mkdir -p "$zip_check"
+          ditto -x -k "$zip" "$zip_check"
+          verify_app_metadata "$zip_check/OpenClaw.app"
+          hdiutil verify "$dmg"
+          dmg_mount="$RUNNER_TEMP/openclaw-dmg-check"
+          rm -rf "$dmg_mount"
+          mkdir -p "$dmg_mount"
+          dmg_attached=0
+          cleanup_dmg_check() {
+            if [[ "$dmg_attached" == "1" ]]; then
+              hdiutil detach "$dmg_mount" -force >/dev/null 2>&1 || true
+            fi
+          }
+          trap cleanup_dmg_check EXIT
+          hdiutil attach -readonly -nobrowse -mountpoint "$dmg_mount" "$dmg" >/dev/null
+          dmg_attached=1
+          verify_app_metadata "$dmg_mount/OpenClaw.app"
+          hdiutil detach "$dmg_mount" >/dev/null
+          dmg_attached=0
+          trap - EXIT
+          runtime_check="$RUNNER_TEMP/openclaw-runtime-check"
+          rm -rf "$runtime_check"
+          mkdir -p "$runtime_check"
+          tar -xzf "$RUNTIME_TGZ" -C "$runtime_check"
+          runtime_package="$runtime_check/package"
+          test -s "$runtime_package/package.json"
+          test -s "$runtime_package/dist/build-info.json"
+          test -s "$runtime_package/dist/control-ui/index.html"
+          ROOT_UI="$PWD/dist/control-ui" \
+          APP_UI="$PWD/$app/Contents/Resources/control-ui" \
+          RUNTIME_UI="$runtime_package/dist/control-ui" \
+          MANIFEST_DIR="$BUNDLE_DIR" \
+          node --input-type=module <<'NODE'
+          import crypto from "node:crypto";
+          import fs from "node:fs";
+          import path from "node:path";
+          const sha256 = (body) => crypto.createHash("sha256").update(body).digest("hex");
+          function walk(root, relative = "") {
+            const current = path.join(root, relative);
+            const result = [];
+            for (const entry of fs.readdirSync(current, { withFileTypes: true }).toSorted((a, b) => a.name.localeCompare(b.name))) {
+              const next = relative ? relative + "/" + entry.name : entry.name;
+              if (entry.isDirectory()) {
+                result.push(...walk(root, next));
+              } else if (entry.isFile()) {
+                const body = fs.readFileSync(path.join(root, next));
+                result.push({ path: next, bytes: body.length, sha256: sha256(body) });
+              } else {
+                throw new Error("Unexpected Control UI entry: " + next);
+              }
+            }
+            return result;
+          }
+          const roots = {
+            root: process.env.ROOT_UI,
+            app: process.env.APP_UI,
+            runtime: process.env.RUNTIME_UI,
+          };
+          const manifests = Object.fromEntries(Object.entries(roots).map(([name, root]) => [name, walk(root)]));
+          const canonical = JSON.stringify(manifests.root);
+          for (const [name, manifest] of Object.entries(manifests)) {
+            if (JSON.stringify(manifest) !== canonical) {
+              throw new Error("Control UI manifest mismatch: root versus " + name);
+            }
+            fs.writeFileSync(
+              path.join(process.env.MANIFEST_DIR, "control-ui-" + name + ".manifest.json"),
+              JSON.stringify(manifest, null, 2) + "\n",
+            );
+          }
+          if (!manifests.root.some((entry) => entry.path === "index.html")) {
+            throw new Error("Control UI manifest is missing index.html");
+          }
+          if (!manifests.root.some((entry) => entry.path.startsWith("assets/"))) {
+            throw new Error("Control UI manifest contains no assets");
+          }
+          NODE
+          RUNTIME_ROOT="$runtime_package" node --input-type=module <<'NODE'
+          import fs from "node:fs";
+          import path from "node:path";
+          const expected = {
+            version: process.env.APP_VERSION,
+            commit: process.env.SOURCE_SHA,
+            builtAt: process.env.OPENCLAW_BUILD_TIMESTAMP,
+          };
+          const runtimePackage = JSON.parse(fs.readFileSync(path.join(process.env.RUNTIME_ROOT, "package.json"), "utf8"));
+          if (runtimePackage.version !== expected.version) {
+            throw new Error("runtime package version " + runtimePackage.version + ", expected " + expected.version);
+          }
+          for (const file of ["dist/build-info.json", path.join(process.env.RUNTIME_ROOT, "dist/build-info.json")]) {
+            const info = JSON.parse(fs.readFileSync(file, "utf8"));
+            for (const [key, value] of Object.entries(expected)) {
+              if (info[key] !== value) {
+                throw new Error(file + " " + key + "=" + info[key] + ", expected " + value);
+              }
+            }
+          }
+          NODE
+          root_manifest_sha="$(shasum -a 256 "$BUNDLE_DIR/control-ui-root.manifest.json" | awk '{print $1}')"
+          app_manifest_sha="$(shasum -a 256 "$BUNDLE_DIR/control-ui-app.manifest.json" | awk '{print $1}')"
+          runtime_manifest_sha="$(shasum -a 256 "$BUNDLE_DIR/control-ui-runtime.manifest.json" | awk '{print $1}')"
+          if [[ "$root_manifest_sha" != "$app_manifest_sha" || "$root_manifest_sha" != "$runtime_manifest_sha" ]]; then
+            echo "::error::Control UI manifest SHA mismatch."
+            exit 1
+          fi
+          printf '%s  control-ui-manifest\n' "$root_manifest_sha" >"$BUNDLE_DIR/control-ui-manifest.sha256"
+
+      - name: Write provenance and SHA256SUMS
+        env:
+          BUNDLE_DIR: ${{ steps.release_meta.outputs.bundle_dir }}
+          ARTIFACT_NAME: ${{ steps.release_meta.outputs.artifact_name }}
+          RUNTIME_NAME: ${{ steps.runtime.outputs.runtime_name }}
+        run: |
+          set -euo pipefail
+          node --input-type=module <<'NODE'
+          import crypto from "node:crypto";
+          import fs from "node:fs";
+          import path from "node:path";
+          const bundleDir = process.env.BUNDLE_DIR;
+          const digest = (file) => crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex");
+          const artifactFiles = fs
+            .readdirSync(bundleDir)
+            .filter((name) => fs.statSync(path.join(bundleDir, name)).isFile())
+            .toSorted();
+          const files = Object.fromEntries(artifactFiles.map((name) => {
+            const file = path.join(bundleDir, name);
+            return [name, { bytes: fs.statSync(file).size, sha256: digest(file) }];
+          }));
+          const provenance = {
+            schemaVersion: 1,
+            product: "OpenClaw",
+            version: process.env.APP_VERSION,
+            appBuild: process.env.APP_BUILD,
+            source: {
+              repository: process.env.GITHUB_REPOSITORY,
+              branch: "agent/openclaw-beta-5-1",
+              sha: process.env.SOURCE_SHA,
+              frozenOfficialSha: process.env.FROZEN_UPSTREAM_SHA,
+            },
+            build: {
+              builtAt: process.env.OPENCLAW_BUILD_TIMESTAMP,
+              runner: "macos-26-intel",
+              runnerArch: process.env.RUNNER_ARCH,
+              xcode: process.env.OPENCLAW_XCODE_VERSION,
+              workflowRunId: process.env.GITHUB_RUN_ID,
+              workflowRunAttempt: process.env.GITHUB_RUN_ATTEMPT,
+              workflowUrl: process.env.GITHUB_SERVER_URL + "/" + process.env.GITHUB_REPOSITORY + "/actions/runs/" + process.env.GITHUB_RUN_ID,
+            },
+            app: {
+              bundleId: process.env.BUNDLE_ID,
+              architectures: ["arm64", "x86_64"],
+              signature: "ad-hoc",
+              notarized: false,
+            },
+            runtime: {
+              archive: process.env.RUNTIME_NAME,
+              sameCheckout: true,
+            },
+            files,
+          };
+          fs.writeFileSync(path.join(bundleDir, "provenance.json"), JSON.stringify(provenance, null, 2) + "\n");
+          NODE
+          node --input-type=module <<'NODE'
+          import crypto from "node:crypto";
+          import fs from "node:fs";
+          import path from "node:path";
+          const bundleDir = process.env.BUNDLE_DIR;
+          const lines = fs
+            .readdirSync(bundleDir)
+            .filter((name) => name !== "SHA256SUMS")
+            .filter((name) => fs.statSync(path.join(bundleDir, name)).isFile())
+            .toSorted()
+            .map((name) => crypto.createHash("sha256").update(fs.readFileSync(path.join(bundleDir, name))).digest("hex") + "  " + name);
+          fs.writeFileSync(path.join(bundleDir, "SHA256SUMS"), lines.join("\n") + "\n");
+          NODE
+          while IFS= read -r artifact_file; do
+            test -s "$artifact_file"
+          done < <(find "$BUNDLE_DIR" -type f -print)
+          {
+            echo "## macOS package ready"
+            echo
+            echo "- Artifact: $ARTIFACT_NAME"
+            echo "- Version: $APP_VERSION"
+            echo "- Build: $APP_BUILD"
+            echo "- Source: $SOURCE_SHA"
+            echo "- Architectures: arm64 x86_64"
+            echo "- Signing: ad-hoc; not notarized"
+            echo "- App ZIP, DMG, same-SHA runtime TGZ, provenance and SHA256SUMS are included."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload complete macOS package
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: ${{ steps.release_meta.outputs.artifact_name }}
+          path: ${{ steps.release_meta.outputs.bundle_dir }}
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
