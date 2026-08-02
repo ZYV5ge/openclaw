@@ -7281,6 +7281,49 @@ describe("handleSendChat", () => {
     });
   });
 
+  it("retains a captured generation when refreshed history omits its session id", async () => {
+    const history = createDeferred<unknown>();
+    const sends: Record<string, unknown>[] = [];
+    const host = makeHost({
+      requestHandlers: {
+        "chat.history": () => history.promise,
+        "chat.send": (params: unknown) => {
+          const payload = requireRecord(params, "generation-omitted send payload");
+          sends.push(payload);
+          return { runId: payload.idempotencyKey, status: "started" };
+        },
+      },
+      chatDisplayedLeafEntryId: "leaf-before-generation-gap",
+      chatMessage: "keep the captured generation",
+      currentSessionId: "session-captured",
+    });
+
+    const refresh = loadChatHistory(host as unknown as Parameters<typeof loadChatHistory>[0]);
+    await waitForFast(() => expect(host.chatLoading).toBe(true));
+    const send = handleSendChat(host);
+
+    history.resolve({
+      messages: [],
+      sessionInfo: row("agent:main", {
+        activeLeafEntryId: "leaf-without-generation",
+        hasActiveRun: false,
+        status: "done",
+      }),
+    });
+    await Promise.all([refresh, send]);
+
+    expect(sends).toHaveLength(1);
+    expect(sends[0]).toMatchObject({
+      expectedLeafEntryId: "leaf-before-generation-gap",
+      message: "keep the captured generation",
+      sessionId: "session-captured",
+    });
+    expect(listStoredChatOutboxes(host)[0]?.queue[0]?.transcriptRevision).toEqual({
+      expectedLeafEntryId: "leaf-before-generation-gap",
+      sessionId: "session-captured",
+    });
+  });
+
   it("does not rebind a foreground send across a history-driven session rotation", async () => {
     const history = createDeferred<unknown>();
     const sends: Record<string, unknown>[] = [];
