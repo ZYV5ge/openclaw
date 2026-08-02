@@ -1253,7 +1253,7 @@ jobs:
       - name: Save immutable Intel staging components to Actions cache
         uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
-          path: ${{ steps.release_meta.outputs.bundle_dir }}
+          path: .artifacts/personal-release/upload
           key: ${{ steps.release_meta.outputs.staging_cache_key }}
 
   macos_runtime_arm64:
@@ -1274,7 +1274,7 @@ jobs:
       RAW_PACKAGE_NAME: ${{ needs.macos_package.outputs.raw_package_name }}
       FINAL_ARTIFACT_NAME: ${{ needs.macos_package.outputs.artifact_name }}
       STAGING_CACHE_KEY: ${{ needs.macos_package.outputs.staging_cache_key }}
-      BUNDLE_DIR: .artifacts/personal-release/upload
+      BUNDLE_DIR: ${{ github.workspace }}/.artifacts/personal-release/upload
       FINAL_DIR: ${{ github.workspace }}/.artifacts/personal-release/final-upload
       NODE_OPTIONS: "--max-old-space-size=4096"
 
@@ -1367,7 +1367,7 @@ jobs:
       - name: Restore immutable Intel staging components
         uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
-          path: ${{ env.BUNDLE_DIR }}
+          path: .artifacts/personal-release/upload
           key: ${{ env.STAGING_CACHE_KEY }}
           fail-on-cache-miss: true
 
