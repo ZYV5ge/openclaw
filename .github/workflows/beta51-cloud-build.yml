@@ -134,6 +134,9 @@ jobs:
               extensions/memory-core/src/tools.citations.test.ts \
               extensions/memory-wiki/src/bounded-walk.abort.test.ts \
               extensions/memory-wiki/src/corpus-supplement.test.ts \
+              extensions/memory-wiki/src/compile.ts \
+              extensions/memory-wiki/src/compile.test.ts \
+              extensions/memory-wiki/src/compiled-cache.integration.test.ts \
               extensions/memory-wiki/src/query.test.ts \
               extensions/memory-wiki/src/tool.test.ts \
               extensions/google/web-search-provider.test.ts \
@@ -146,6 +149,9 @@ jobs:
               extensions/memory-core/src/tools.citations.test.ts \
               extensions/memory-wiki/src/bounded-walk.abort.test.ts \
               extensions/memory-wiki/src/corpus-supplement.test.ts \
+              extensions/memory-wiki/src/compile.ts \
+              extensions/memory-wiki/src/compile.test.ts \
+              extensions/memory-wiki/src/compiled-cache.integration.test.ts \
               extensions/memory-wiki/src/query.test.ts \
               extensions/memory-wiki/src/tool.test.ts \
               extensions/google/web-search-provider.test.ts \
@@ -161,6 +167,9 @@ jobs:
             extensions/memory-core/src/memory/search-deadline.test.ts \
             extensions/memory-wiki/src/bounded-walk.abort.test.ts \
             extensions/memory-wiki/src/corpus-supplement.test.ts \
+            extensions/memory-wiki/src/compile.ts \
+            extensions/memory-wiki/src/compile.test.ts \
+            extensions/memory-wiki/src/compiled-cache.integration.test.ts \
             extensions/memory-wiki/src/query.test.ts \
             extensions/memory-wiki/src/tool.test.ts \
             extensions/memory-wiki/src/bounded-walk.ts \
@@ -264,6 +273,8 @@ jobs:
                 memory-core/src/memory/search-deadline.test.ts \
                 memory-wiki/src/bounded-walk.abort.test.ts \
                 memory-wiki/src/corpus-supplement.test.ts \
+                memory-wiki/src/compile.test.ts \
+                memory-wiki/src/compiled-cache.integration.test.ts \
                 memory-wiki/src/query.test.ts \
                 memory-wiki/src/tool.test.ts || memory_test_status=$?
               core_type_status=0
