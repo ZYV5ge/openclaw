@@ -7581,6 +7581,15 @@ describe("handleSendChat", () => {
         sessionId: "session-stable",
       },
     });
+
+    secondHost.chatMessage = "release the reconnect fence";
+    await handleSendChat(secondHost);
+
+    expect(sends.map((payload) => payload.message)).toEqual([
+      "first pane before reconnect",
+      "keep this behind the reconnect fence",
+      "release the reconnect fence",
+    ]);
   });
 
   it("recovers a memory fallback when its history connection changes", async () => {
