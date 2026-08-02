@@ -128,6 +128,20 @@ function storedChatHistoryRefreshFenceKey(scope: StoredChatOutboxScope, itemId: 
   return `${storedChatOutboxScopeKey(scope)}\0${itemId}`;
 }
 
+export function releaseStoredChatHistoryRefreshFence(
+  host: ChatHost,
+  scope: StoredChatOutboxScope,
+  itemId: string,
+): void {
+  const client = host.client;
+  if (!client) {
+    return;
+  }
+  getStoredChatOutboxClientState(client).historyRefreshFences.delete(
+    storedChatHistoryRefreshFenceKey(scope, itemId),
+  );
+}
+
 function clearStoredChatHistoryRefreshFencesForScope(
   state: StoredChatOutboxClientState,
   scope: StoredChatOutboxScope,

@@ -9,6 +9,7 @@ import { generateUUID } from "../../lib/uuid.ts";
 import { loadChatBranches, loadChatHistory, type ChatState } from "./chat-history.ts";
 import {
   flushStoredChatOutbox,
+  releaseStoredChatHistoryRefreshFence,
   resumeStoredChatOutboxes as resumeStoredChatOutboxesDrain,
   sameQueuedDeliveryVersion,
   scheduleStoredChatOutboxDrain,
@@ -250,12 +251,8 @@ export async function retryQueuedChatMessage(host: ChatHost, id: string) {
     setChatError(host, OFFLINE_QUEUE_STORAGE_ERROR);
     return;
   }
-  const drain = scheduleStoredChatOutboxDrain(
-    host,
-    outbox,
-    chatOutboxDrainDependencies,
-    retry.id,
-  );
+  releaseStoredChatHistoryRefreshFence(host, outbox, retry.id);
+  const drain = scheduleStoredChatOutboxDrain(host, outbox, chatOutboxDrainDependencies);
   if (host.chatSending && host.chatSendingScopeKey === storedChatOutboxScopeKey(outbox)) {
     void drain;
     return;
