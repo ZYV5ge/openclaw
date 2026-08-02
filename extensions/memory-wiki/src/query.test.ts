@@ -131,7 +131,7 @@ async function createQueryVault(options?: {
 }
 
 const DIGEST_UNDERFILL_QUERY = "needlequartz";
-const DIGEST_UNDERFILL_FALLBACK_COUNT = 17;
+const DIGEST_UNDERFILL_FALLBACK_COUNT = 33;
 
 async function writeDigestUnderfillPage(
   rootDir: string,
@@ -638,9 +638,9 @@ describe("searchMemoryWiki", () => {
     }> = [];
     const observedSignals: Array<AbortSignal | undefined> = [];
     let observedReadAbortReason: unknown;
-    let markInitialWaveStarted: (() => void) | undefined;
-    const initialWaveStarted = new Promise<void>((resolve) => {
-      markInitialWaveStarted = resolve;
+    let markFirstReadStarted: (() => void) | undefined;
+    const firstReadStarted = new Promise<void>((resolve) => {
+      markFirstReadStarted = resolve;
     });
     let fallbackReadCount = 0;
     fsMocks.readFile.mockImplementation(
@@ -655,8 +655,8 @@ describe("searchMemoryWiki", () => {
             ? options.signal
             : undefined;
         observedSignals.push(signal);
-        if (fallbackReadCount === fallbackPaths.length - 1) {
-          markInitialWaveStarted?.();
+        if (fallbackReadCount === 1) {
+          markFirstReadStarted?.();
         }
         return await new Promise<string>((resolve, reject) => {
           pendingReads.push({ resolve, reject });
@@ -678,7 +678,8 @@ describe("searchMemoryWiki", () => {
       maxResults: 1,
       signal: controller.signal,
     });
-    await initialWaveStarted;
+    await firstReadStarted;
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
     const readsAtAbort = fallbackReadCount;
     controller.abort(abortReason);
     pendingReads[0]?.resolve("");
@@ -692,6 +693,8 @@ describe("searchMemoryWiki", () => {
       (reason: unknown) => ({ status: "rejected" as const, reason }),
     );
 
+    expect.soft(readsAtAbort).toBeGreaterThan(0);
+    expect.soft(readsAtAbort).toBeLessThan(fallbackPaths.length);
     expect.soft(fallbackReadCount).toBe(readsAtAbort);
     expect.soft(observedSignals).toHaveLength(readsAtAbort);
     for (const signal of observedSignals) {
