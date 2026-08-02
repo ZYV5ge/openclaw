@@ -185,6 +185,13 @@ jobs:
               ui/src/pages/chat/chat-send.test.ts \
               ui/src/pages/new-session/model-control.ts \
               ui/src/pages/new-session/model-control.test.ts
+            {
+              echo "### Focused formatter diff"
+              git --no-pager diff -- \
+                src/gateway/server-methods/chat-history-handler.ts \
+                ui/src/pages/new-session/model-control.ts |
+                sed "s/^/    /"
+            } >> "$GITHUB_STEP_SUMMARY"
           fi
           node_modules/.bin/oxfmt --check \
             extensions/memory-core/src/tools.shared.ts \
