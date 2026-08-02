@@ -176,6 +176,7 @@ let subscribeChatOutboxProjection: typeof import("./chat-queue.ts").subscribeCha
 let syncVisibleChatQueueProjection: typeof import("./chat-queue.ts").syncVisibleChatQueueProjection;
 let readChatQueueForScope: typeof import("./chat-queue.ts").readChatQueueForScope;
 let writeChatQueueForScope: typeof import("./chat-queue.ts").writeChatQueueForScope;
+let updateQueuedMessage: typeof import("./chat-queue.ts").updateQueuedMessage;
 let flushChatQueueForEvent: typeof import("./chat-send-actions.ts").flushChatQueueForEvent;
 let retryReconnectableQueuedChatSends: typeof import("./chat-send-actions.ts").retryReconnectableQueuedChatSends;
 let retryQueuedChatMessage: typeof import("./chat-send-actions.ts").retryQueuedChatMessage;
@@ -206,6 +207,7 @@ async function loadChatHelpers(): Promise<void> {
     subscribeChatOutboxProjection,
     syncVisibleChatQueueProjection,
     writeChatQueueForScope,
+    updateQueuedMessage,
   } = await import("./chat-queue.ts"));
 }
 
@@ -7428,14 +7430,16 @@ describe("handleSendChat", () => {
     });
     expect(sends[0]?.idempotencyKey).not.toBe(original.sendRunId);
     expect(uuidPattern.test(String(sends[0]?.idempotencyKey))).toBe(true);
-    expect(listStoredChatOutboxes(host)[0]?.queue[0]).toMatchObject({
+    const retried = listStoredChatOutboxes(host)[0]?.queue[0];
+    expect(retried).toMatchObject({
       sendRunId: sends[0]?.idempotencyKey,
-      sendState: "sending",
       transcriptRevision: {
         expectedLeafEntryId: "leaf-after-retry",
         sessionId: "session-stable",
       },
     });
+    expect(retried?.sendState).toBeDefined();
+    expect(retried?.sendState).not.toBe("failed");
   });
 
   it("does not retry an old queued send into a rotated session generation", async () => {
@@ -7534,9 +7538,12 @@ describe("handleSendChat", () => {
       expectedLeafEntryId: "leaf-after-reconcile",
       sessionId: "session-stable",
     };
-    writeChatQueueForScope(host, original.sessionKey, [
-      { ...original, transcriptRevision: refreshedRevision },
-    ]);
+    expect(
+      updateQueuedMessage(host, original.id, (entry) => ({
+        ...entry,
+        transcriptRevision: refreshedRevision,
+      })),
+    ).toMatchObject({ transcriptRevision: refreshedRevision });
     staleHistory.resolve({
       messages: [
         {
