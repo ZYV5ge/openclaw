@@ -1,5 +1,6 @@
 // Memory Core plugin module implements tools.shared behavior.
 import { optionalFiniteNumberSchema, stringEnum } from "openclaw/plugin-sdk/channel-actions";
+import { formatErrorMessage } from "openclaw/plugin-sdk/error-runtime";
 import { createLazyRuntimeModule } from "openclaw/plugin-sdk/lazy-runtime";
 import {
   listMemoryCorpusSupplements,
@@ -13,6 +14,10 @@ import type { PluginStateLeaseRunner } from "openclaw/plugin-sdk/plugin-state-ru
 import { normalizeLowercaseStringOrEmpty } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { Type } from "typebox";
 import type { MemoryCoreAcquireLocalService } from "./memory/embedding-local-service.js";
+import {
+  DEFAULT_MEMORY_SEARCH_TIMEOUT_MS,
+  runMemorySearchWithDeadline,
+} from "./memory/search-deadline.js";
 type MemorySearchManagerResult = Awaited<
   ReturnType<(typeof import("./memory/index.js"))["getMemorySearchManager"]>
 >;
@@ -26,6 +31,33 @@ type MemoryToolOptions = {
   acquireLocalService?: MemoryCoreAcquireLocalService;
   withLease?: PluginStateLeaseRunner;
 };
+
+export type MemoryCorpusSupplementSearchFailure = {
+  phase: "supplement";
+  kind: "supplement-failed";
+  pluginId?: string;
+  timedOut: boolean;
+  error: string;
+};
+
+export type MemoryCorpusSupplementSearchOutcome = {
+  status: "complete" | "partial" | "failed" | "aborted";
+  results: MemoryCorpusSearchResult[];
+  attemptedCount: number;
+  fulfilledCount: number;
+  failures: MemoryCorpusSupplementSearchFailure[];
+};
+
+type SupplementSearchRejection = {
+  reason: unknown;
+  timedOut: boolean;
+};
+
+function emptySupplementSearchOutcome(
+  status: "complete" | "aborted" = "complete",
+): MemoryCorpusSupplementSearchOutcome {
+  return { status, results: [], attemptedCount: 0, fulfilledCount: 0, failures: [] };
+}
 
 export const loadMemoryToolRuntime = createLazyRuntimeModule(() => import("./tools.runtime.js"));
 
@@ -167,20 +199,78 @@ export async function searchMemoryCorpusSupplements(params: {
   agentSessionKey?: string;
   sandboxed?: boolean;
   corpus?: "memory" | "wiki" | "all" | "sessions";
-}): Promise<MemoryCorpusSearchResult[]> {
+  signal?: AbortSignal;
+}): Promise<MemoryCorpusSupplementSearchOutcome> {
+  if (params.signal?.aborted) {
+    return emptySupplementSearchOutcome("aborted");
+  }
   if (params.corpus === "memory" || params.corpus === "sessions") {
-    return [];
+    return emptySupplementSearchOutcome();
   }
   const supplements = listMemoryCorpusSupplements();
   if (supplements.length === 0) {
-    return [];
+    return emptySupplementSearchOutcome();
   }
-  const results = (
-    await Promise.all(
-      supplements.map(async (registration) => await registration.supplement.search(params)),
-    )
-  ).flat();
-  return results
+
+  const searches = supplements.map((registration) => ({
+    pluginId: registration.pluginId,
+    promise: (async () => {
+      let derivedSignal: AbortSignal | undefined;
+      try {
+        return await runMemorySearchWithDeadline({
+          timeoutMs: DEFAULT_MEMORY_SEARCH_TIMEOUT_MS,
+          parentSignal: params.signal,
+          run: async (signal) => {
+            derivedSignal = signal;
+            return await registration.supplement.search({ ...params, signal });
+          },
+        });
+      } catch (reason) {
+        throw {
+          reason,
+          timedOut:
+            params.signal?.aborted !== true &&
+            derivedSignal?.aborted === true &&
+            derivedSignal.reason === reason,
+        } satisfies SupplementSearchRejection;
+      }
+    })(),
+  }));
+  const settled = await Promise.allSettled(searches.map((search) => search.promise));
+  if (params.signal?.aborted) {
+    return {
+      status: "aborted",
+      results: [],
+      attemptedCount: searches.length,
+      fulfilledCount: settled.filter((entry) => entry.status === "fulfilled").length,
+      failures: [],
+    };
+  }
+
+  const fulfilled = settled.flatMap((entry) =>
+    entry.status === "fulfilled" ? [entry.value] : [],
+  );
+  const failures: MemoryCorpusSupplementSearchFailure[] = settled.flatMap((entry, index) => {
+    if (entry.status === "fulfilled") {
+      return [];
+    }
+    const search = searches[index];
+    if (!search) {
+      return [];
+    }
+    const rejection = entry.reason as SupplementSearchRejection;
+    return [
+      {
+        phase: "supplement",
+        kind: "supplement-failed",
+        pluginId: search.pluginId,
+        timedOut: rejection.timedOut,
+        error: formatErrorMessage(rejection.reason),
+      },
+    ];
+  });
+  const results = fulfilled
+    .flat()
     .toSorted((left, right) => {
       if (left.score !== right.score) {
         return right.score - left.score;
@@ -188,6 +278,14 @@ export async function searchMemoryCorpusSupplements(params: {
       return left.path.localeCompare(right.path);
     })
     .slice(0, Math.max(1, params.maxResults ?? 10));
+
+  return {
+    status: failures.length === 0 ? "complete" : fulfilled.length === 0 ? "failed" : "partial",
+    results,
+    attemptedCount: searches.length,
+    fulfilledCount: fulfilled.length,
+    failures,
+  };
 }
 
 export async function getMemoryCorpusSupplementResult(params: {
