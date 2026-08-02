@@ -6,8 +6,8 @@ import type { DatabaseSync } from "node:sqlite";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { getFileLockProcessStartTime, isPidDefinitelyDead } from "../shared/pid-alive.js";
 import { withExistingOpenClawStateDatabaseReadOnly } from "../state/openclaw-state-db-readonly.js";
-import type { DB as OpenClawStateKyselyDatabase } from "../state/openclaw-state-db.generated.js";
 import { tableExists } from "../state/openclaw-state-db-schema-helpers.js";
+import type { DB as OpenClawStateKyselyDatabase } from "../state/openclaw-state-db.generated.js";
 import {
   withOpenClawStateStartupMigrationCheckpointDatabase,
   type OpenClawStateStartupMigrationCheckpointDatabasePurpose,
@@ -366,9 +366,7 @@ export function recordSuccessfulStartupMigrations(
     (db) => {
       const nowMs = params.nowMs ?? Date.now();
       const checkpoint =
-        buildIdentity === null
-          ? version
-          : formatStartupMigrationCheckpoint(version, buildIdentity);
+        buildIdentity === null ? version : formatStartupMigrationCheckpoint(version, buildIdentity);
       const stateDb = getNodeSqliteKysely<StartupMigrationCheckpointDatabase>(db);
       if (leaseOwner !== undefined) {
         const activeLease = executeSqliteQueryTakeFirstSync(

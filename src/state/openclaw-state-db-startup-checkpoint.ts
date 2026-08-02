@@ -73,10 +73,7 @@ export function withOpenClawStateStartupMigrationCheckpointDatabase<T>(
   const purpose = options.purpose ?? "bootstrap";
   if (purpose !== "bootstrap" && !existsSync(pathname)) {
     throw new Error(
-      "OpenClaw state database disappeared before startup migration " +
-        purpose +
-        ": " +
-        pathname,
+      "OpenClaw state database disappeared before startup migration " + purpose + ": " + pathname,
     );
   }
   ensureOpenClawStatePermissions(pathname, env);
