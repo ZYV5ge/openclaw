@@ -39,8 +39,8 @@ import {
 import {
   isActiveLeafChangedError,
   requestChatSend,
-  resolveDisplayedLeafEntryId,
   requestSkillWorkshopRevisionChatSend,
+  resolveDisplayedTranscriptRevision,
 } from "./chat-send-request.ts";
 import {
   chatSendAckServerTimingEventFields,
@@ -179,6 +179,42 @@ function finishDeliveryAdmission(
   return options?.routingSessionKey ? { ...current, sessionKey: route } : current;
 }
 
+function rebindQueuedTranscriptRevisionAfterHistory(
+  host: ChatHost,
+  item: ChatQueueItem,
+  storageMode: QueuedChatStorageMode,
+  queueSessionKey: string,
+  options: QueuedChatSendOptions,
+): ChatQueueItem | QueuedChatSendResult {
+  const route = options.routingSessionKey ?? queueSessionKey;
+  const current = readQueuedMessageById(host, item.id);
+  if (!current) {
+    return "failed";
+  }
+  if (
+    options.routingSessionKey &&
+    (host.sessionKey !== route || !visibleSessionMatches(host, route, current.agentId))
+  ) {
+    return finishDeliveryAdmission(host, current, storageMode, queueSessionKey, options);
+  }
+  const transcriptRevision = resolveDisplayedTranscriptRevision(host as unknown as ChatState);
+  if (!transcriptRevision) {
+    return current;
+  }
+  const rebound = updateQueuedSendItem(
+    host,
+    storageMode,
+    queueSessionKey,
+    current.id,
+    (entry) => ({ ...entry, transcriptRevision }),
+  );
+  if (!rebound) {
+    setChatError(host, OFFLINE_QUEUE_STORAGE_ERROR);
+    return "pending";
+  }
+  return rebound;
+}
+
 async function sendQueuedChatMessage(
   host: ChatHost,
   id: string,
@@ -229,10 +265,20 @@ async function sendQueuedChatMessage(
       return prepared;
     }
   }
-  if (options?.bindDisplayedLeafEntryId) {
+  if (options?.refreshDisplayedTranscriptRevisionAfterHistory) {
     const state = host as unknown as ChatState;
     while (state.chatLoading && host.connected && host.client) {
       await loadChatHistory(state);
+    }
+    prepared = rebindQueuedTranscriptRevisionAfterHistory(
+      host,
+      prepared,
+      storageMode,
+      queueSessionKey,
+      options,
+    );
+    if (typeof prepared === "string") {
+      return prepared;
     }
   }
   prepared = finishDeliveryAdmission(host, prepared, storageMode, queueSessionKey, options);
@@ -319,10 +365,6 @@ async function sendQueuedChatMessage(
     });
   }
 
-  const expectedLeafEntryId = options?.bindDisplayedLeafEntryId
-    ? resolveDisplayedLeafEntryId(host as unknown as ChatState)
-    : options?.expectedLeafEntryId;
-
   try {
     const ack = prepared.skillWorkshopRevision
       ? await requestSkillWorkshopRevisionChatSend(host as unknown as ChatState, {
@@ -341,7 +383,9 @@ async function sendQueuedChatMessage(
           runId,
           sessionKey,
           agentId: prepared.agentId,
-          ...(expectedLeafEntryId !== undefined ? { expectedLeafEntryId } : {}),
+          ...(prepared.transcriptRevision
+            ? { transcriptRevision: prepared.transcriptRevision }
+            : {}),
           ...(prepared.replyToId ? { replyToId: prepared.replyToId } : {}),
         });
     updateChatSendAckTiming(host, runId, ack, sendingItem, requestStartedAtMs);
@@ -638,11 +682,11 @@ export async function deliverChatQueueItem(
     const routeVisible =
       host.sessionKey === routingSessionKey &&
       visibleSessionMatches(host, routingSessionKey, admittedItem.agentId);
-    const waitsForAuthoritativeLeaf =
-      sendOptions.bindDisplayedLeafEntryId === true && (host as unknown as ChatState).chatLoading;
+    const waitsForAuthoritativeRevision =
+      sendOptions.refreshDisplayedTranscriptRevisionAfterHistory === true;
     if (
       drainResult === undefined &&
-      !waitsForAuthoritativeLeaf &&
+      !waitsForAuthoritativeRevision &&
       routeVisible &&
       (isChatBusy(host) || hasAbortableSessionRun(host))
     ) {

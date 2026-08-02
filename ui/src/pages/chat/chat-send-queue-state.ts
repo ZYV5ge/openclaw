@@ -1,4 +1,8 @@
-import type { ChatAttachment, ChatQueueItem } from "../../lib/chat/chat-types.ts";
+import type {
+  ChatAttachment,
+  ChatQueueItem,
+  ChatTranscriptRevision,
+} from "../../lib/chat/chat-types.ts";
 import { resolveCurrentUserIdentity } from "../../lib/chat/current-user-identity.ts";
 import { scopedAgentIdForSession, visibleSessionMatches } from "../../lib/sessions/index.ts";
 import { generateUUID } from "../../lib/uuid.ts";
@@ -31,8 +35,11 @@ export function enqueuePendingSendMessage(
   refreshSessions?: boolean,
   submittedAtMs = controlUiNowMs(),
   sendState?: ChatQueueItem["sendState"],
-  skillWorkshopRevision?: ChatQueueItem["skillWorkshopRevision"],
-  replyToId?: string,
+  options?: {
+    replyToId?: string;
+    skillWorkshopRevision?: ChatQueueItem["skillWorkshopRevision"];
+    transcriptRevision?: ChatTranscriptRevision;
+  },
 ): ChatQueueItem | null {
   const trimmed = text.trim();
   const hasAttachments = Boolean(attachments && attachments.length > 0);
@@ -53,8 +60,11 @@ export function enqueuePendingSendMessage(
     sessionKey: host.sessionKey,
     agentId: scopedAgentIdForSession(host, host.sessionKey),
     ...(sender ? { sender } : {}),
-    ...(skillWorkshopRevision ? { skillWorkshopRevision } : {}),
-    ...(replyToId ? { replyToId } : {}),
+    ...(options?.skillWorkshopRevision
+      ? { skillWorkshopRevision: options.skillWorkshopRevision }
+      : {}),
+    ...(options?.replyToId ? { replyToId: options.replyToId } : {}),
+    ...(options?.transcriptRevision ? { transcriptRevision: options.transcriptRevision } : {}),
   };
   keepVolatileQueuedMessage(host, host.sessionKey, pending, pending.agentId);
   recordChatSendTiming(host, pending, "pending-visible", submittedAtMs);

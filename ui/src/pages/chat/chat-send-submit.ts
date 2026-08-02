@@ -40,6 +40,7 @@ import {
   setChatError,
   waitForPendingChatSettings,
 } from "./chat-send-queue-state.ts";
+import { resolveDisplayedTranscriptRevision } from "./chat-send-request.ts";
 import { recordChatSendTiming } from "./chat-send-timing.ts";
 import { getPendingChatPickerPatch } from "./chat-session.ts";
 import { withChatSubmissionGuard, withChatSubmitGuard } from "./chat-submit-guard.ts";
@@ -208,10 +209,16 @@ async function handleSendChatSubmission(
   const message = (messageOverride ?? host.chatMessage).trim();
   const submittedAtMs = controlUiNowMs();
   const submittedSessionKey = host.sessionKey;
+  const skillWorkshopRevision = opts?.skillWorkshopRevision;
+  const chatState = host as unknown as ChatState;
+  const submitTranscriptRevision = !skillWorkshopRevision
+    ? resolveDisplayedTranscriptRevision(chatState)
+    : undefined;
+  const refreshTranscriptRevisionAfterHistory =
+    !skillWorkshopRevision && Boolean(chatState.chatLoading);
   const attachmentsToSend =
     messageOverride == null ? snapshotChatAttachments(host.chatAttachments) : [];
   const hasAttachments = attachmentsToSend.length > 0;
-  const skillWorkshopRevision = opts?.skillWorkshopRevision;
   const runGuardedSubmission = <T>(key: string, run: () => Promise<T>) =>
     withChatSubmitGuard(host, key, run);
 
@@ -454,8 +461,11 @@ async function handleSendChatSubmission(
       refreshSessions,
       submittedAtMs,
       waitingForSettings ? "waiting-model" : reconnectSafeQueuedSendState(host),
-      skillWorkshopRevision,
-      replyToId,
+      {
+        ...(skillWorkshopRevision ? { skillWorkshopRevision } : {}),
+        ...(replyToId ? { replyToId } : {}),
+        ...(submitTranscriptRevision ? { transcriptRevision: submitTranscriptRevision } : {}),
+      },
     );
     if (!queued) {
       return;
@@ -476,7 +486,9 @@ async function handleSendChatSubmission(
     const sendResult = await deliverChatQueueItem(host, queued, {
       previousDraft: cleared.previousDraft,
       previousAttachments: cleared.previousAttachments,
-      ...(!skillWorkshopRevision ? { bindDisplayedLeafEntryId: true } : {}),
+      ...(refreshTranscriptRevisionAfterHistory
+        ? { refreshDisplayedTranscriptRevisionAfterHistory: true }
+        : {}),
       ...(pendingSettings ? { pendingSettings } : {}),
       restoreAttachments: Boolean(messageOverride && opts?.restoreDraft),
       restoreDraft: Boolean(messageOverride && opts?.restoreDraft),
