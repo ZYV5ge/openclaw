@@ -39,9 +39,16 @@ export type QueuedChatHistoryRefreshContext = {
   host: ChatHost;
   scope: StoredChatOutboxScope;
 };
+type QueuedChatHistoryRefreshDeliveryContext = {
+  client: ChatHost["client"];
+  connectionEpoch: ChatHost["connectionEpoch"];
+  host: ChatHost;
+};
 export type QueuedChatSendOptions = {
   /** Rebind against the submitting pane after its in-flight history refresh. */
   refreshDisplayedTranscriptRevisionAfterHistory?: true | QueuedChatHistoryRefreshContext;
+  /** Freeze the FIFO lane owner before this fresh admission waits for history. */
+  historyRefreshDeliveryContext?: QueuedChatHistoryRefreshDeliveryContext;
   pendingSettings?: Promise<boolean>;
   previousAttachments?: ChatAttachment[];
   previousDraft?: string;
@@ -159,6 +166,28 @@ export function sameQueuedDeliveryVersion(left: ChatQueueItem, right: ChatQueueI
     left.transcriptRevision?.sessionId === right.transcriptRevision?.sessionId &&
     left.transcriptRevision?.expectedLeafEntryId === right.transcriptRevision?.expectedLeafEntryId
   );
+}
+
+function bindQueuedHistoryRefreshDeliveryContext(
+  host: ChatHost,
+  options: QueuedChatSendOptions,
+  previousOptions?: QueuedChatSendOptions,
+): QueuedChatSendOptions {
+  const previousContext = previousOptions?.historyRefreshDeliveryContext;
+  if (previousContext) {
+    return { ...options, historyRefreshDeliveryContext: previousContext };
+  }
+  if (!options.refreshDisplayedTranscriptRevisionAfterHistory) {
+    return options;
+  }
+  return {
+    ...options,
+    historyRefreshDeliveryContext: {
+      client: host.client,
+      connectionEpoch: host.connectionEpoch,
+      host,
+    },
+  };
 }
 
 async function readCurrentStoredChatHistory(
@@ -518,7 +547,14 @@ export async function scheduleStoredChatOutboxDrain(
     }
     existing.rerun = true;
     if (itemId && options) {
-      existing.pendingOptions.set(itemId, options);
+      existing.pendingOptions.set(
+        itemId,
+        bindQueuedHistoryRefreshDeliveryContext(
+          existing.host,
+          options,
+          existing.pendingOptions.get(itemId),
+        ),
+      );
     }
     if (itemId) {
       existing.freshAdmissions.add(itemId);
@@ -529,11 +565,15 @@ export async function scheduleStoredChatOutboxDrain(
     await existing.promise;
     return itemId ? existing.outcomes.get(itemId) : undefined;
   }
+  const pendingOptions = new Map<string, QueuedChatSendOptions>();
+  if (itemId && options) {
+    pendingOptions.set(itemId, bindQueuedHistoryRefreshDeliveryContext(host, options));
+  }
   const lane: StoredChatOutboxDrainLane = {
     freshAdmissions: new Set(itemId ? [itemId] : []),
     host,
     outcomes: new Map(),
-    pendingOptions: new Map(itemId && options ? [[itemId, options]] : []),
+    pendingOptions,
     promise: Promise.resolve(),
     rerun: false,
   };

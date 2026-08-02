@@ -148,7 +148,10 @@ export async function retryQueuedChatMessage(host: ChatHost, id: string) {
   const retryVersion = item;
   let transcriptRevision: ChatTranscriptRevision | undefined;
   const retrySessionKey = item.sessionKey ?? host.sessionKey;
-  if (!item.localCommandName && visibleSessionMatches(host, retrySessionKey, item.agentId)) {
+  if (!visibleSessionMatches(host, retrySessionKey, item.agentId)) {
+    return;
+  }
+  if (!item.localCommandName) {
     const state = host as unknown as ChatState;
     const historyWasLoading = state.chatLoading;
     const historyClient = host.client;

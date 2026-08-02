@@ -191,19 +191,19 @@ function resolveHistoryRefreshOrigin(
 
 function historyRefreshOriginIsCurrent(
   deliveryHost: ChatHost,
-  deliveryClient: ChatHost["client"],
-  deliveryConnectionEpoch: ChatHost["connectionEpoch"],
+  deliveryContext: NonNullable<QueuedChatSendOptions["historyRefreshDeliveryContext"]>,
   origin: ChatHost,
   context: true | QueuedChatHistoryRefreshContext,
   route: string,
   agentId?: string,
 ): boolean {
   const deliveryConnectionIsCurrent =
+    deliveryHost === deliveryContext.host &&
     deliveryHost.connected &&
     Boolean(deliveryHost.client) &&
-    deliveryHost.client === deliveryClient &&
-    deliveryHost.connectionEpoch === deliveryConnectionEpoch &&
-    (context === true || deliveryClient === context.client);
+    deliveryHost.client === deliveryContext.client &&
+    deliveryHost.connectionEpoch === deliveryContext.connectionEpoch &&
+    (context === true || deliveryContext.client === context.client);
   const originConnectionIsCurrent =
     context === true ||
     (origin.client === context.client && origin.connectionEpoch === context.connectionEpoch);
@@ -240,8 +240,7 @@ function failMemoryQueuedSendAfterInvalidHistoryRefresh(
     return "pending";
   }
   const submittingRouteIsVisible =
-    revisionHost.sessionKey === route &&
-    visibleSessionMatches(revisionHost, route, failed.agentId);
+    revisionHost.sessionKey === route && visibleSessionMatches(revisionHost, route, failed.agentId);
   if (submittingRouteIsVisible) {
     setChatError(revisionHost, OFFLINE_QUEUE_STORAGE_ERROR);
     if (canRestoreComposer(revisionHost, options)) {
@@ -376,8 +375,14 @@ async function sendQueuedChatMessage(
   }
   const historyRefresh = options?.refreshDisplayedTranscriptRevisionAfterHistory;
   if (historyRefresh) {
-    const deliveryClient = host.client;
-    const deliveryConnectionEpoch = host.connectionEpoch;
+    const deliveryContext =
+      options.historyRefreshDeliveryContext ??
+      (storageMode === "memory"
+        ? { client: host.client, connectionEpoch: host.connectionEpoch, host }
+        : undefined);
+    if (!deliveryContext) {
+      return "pending";
+    }
     const revisionHost = resolveHistoryRefreshOrigin(host, historyRefresh);
     const revisionState = revisionHost as unknown as ChatState;
     while (revisionState.chatLoading && revisionHost.connected && revisionHost.client) {
@@ -386,8 +391,7 @@ async function sendQueuedChatMessage(
     if (
       !historyRefreshOriginIsCurrent(
         host,
-        deliveryClient,
-        deliveryConnectionEpoch,
+        deliveryContext,
         revisionHost,
         historyRefresh,
         route,
