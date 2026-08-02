@@ -148,10 +148,7 @@ function readStoredChatOutbox(
   );
 }
 
-export function sameQueuedDeliveryVersion(
-  left: ChatQueueItem,
-  right: ChatQueueItem,
-): boolean {
+export function sameQueuedDeliveryVersion(left: ChatQueueItem, right: ChatQueueItem): boolean {
   return (
     left.id === right.id &&
     left.sendRunId === right.sendRunId &&

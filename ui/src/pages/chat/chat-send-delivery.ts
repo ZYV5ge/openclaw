@@ -190,24 +190,66 @@ function resolveHistoryRefreshOrigin(
 }
 
 function historyRefreshOriginIsCurrent(
+  deliveryHost: ChatHost,
+  deliveryClient: ChatHost["client"],
+  deliveryConnectionEpoch: ChatHost["connectionEpoch"],
   origin: ChatHost,
   context: true | QueuedChatHistoryRefreshContext,
   route: string,
   agentId?: string,
 ): boolean {
-  const connectionIsCurrent =
+  const deliveryConnectionIsCurrent =
+    deliveryHost.connected &&
+    Boolean(deliveryHost.client) &&
+    deliveryHost.client === deliveryClient &&
+    deliveryHost.connectionEpoch === deliveryConnectionEpoch &&
+    (context === true || deliveryClient === context.client);
+  const originConnectionIsCurrent =
     context === true ||
     (origin.client === context.client && origin.connectionEpoch === context.connectionEpoch);
   const scope = context === true ? { sessionKey: route, agentId } : context.scope;
   return (
-    connectionIsCurrent &&
+    deliveryConnectionIsCurrent &&
+    originConnectionIsCurrent &&
     origin.connected &&
     Boolean(origin.client) &&
-    scope.sessionKey === route &&
     origin.sessionKey === route &&
     visibleSessionMatches(origin, scope.sessionKey, scope.agentId) &&
     visibleSessionMatches(origin, route, agentId)
   );
+}
+
+function failMemoryQueuedSendAfterInvalidHistoryRefresh(
+  host: ChatHost,
+  item: ChatQueueItem,
+  queueSessionKey: string,
+  options: QueuedChatSendOptions,
+  revisionHost: ChatHost,
+  route: string,
+): QueuedChatSendResult {
+  const current = readQueuedMessageById(host, item.id);
+  if (!current || !sameQueuedDeliveryVersion(current, item)) {
+    return "pending";
+  }
+  const failed = updateQueuedSendItem(host, "memory", queueSessionKey, item.id, (entry) => ({
+    ...entry,
+    sendError: OFFLINE_QUEUE_STORAGE_ERROR,
+    sendState: "failed",
+  }));
+  if (!failed) {
+    return "pending";
+  }
+  const submittingRouteIsVisible =
+    revisionHost.sessionKey === route &&
+    visibleSessionMatches(revisionHost, route, failed.agentId);
+  if (submittingRouteIsVisible) {
+    setChatError(revisionHost, OFFLINE_QUEUE_STORAGE_ERROR);
+    if (canRestoreComposer(revisionHost, options)) {
+      restoreComposer(revisionHost, options);
+    }
+    revisionHost.requestUpdate?.();
+  }
+  return "failed";
 }
 
 function rebindQueuedTranscriptRevisionAfterHistory(
@@ -334,12 +376,34 @@ async function sendQueuedChatMessage(
   }
   const historyRefresh = options?.refreshDisplayedTranscriptRevisionAfterHistory;
   if (historyRefresh) {
+    const deliveryClient = host.client;
+    const deliveryConnectionEpoch = host.connectionEpoch;
     const revisionHost = resolveHistoryRefreshOrigin(host, historyRefresh);
     const revisionState = revisionHost as unknown as ChatState;
     while (revisionState.chatLoading && revisionHost.connected && revisionHost.client) {
       await loadChatHistory(revisionState);
     }
-    if (!historyRefreshOriginIsCurrent(revisionHost, historyRefresh, route, prepared.agentId)) {
+    if (
+      !historyRefreshOriginIsCurrent(
+        host,
+        deliveryClient,
+        deliveryConnectionEpoch,
+        revisionHost,
+        historyRefresh,
+        route,
+        prepared.agentId,
+      )
+    ) {
+      if (storageMode === "memory") {
+        return failMemoryQueuedSendAfterInvalidHistoryRefresh(
+          host,
+          prepared,
+          queueSessionKey,
+          options,
+          revisionHost,
+          route,
+        );
+      }
       return "pending";
     }
     prepared = rebindQueuedTranscriptRevisionAfterHistory(

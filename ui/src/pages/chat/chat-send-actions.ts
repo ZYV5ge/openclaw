@@ -141,7 +141,7 @@ export const flushChatQueueForEvent = (host: ChatHost) =>
 export const retryReconnectableQueuedChatSends = resumeStoredChatOutboxes;
 
 export async function retryQueuedChatMessage(host: ChatHost, id: string) {
-  let item = readQueuedMessageById(host, id);
+  let item = host.chatQueue.find((entry) => entry.id === id);
   if (!item || queuedChatMessageRetryIsBlocked(item)) {
     return;
   }
