@@ -829,12 +829,6 @@ jobs:
           );
           NODE
 
-      - name: Stop after personal runtime RED evidence
-        if: ${{ inputs.phase == 'red' }}
-        run: |
-          echo "::error::RED contract unexpectedly passed; stopping before native build."
-          exit 1
-
       - name: Select pinned Xcode 26.6 and Swift 6.3
         run: |
           set -euo pipefail
@@ -883,6 +877,12 @@ jobs:
           node scripts/run-vitest.mjs run \
             test/scripts/package-changelog.test.ts \
             test/scripts/verify-control-ui-release-parity.test.ts
+
+      - name: Stop after package RED evidence
+        if: ${{ inputs.phase == 'red' }}
+        run: |
+          echo "::error::Package regressions unexpectedly passed in RED; stopping before Core/native build."
+          exit 1
 
       - name: Freeze version and build provenance
         id: release_meta
