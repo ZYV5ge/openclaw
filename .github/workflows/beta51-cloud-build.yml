@@ -1455,6 +1455,7 @@ jobs:
           test -s "$runtime_package/openclaw.mjs"
           test -s "$runtime_package/dist/build-info.json"
           test -s "$runtime_package/dist/control-ui/index.html"
+          npm ls --prefix "$runtime_package" --omit=dev --all --json             > "$BUNDLE_DIR/runtime-npm-tree-unpacked.json"
           env -u NODE_PATH RUNTIME_ROOT="$runtime_package" node --input-type=module <<'NODE'
           import { createRequire } from "node:module";
           import fs from "node:fs";
@@ -1483,6 +1484,9 @@ jobs:
               const dependencyManifest = JSON.parse(
                 fs.readFileSync(path.join(resolvedDirectory, "package.json"), "utf8"),
               );
+              if (dependencyManifest.name !== name) {
+                failures.push(name + " manifest identifies itself as " + dependencyManifest.name);
+              }
               if (typeof dependencyManifest.version !== "string" || dependencyManifest.version.length === 0) {
                 failures.push(name + " has no package version");
               }
@@ -1522,20 +1526,45 @@ jobs:
           NODE
           (
             cd "$runtime_package"
-            env -u NODE_PATH node --input-type=module <<'NODE'
-          const runtimeImports = [
-            "@modelcontextprotocol/sdk/client/sse.js",
-            "@modelcontextprotocol/sdk/client/streamableHttp.js",
-            "@modelcontextprotocol/sdk/client/stdio.js",
-            "@modelcontextprotocol/sdk/server/stdio.js",
-            "@modelcontextprotocol/sdk/shared/stdio.js",
-            "@modelcontextprotocol/sdk/shared/transport.js",
-            "@modelcontextprotocol/sdk/types.js",
-            "clawpdf",
+            env -u NODE_PATH -u NODE_OPTIONS node --input-type=module <<'NODE'
+          const probes = [
+            ["@modelcontextprotocol/sdk/client/auth.js", ["auth", "extractWWWAuthenticateParams"]],
+            ["@modelcontextprotocol/sdk/client/index.js", ["Client"]],
+            ["@modelcontextprotocol/sdk/client/sse.js", ["SSEClientTransport"]],
+            ["@modelcontextprotocol/sdk/client/stdio.js", ["StdioClientTransport", "getDefaultEnvironment"]],
+            ["@modelcontextprotocol/sdk/client/streamableHttp.js", ["StreamableHTTPClientTransport", "StreamableHTTPError"]],
+            ["@modelcontextprotocol/sdk/server/index.js", ["Server"]],
+            ["@modelcontextprotocol/sdk/server/mcp.js", ["McpServer"]],
+            ["@modelcontextprotocol/sdk/server/stdio.js", ["StdioServerTransport"]],
+            ["@modelcontextprotocol/sdk/shared/auth.js", ["OAuthTokensSchema"]],
+            ["@modelcontextprotocol/sdk/shared/stdio.js", ["ReadBuffer", "serializeMessage"]],
+            ["@modelcontextprotocol/sdk/types.js", ["ContentBlockSchema", "ErrorCode"]],
+            ["@modelcontextprotocol/sdk/validation/ajv-provider.js", ["AjvJsonSchemaValidator"]],
           ];
-          for (const specifier of runtimeImports) {
-            await import(specifier);
+          for (const [specifier, expectedExports] of probes) {
+            const namespace = await import(specifier);
+            for (const expectedExport of expectedExports) {
+              if (!Object.hasOwn(namespace, expectedExport)) {
+                throw new Error(specifier + " lacks export " + expectedExport);
+              }
+            }
             console.log("ESM import: " + specifier + " ok");
+          }
+          const clawpdf = await import("clawpdf");
+          if (typeof clawpdf.createEngine !== "function") {
+            throw new Error("clawpdf lacks createEngine()");
+          }
+          const engine = await clawpdf.createEngine();
+          try {
+            if (typeof engine.pdfiumRelease !== "string" || engine.pdfiumRelease.length === 0) {
+              throw new Error("clawpdf PDFium engine did not expose a release");
+            }
+            if (typeof engine.wasmSha256 !== "string" || engine.wasmSha256.length === 0) {
+              throw new Error("clawpdf PDFium engine did not expose a WASM digest");
+            }
+            console.log("clawpdf PDFium engine: " + engine.pdfiumRelease + " ok");
+          } finally {
+            await engine.destroy();
           }
           NODE
           )
