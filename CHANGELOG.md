@@ -4,6 +4,13 @@ Docs: https://docs.openclaw.ai
 
 ## Unreleased
 
+## 2026.7.2-beta.7.1
+
+Personal integration release retaining the frozen official main fixes and verified local
+repairs while recording official `v2026.7.2-beta.7` as an audited source parent. The
+official beta.7 release-line changes are either patch-equivalent to, or superseded by,
+the newer frozen main implementation; no beta.6 component tree is overlaid on beta.7.
+
 ### Changes
 
 - **Local model setup:** advertise provider-owned Ollama, llama.cpp, and LM Studio setup choices to Control UI and macOS, retry unavailable LM Studio services in place, and verify the exact prepared model before showing success.

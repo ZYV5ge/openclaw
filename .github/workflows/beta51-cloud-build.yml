@@ -1,4 +1,4 @@
-name: OpenClaw 2026.7.2-beta.6.1 cloud validation
+name: OpenClaw 2026.7.2-beta.7.1 cloud validation
 
 on:
   workflow_dispatch:
@@ -14,22 +14,22 @@ on:
         type: choice
         options:
           - gemini-schema
-          - beta6-sqlite
-          - beta6-updater
-          - beta6-telegram
-          - beta6-restart-handoff
-          - beta6-terminal-recovery-residue
-          - beta6-session-search
-          - beta6-mac-ui
-          - beta6-control-ui-send
-          - beta6-memory-wiki-search
-          - beta6-postcutoff-inference
-          - beta6-postcutoff-gateway-lifecycle
-          - beta6-postcutoff-media-policy
-          - beta6-postcutoff-file-mutations
-          - beta6-postcutoff-service-ca
-          - beta6-i18n
-          - beta6-macos-package
+          - beta7-sqlite
+          - beta7-updater
+          - beta7-telegram
+          - beta7-restart-handoff
+          - beta7-terminal-recovery-residue
+          - beta7-session-search
+          - beta7-mac-ui
+          - beta7-control-ui-send
+          - beta7-memory-wiki-search
+          - beta7-postcutoff-inference
+          - beta7-postcutoff-gateway-lifecycle
+          - beta7-postcutoff-media-policy
+          - beta7-postcutoff-file-mutations
+          - beta7-postcutoff-service-ca
+          - beta7-i18n
+          - beta7-macos-package
       phase:
         description: TDD evidence phase; does not alter the test command
         required: true
@@ -42,24 +42,25 @@ on:
 permissions:
   contents: read
 
-run-name: OpenClaw 2026.7.2-beta.6.1 ${{ inputs.suite }} ${{ inputs.phase }} ${{ inputs.source_sha }}
+run-name: OpenClaw 2026.7.2-beta.7.1 ${{ inputs.suite }} ${{ inputs.phase }} ${{ inputs.source_sha }}
 
 concurrency:
-  group: personal-beta-6-1-${{ inputs.source_sha }}-${{ inputs.suite }}-${{ inputs.phase }}
+  group: personal-beta-7-1-${{ inputs.source_sha }}-${{ inputs.suite }}-${{ inputs.phase }}
   cancel-in-progress: false
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
   NODE_VERSION: "24.15.0"
-  PERSONAL_VERSION: "2026.7.2-beta.6.1"
-  PERSONAL_APP_BUILD: "2607000206"
-  UPSTREAM_VERSION: "2026.7.2"
+  PERSONAL_VERSION: "2026.7.2-beta.7.1"
+  PERSONAL_APP_BUILD: "2607000207"
+  OFFICIAL_BETA_VERSION: "2026.7.2-beta.7"
   FROZEN_UPSTREAM_SHA: "d328b02ab8b14663698a05cdc3a41bc3b5c98809"
+  FROZEN_BETA7_SHA: "dabe1915362e20c25704af91612a32a8f4c96e83"
   PERSONAL_RELEASE_REPOSITORY: "ZYV5ge/openclaw"
 
 jobs:
   focused_validation:
-    if: ${{ inputs.suite != 'beta6-mac-ui' && inputs.suite != 'beta6-macos-package' }}
+    if: ${{ inputs.suite != 'beta7-mac-ui' && inputs.suite != 'beta7-macos-package' }}
     name: ${{ inputs.suite }} (${{ inputs.phase }})
     runs-on: ubuntu-24.04
     timeout-minutes: 45
@@ -113,12 +114,17 @@ jobs:
           official_remote="official-openclaw"
           official_url="https://github.com/openclaw/openclaw.git"
           git remote add "$official_remote" "$official_url"
-          git fetch --no-tags --filter=blob:none "$official_remote" "$FROZEN_UPSTREAM_SHA"
+          git fetch --no-tags --filter=blob:none "$official_remote" \
+            "$FROZEN_UPSTREAM_SHA" "$FROZEN_BETA7_SHA"
           if ! git merge-base --is-ancestor "$FROZEN_UPSTREAM_SHA" "$SOURCE_SHA"; then
             echo "::error::Source does not contain frozen official main $FROZEN_UPSTREAM_SHA."
             exit 1
           fi
-          echo "Validated $PERSONAL_VERSION from frozen official main $FROZEN_UPSTREAM_SHA."
+          if ! git merge-base --is-ancestor "$FROZEN_BETA7_SHA" "$SOURCE_SHA"; then
+            echo "::error::Source does not contain official beta.7 $FROZEN_BETA7_SHA."
+            exit 1
+          fi
+          echo "Validated $PERSONAL_VERSION from frozen official main $FROZEN_UPSTREAM_SHA and beta.7 $FROZEN_BETA7_SHA."
 
       - name: Setup pinned Node and pnpm without Actions caches
         uses: ./.github/actions/setup-node-env
@@ -376,7 +382,7 @@ jobs:
             gemini-schema)
               node scripts/run-vitest.mjs run                 --config test/vitest/vitest.extension-providers.config.ts                 google/web-search-provider.test.ts
               ;;
-            beta6-sqlite)
+            beta7-sqlite)
               sqlite_test_status=0
               OPENCLAW_VITEST_MAX_WORKERS=1 node scripts/run-vitest.mjs run \
                 --config test/vitest/vitest.unit-src.config.ts \
@@ -403,13 +409,13 @@ jobs:
                 exit 1
               fi
               ;;
-            beta6-updater)
+            beta7-updater)
               node scripts/run-vitest.mjs run --config test/vitest/vitest.cli.config.ts src/cli/update-cli/update-command.test.ts
               ;;
-            beta6-telegram)
+            beta7-telegram)
               node scripts/run-vitest.mjs run --config test/vitest/vitest.extension-telegram.config.ts telegram/src/bot-message-context.body.test.ts
               ;;
-            beta6-restart-handoff)
+            beta7-restart-handoff)
               unit_status=0
               node scripts/run-vitest.mjs run \
                 --config test/vitest/vitest.auto-reply-reply.config.ts \
@@ -425,7 +431,7 @@ jobs:
                 exit 1
               fi
               ;;
-            beta6-terminal-recovery-residue)
+            beta7-terminal-recovery-residue)
               node scripts/run-vitest.mjs run \
                 --config test/vitest/vitest.agents-core.config.ts \
                 src/agents/main-session-recovery-store.test.ts
@@ -434,10 +440,10 @@ jobs:
               node scripts/run-vitest.mjs run \
                 src/agents/main-session-recovery-run-ownership.test.ts
               ;;
-            beta6-session-search)
+            beta7-session-search)
               node scripts/run-vitest.mjs run src/gateway/session-utils.test.ts
               ;;
-            beta6-memory-wiki-search)
+            beta7-memory-wiki-search)
               memory_test_status=0
               node scripts/run-vitest.mjs run \
                 --config test/vitest/vitest.extension-memory.config.ts \
@@ -462,7 +468,7 @@ jobs:
                 exit 1
               fi
               ;;
-            beta6-postcutoff-inference)
+            beta7-postcutoff-inference)
               codex_status=0
               OPENCLAW_VITEST_MAX_WORKERS=1 node scripts/run-vitest.mjs run \
                 --config test/vitest/vitest.extension-codex.config.ts \
@@ -497,7 +503,7 @@ jobs:
               fi
               ;;
 
-            beta6-postcutoff-gateway-lifecycle)
+            beta7-postcutoff-gateway-lifecycle)
               gateway_core_status=0
               OPENCLAW_VITEST_MAX_WORKERS=1 node scripts/run-vitest.mjs run \
                 --config test/vitest/vitest.gateway-core.config.ts \
@@ -528,7 +534,7 @@ jobs:
               fi
               ;;
 
-            beta6-postcutoff-media-policy)
+            beta7-postcutoff-media-policy)
               telegram_status=0
               OPENCLAW_VITEST_MAX_WORKERS=1 node scripts/run-vitest.mjs run \
                 --config test/vitest/vitest.extension-telegram.config.ts \
@@ -545,7 +551,7 @@ jobs:
                 exit 1
               fi
               ;;
-            beta6-postcutoff-file-mutations)
+            beta7-postcutoff-file-mutations)
               adapter_status=0
               node scripts/run-vitest.mjs run \
                 --config test/vitest/vitest.agents-core.config.ts \
@@ -565,7 +571,7 @@ jobs:
                 exit 1
               fi
               ;;
-            beta6-postcutoff-service-ca)
+            beta7-postcutoff-service-ca)
               service_status=0
               node scripts/run-vitest.mjs run \
                 src/cli/daemon-cli/install.test.ts \
@@ -580,7 +586,7 @@ jobs:
               fi
               ;;
 
-            beta6-i18n)
+            beta7-i18n)
               ui_verify_status=0
               pnpm ui:i18n:verify || ui_verify_status=$?
               native_verify_status=0
@@ -596,7 +602,7 @@ jobs:
                 exit 1
               fi
               ;;
-            beta6-control-ui-send)
+            beta7-control-ui-send)
               protocol_status=0
               node scripts/run-vitest.mjs run \
                 --config test/vitest/vitest.gateway-client.config.ts \
@@ -653,7 +659,7 @@ jobs:
           esac
 
   macos_ui_validation:
-    if: ${{ inputs.suite == 'beta6-mac-ui' }}
+    if: ${{ inputs.suite == 'beta7-mac-ui' }}
     name: ${{ inputs.suite }} (${{ inputs.phase }})
     runs-on: macos-26-intel
     timeout-minutes: 90
@@ -707,9 +713,14 @@ jobs:
           official_remote="official-openclaw"
           official_url="https://github.com/openclaw/openclaw.git"
           git remote add "$official_remote" "$official_url"
-          git fetch --no-tags --filter=blob:none "$official_remote" "$FROZEN_UPSTREAM_SHA"
+          git fetch --no-tags --filter=blob:none "$official_remote" \
+            "$FROZEN_UPSTREAM_SHA" "$FROZEN_BETA7_SHA"
           if ! git merge-base --is-ancestor "$FROZEN_UPSTREAM_SHA" "$SOURCE_SHA"; then
             echo "::error::Source does not contain frozen official main $FROZEN_UPSTREAM_SHA."
+            exit 1
+          fi
+          if ! git merge-base --is-ancestor "$FROZEN_BETA7_SHA" "$SOURCE_SHA"; then
+            echo "::error::Source does not contain official beta.7 $FROZEN_BETA7_SHA."
             exit 1
           fi
           xcodebuild -version
@@ -733,10 +744,10 @@ jobs:
           fi
 
   macos_package:
-    if: ${{ inputs.suite == 'beta6-macos-package' }}
+    if: ${{ inputs.suite == 'beta7-macos-package' }}
     permissions:
       contents: read
-    name: Build OpenClaw 2026.7.2-beta.6.1 universal App and Intel staging
+    name: Build OpenClaw 2026.7.2-beta.7.1 universal App and Intel staging
     runs-on: macos-26-intel
     timeout-minutes: 180
     outputs:
@@ -747,8 +758,8 @@ jobs:
     env:
       SOURCE_SHA: ${{ inputs.source_sha }}
       GIT_COMMIT: ${{ inputs.source_sha }}
-      APP_VERSION: "2026.7.2-beta.6.1"
-      APP_BUILD: "2607000206"
+      APP_VERSION: "2026.7.2-beta.7.1"
+      APP_BUILD: "2607000207"
       BUNDLE_ID: "ai.openclaw.mac"
       NODE_OPTIONS: "--max-old-space-size=6144"
       PNPM_CONFIG_CHILD_CONCURRENCY: "2"
@@ -811,9 +822,14 @@ jobs:
           else
             git remote add "$official_remote" "$official_url"
           fi
-          git fetch --no-tags --filter=blob:none "$official_remote" "$FROZEN_UPSTREAM_SHA"
+          git fetch --no-tags --filter=blob:none "$official_remote" \
+            "$FROZEN_UPSTREAM_SHA" "$FROZEN_BETA7_SHA"
           if ! git merge-base --is-ancestor "$FROZEN_UPSTREAM_SHA" "$SOURCE_SHA"; then
             echo "::error::Source does not contain frozen official main $FROZEN_UPSTREAM_SHA."
+            exit 1
+          fi
+          if ! git merge-base --is-ancestor "$FROZEN_BETA7_SHA" "$SOURCE_SHA"; then
+            echo "::error::Source does not contain official beta.7 $FROZEN_BETA7_SHA."
             exit 1
           fi
           if [[ -n "$(git status --porcelain=v1 --untracked-files=all)" ]]; then
@@ -829,8 +845,8 @@ jobs:
           import { resolvePackageChangelogVersions } from "./scripts/package-changelog.mjs";
 
           assert.deepEqual(
-            resolvePackageChangelogVersions("2026.7.2-beta.6.1"),
-            ["2026.7.2-beta.6.1", "2026.7.2", "Unreleased"],
+            resolvePackageChangelogVersions("2026.7.2-beta.7.1"),
+            ["2026.7.2-beta.7.1", "2026.7.2", "Unreleased"],
           );
           NODE
 
@@ -915,6 +931,7 @@ jobs:
           {
             echo "Source SHA: $SOURCE_SHA"
             echo "Frozen official SHA: $FROZEN_UPSTREAM_SHA"
+            echo "Frozen official beta.7 SHA: $FROZEN_BETA7_SHA"
             echo "Version: $APP_VERSION"
             echo "Build: $APP_BUILD"
             echo "Build timestamp: $build_timestamp"
@@ -1207,6 +1224,8 @@ jobs:
             purpose: "immutable Intel-built components for ARM64 runtime assembly",
             sourceSha: process.env.SOURCE_SHA,
             frozenOfficialSha: process.env.FROZEN_UPSTREAM_SHA,
+            frozenOfficialBeta7Sha: process.env.FROZEN_BETA7_SHA,
+            officialBetaVersion: process.env.OFFICIAL_BETA_VERSION,
             version: process.env.APP_VERSION,
             appBuild: process.env.APP_BUILD,
             buildTimestamp: process.env.OPENCLAW_BUILD_TIMESTAMP,
@@ -1257,18 +1276,18 @@ jobs:
           key: ${{ steps.release_meta.outputs.staging_cache_key }}
 
   macos_runtime_arm64:
-    if: ${{ inputs.suite == 'beta6-macos-package' && inputs.phase == 'green' }}
+    if: ${{ inputs.suite == 'beta7-macos-package' && inputs.phase == 'green' }}
     needs: macos_package
     permissions:
       contents: read
-    name: Assemble and validate OpenClaw 2026.7.2-beta.6.1 darwin-arm64 runtime
+    name: Assemble and validate OpenClaw 2026.7.2-beta.7.1 darwin-arm64 runtime
     runs-on: macos-26
     timeout-minutes: 90
     env:
       SOURCE_SHA: ${{ inputs.source_sha }}
       GIT_COMMIT: ${{ inputs.source_sha }}
-      APP_VERSION: "2026.7.2-beta.6.1"
-      APP_BUILD: "2607000206"
+      APP_VERSION: "2026.7.2-beta.7.1"
+      APP_BUILD: "2607000207"
       BUNDLE_ID: "ai.openclaw.mac"
       OPENCLAW_BUILD_TIMESTAMP: ${{ needs.macos_package.outputs.build_timestamp }}
       RAW_PACKAGE_NAME: ${{ needs.macos_package.outputs.raw_package_name }}
@@ -1338,9 +1357,14 @@ jobs:
           else
             git remote add "$official_remote" "$official_url"
           fi
-          git fetch --no-tags --filter=blob:none "$official_remote" "$FROZEN_UPSTREAM_SHA"
+          git fetch --no-tags --filter=blob:none "$official_remote" \
+            "$FROZEN_UPSTREAM_SHA" "$FROZEN_BETA7_SHA"
           if ! git merge-base --is-ancestor "$FROZEN_UPSTREAM_SHA" "$SOURCE_SHA"; then
             echo "::error::Source does not contain frozen official main $FROZEN_UPSTREAM_SHA."
+            exit 1
+          fi
+          if ! git merge-base --is-ancestor "$FROZEN_BETA7_SHA" "$SOURCE_SHA"; then
+            echo "::error::Source does not contain official beta.7 $FROZEN_BETA7_SHA."
             exit 1
           fi
           if [[ -n "$(git status --porcelain=v1 --untracked-files=all)" ]]; then
@@ -1388,6 +1412,8 @@ jobs:
           const expected = {
             sourceSha: process.env.SOURCE_SHA,
             frozenOfficialSha: process.env.FROZEN_UPSTREAM_SHA,
+            frozenOfficialBeta7Sha: process.env.FROZEN_BETA7_SHA,
+            officialBetaVersion: process.env.OFFICIAL_BETA_VERSION,
             version: process.env.APP_VERSION,
             appBuild: process.env.APP_BUILD,
             buildTimestamp: process.env.OPENCLAW_BUILD_TIMESTAMP,
@@ -1709,6 +1735,8 @@ jobs:
               branch: "agent/openclaw-beta-5-1",
               sha: process.env.SOURCE_SHA,
               frozenOfficialSha: process.env.FROZEN_UPSTREAM_SHA,
+              frozenOfficialBeta7Sha: process.env.FROZEN_BETA7_SHA,
+              officialBetaVersion: process.env.OFFICIAL_BETA_VERSION,
             },
             build: {
               builtAt: process.env.OPENCLAW_BUILD_TIMESTAMP,

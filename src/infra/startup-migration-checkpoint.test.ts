@@ -179,7 +179,7 @@ describe("startup migration checkpoint", () => {
     expect(
       needsStartupMigrationCheckpoint({
         env,
-        version: "2026.7.2-beta.6.1",
+        version: "2026.7.2-beta.7.1",
         buildIdentity: "frozen-sha",
       }),
     ).toBe(true);
@@ -402,7 +402,7 @@ describe("startup migration checkpoint", () => {
     expect(() =>
       needsStartupMigrationCheckpoint({
         env,
-        version: "2026.7.2-beta.6.1",
+        version: "2026.7.2-beta.7.1",
         buildIdentity: "frozen-sha",
       }),
     ).toThrow("newer schema version " + String(OPENCLAW_STATE_SCHEMA_VERSION + 1));
@@ -431,7 +431,7 @@ describe("startup migration checkpoint", () => {
     expect(
       needsStartupMigrationCheckpoint({
         env,
-        version: "2026.7.2-beta.6.1",
+        version: "2026.7.2-beta.7.1",
         buildIdentity: "frozen-sha",
       }),
     ).toBe(true);
@@ -446,7 +446,7 @@ describe("startup migration checkpoint", () => {
     recordSuccessfulStartupMigrations({
       env,
       lease,
-      version: "2026.7.2-beta.6.1",
+      version: "2026.7.2-beta.7.1",
       buildIdentity: "frozen-sha",
       nowMs: 1400,
     });
@@ -456,7 +456,7 @@ describe("startup migration checkpoint", () => {
     expect(
       needsStartupMigrationCheckpoint({
         env,
-        version: "2026.7.2-beta.6.1",
+        version: "2026.7.2-beta.7.1",
         buildIdentity: "frozen-sha",
       }),
     ).toBe(false);
@@ -469,7 +469,7 @@ describe("startup migration checkpoint", () => {
     };
     recordSuccessfulStartupMigrations({
       env,
-      version: "2026.7.2-beta.6.1",
+      version: "2026.7.2-beta.7.1",
       buildIdentity: "frozen-sha",
       nowMs: 1000,
     });
@@ -480,7 +480,7 @@ describe("startup migration checkpoint", () => {
     expect(() =>
       needsStartupMigrationCheckpoint({
         env,
-        version: "2026.7.2-beta.6.1",
+        version: "2026.7.2-beta.7.1",
         buildIdentity: "frozen-sha",
       }),
     ).toThrow("schema_meta table is corrupt");
@@ -533,7 +533,7 @@ describe("startup migration checkpoint", () => {
       recordSuccessfulStartupMigrations({
         env,
         lease,
-        version: "2026.7.2-beta.6.1",
+        version: "2026.7.2-beta.7.1",
         buildIdentity: "frozen-sha",
       }),
     ).toThrow("startup migration lease was lost");
@@ -551,7 +551,7 @@ describe("startup migration checkpoint", () => {
       recordSuccessfulStartupMigrations({
         env,
         lease,
-        version: "2026.7.2-beta.6.1",
+        version: "2026.7.2-beta.7.1",
         buildIdentity: "frozen-sha",
         nowMs: 1001,
       }),
@@ -588,7 +588,7 @@ describe("startup migration checkpoint", () => {
       recordSuccessfulStartupMigrations({
         env,
         lease,
-        version: "2026.7.2-beta.6.1",
+        version: "2026.7.2-beta.7.1",
         buildIdentity: "frozen-sha",
         nowMs: 1001,
       }),
@@ -613,7 +613,7 @@ describe("startup migration checkpoint", () => {
       recordSuccessfulStartupMigrations({
         env,
         lease,
-        version: "2026.7.2-beta.6.1",
+        version: "2026.7.2-beta.7.1",
         buildIdentity: "frozen-sha",
         nowMs: 1001,
       }),
