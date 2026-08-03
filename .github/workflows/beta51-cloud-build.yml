@@ -1463,15 +1463,31 @@ jobs:
           const packageJson = JSON.parse(fs.readFileSync(path.join(runtimeRoot, "package.json"), "utf8"));
           const runtimeRequire = createRequire(path.join(runtimeRoot, "package.json"));
           const failures = [];
+          const verifyContainedPath = (label, candidate) => {
+            const relative = path.relative(runtimeRoot, candidate);
+            if (relative.startsWith(".." + path.sep) || path.isAbsolute(relative)) {
+              failures.push(label + " resolved outside runtime: " + candidate);
+            }
+          };
           for (const name of Object.keys(packageJson.dependencies ?? {})) {
             try {
-              const resolved = fs.realpathSync(runtimeRequire.resolve(name));
-              const relative = path.relative(runtimeRoot, resolved);
-              if (relative.startsWith(".." + path.sep) || path.isAbsolute(relative)) {
-                failures.push(name + " resolved outside runtime: " + resolved);
+              // A package may intentionally omit a CommonJS root export. Validate the
+              // installed package directory here; actual ESM entrypoints are loaded below.
+              const packageDirectory = path.join(runtimeRoot, "node_modules", ...name.split("/"));
+              const resolvedDirectory = fs.realpathSync(packageDirectory);
+              verifyContainedPath(name, resolvedDirectory);
+              if (!fs.statSync(resolvedDirectory).isDirectory()) {
+                failures.push(name + " is not an installed package directory");
+                continue;
+              }
+              const dependencyManifest = JSON.parse(
+                fs.readFileSync(path.join(resolvedDirectory, "package.json"), "utf8"),
+              );
+              if (typeof dependencyManifest.version !== "string" || dependencyManifest.version.length === 0) {
+                failures.push(name + " has no package version");
               }
             } catch (error) {
-              failures.push(name + " unresolved: " + String(error));
+              failures.push(name + " package directory invalid: " + String(error));
             }
           }
           function verifyContainedSymlinks(directory) {
@@ -1498,8 +1514,31 @@ jobs:
           if (failures.length > 0) {
             throw new Error("installed runtime dependency closure failed:\n" + failures.join("\n"));
           }
-          runtimeRequire.resolve("tslog");
+          const tslogEntry = fs.realpathSync(runtimeRequire.resolve("tslog"));
+          verifyContainedPath("tslog", tslogEntry);
+          if (failures.length > 0) {
+            throw new Error("installed runtime dependency closure failed:\n" + failures.join("\n"));
+          }
           NODE
+          (
+            cd "$runtime_package"
+            env -u NODE_PATH node --input-type=module <<'NODE'
+          const runtimeImports = [
+            "@modelcontextprotocol/sdk/client/sse.js",
+            "@modelcontextprotocol/sdk/client/streamableHttp.js",
+            "@modelcontextprotocol/sdk/client/stdio.js",
+            "@modelcontextprotocol/sdk/server/stdio.js",
+            "@modelcontextprotocol/sdk/shared/stdio.js",
+            "@modelcontextprotocol/sdk/shared/transport.js",
+            "@modelcontextprotocol/sdk/types.js",
+            "clawpdf",
+          ];
+          for (const specifier of runtimeImports) {
+            await import(specifier);
+            console.log("ESM import: " + specifier + " ok");
+          }
+          NODE
+          )
           runtime_smoke_home="$RUNNER_TEMP/openclaw-runtime-smoke-home"
           mkdir -p "$runtime_smoke_home"
           version_output="$(
