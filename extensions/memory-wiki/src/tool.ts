@@ -1,6 +1,7 @@
 // Memory Wiki plugin module implements tool behavior.
 import path from "node:path";
 import { optionalFiniteNumberSchema } from "openclaw/plugin-sdk/channel-actions";
+import type { OpenClawPluginToolContext } from "openclaw/plugin-sdk/plugin-entry";
 import { Type } from "typebox";
 import type { AnyAgentTool, OpenClawConfig } from "../api.js";
 import { applyMemoryWikiMutation, normalizeMemoryWikiMutationInput } from "./apply.js";
@@ -112,6 +113,7 @@ type WikiToolMemoryContext = {
   agentId?: string;
   agentSessionKey?: string;
   sandboxed?: boolean;
+  conversationRecall?: OpenClawPluginToolContext["conversationRecall"];
 };
 
 export function createWikiStatusTool(
@@ -150,7 +152,7 @@ export function createWikiSearchTool(
     description:
       "Search wiki pages and, when shared search is enabled, the active memory corpus by title, path, id, or body text.",
     parameters: WikiSearchSchema,
-    execute: async (_toolCallId, rawParams, signal) => {
+    execute: async (_toolCallId, rawParams) => {
       const params = rawParams as {
         query: string;
         maxResults?: number;
@@ -158,16 +160,14 @@ export function createWikiSearchTool(
         corpus?: ResolvedMemoryWikiConfig["search"]["corpus"];
         mode?: (typeof WIKI_SEARCH_MODES)[number];
       };
-      signal?.throwIfAborted();
       await syncImportedSourcesIfNeeded(config, appConfig);
-      signal?.throwIfAborted();
       const results = await searchMemoryWiki({
         config,
         appConfig,
         agentId: memoryContext.agentId,
         agentSessionKey: memoryContext.agentSessionKey,
         sandboxed: memoryContext.sandboxed,
-        ...(signal ? { signal } : {}),
+        conversationRecall: memoryContext.conversationRecall,
         query: params.query,
         maxResults: params.maxResults,
         ...(params.backend ? { searchBackend: params.backend } : {}),
@@ -291,6 +291,7 @@ export function createWikiGetTool(
         agentId: memoryContext.agentId,
         agentSessionKey: memoryContext.agentSessionKey,
         sandboxed: memoryContext.sandboxed,
+        conversationRecall: memoryContext.conversationRecall,
         lookup: params.lookup,
         fromLine: params.fromLine,
         lineCount: params.lineCount,

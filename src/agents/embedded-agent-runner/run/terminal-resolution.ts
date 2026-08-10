@@ -2,6 +2,7 @@ import { randomBytes } from "node:crypto";
 import { SILENT_REPLY_TOKEN } from "../../../auto-reply/tokens.js";
 import { freezeDiagnosticTraceContext } from "../../../infra/diagnostic-trace-context.js";
 import type { AssistantMessage } from "../../../llm/types.js";
+import type { ProviderRouteOverridePresence } from "../../../plugin-sdk/provider-model-types.js";
 import { projectAgentRunAttemptTerminal } from "../../agent-run-terminal-outcome.js";
 import type { AuthProfileFailureReason, AuthProfileStore } from "../../auth-profiles.js";
 import type { AgentExecutionAuthBinding } from "../../execution-auth-binding.js";
@@ -87,13 +88,30 @@ export function resolveSettledTurnFinalizationRequest(input: {
     timedOut: terminalTimedOut,
     attempt: input.attempt,
   });
+  const terminalAssistant = input.attempt.currentAttemptAssistant ?? input.attempt.lastAssistant;
+  // Payload preparation renders an undelivered tool-error fallback before the
+  // model gets its final answer. It must not masquerade as an assistant reply;
+  // exact failed-call settlement is independently proven by the finalizer owner.
+  const hasOnlySyntheticToolErrorPayload = Boolean(
+    terminalAssistant?.stopReason === "toolUse" &&
+    input.attempt.lastToolError &&
+    input.attempt.assistantTexts.every((text) => text.trim().length === 0) &&
+    (input.payloadsWithToolMedia?.length ?? 0) > 0 &&
+    input.payloadsWithToolMedia?.every(
+      (payload) =>
+        payload.isError === true &&
+        Object.keys(payload).every((key) => key === "text" || key === "isError"),
+    ),
+  );
   const payloadCount = input.recoveredFinalAssistantPayloadsAfterPromptTimeout
     ? input.recoveredFinalAssistantPayloadsAfterPromptTimeout.length
-    : input.payloadsWithToolMedia?.length
-      ? input.payloadsWithToolMedia.length
-      : silentToolResultReplyPayload
-        ? 1
-        : 0;
+    : hasOnlySyntheticToolErrorPayload
+      ? 0
+      : input.payloadsWithToolMedia?.length
+        ? input.payloadsWithToolMedia.length
+        : silentToolResultReplyPayload
+          ? 1
+          : 0;
   const emptyAssistantReplyIsSilent = shouldTreatEmptyAssistantReplyAsSilent({
     allowEmptyAssistantReplyAsSilent: input.runParams.allowEmptyAssistantReplyAsSilent,
     terminalReplyExpectation: input.runParams.terminalReplyExpectation,
@@ -166,6 +184,8 @@ export async function resolveEmbeddedRunTerminal(input: {
   modelId: string;
   modelTransportId: string;
   modelTransportApi: string;
+  modelTransportBaseUrl?: string;
+  requestTransportOverrides?: ProviderRouteOverridePresence;
   authProfileId?: string;
   profileFailureStore: AuthProfileStore;
   attemptAuthProfileStore: AuthProfileStore;
@@ -505,8 +525,12 @@ function completeEmbeddedRun(
     apiKeyInfo: input.apiKeyInfo,
     attempt: input.attempt,
     provider: input.provider,
+    agentDir: input.runParams.agentDir,
     modelId: input.modelTransportId,
     modelApi: input.modelTransportApi,
+    ...(input.modelTransportBaseUrl ? { modelBaseUrl: input.modelTransportBaseUrl } : {}),
+    requestTransportOverrides: input.requestTransportOverrides ?? "none",
+    config: input.runParams.config,
     agentHarnessId: input.agentHarnessId,
     pluginHarnessOwnsTransport: input.pluginHarnessOwnsTransport,
     pluginHarnessOwnsAuthBootstrap: input.pluginHarnessOwnsAuthBootstrap,

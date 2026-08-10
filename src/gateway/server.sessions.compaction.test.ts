@@ -5,6 +5,14 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { expect, test, vi } from "vitest";
+import { createDeferred } from "../../test/helpers/promise.js";
+import { resolveEmbeddedSessionLane } from "../agents/embedded-agent-runner/lanes.js";
+import { enqueueFollowupRun, type FollowupRun } from "../auto-reply/reply/queue.js";
+import {
+  clearFollowupQueue,
+  getExistingFollowupQueue,
+  getFollowupQueue,
+} from "../auto-reply/reply/queue/state.js";
 import type { SessionCompactionCheckpoint } from "../config/sessions.js";
 import { readSessionArchiveContentSync } from "../config/sessions/archive-compression.js";
 import {
@@ -16,6 +24,11 @@ import {
   replaceSessionEntry,
   upsertSessionEntry,
 } from "../config/sessions/session-accessor.js";
+import {
+  enqueueCommandInLane,
+  getCommandLaneSnapshot,
+  setCommandLaneConcurrency,
+} from "../process/command-queue.js";
 import {
   beginSessionWorkAdmission,
   isSessionWorkAdmissionActive,
@@ -31,7 +44,6 @@ import {
 } from "./test-helpers.js";
 import {
   setupGatewaySessionsTestHarness,
-  createDeferred,
   getSessionManagerModule,
   sessionStoreEntry,
   createCheckpointFixture,
@@ -75,13 +87,14 @@ function compactionCheckpointEntry(
     tokensBefore?: number;
     tokensAfter?: number;
   },
-) {
+): SessionCompactionCheckpoint {
   return {
     checkpointId: options.checkpointId,
     sessionKey: options.sessionKey,
     sessionId: fixture.sessionId,
     createdAt: options.createdAt,
     reason: options.reason,
+    tokensVersion: 1,
     summary: options.summary,
     ...(options.tokensBefore === undefined ? {} : { tokensBefore: options.tokensBefore }),
     ...(options.tokensAfter === undefined ? {} : { tokensAfter: options.tokensAfter }),
@@ -1168,8 +1181,8 @@ test("sessions.compaction.restore leaves replacement-session work untouched when
       replacementInterrupted = true;
     },
   });
-  const blockerStarted = createDeferred<void>();
-  const releaseBlocker = createDeferred<void>();
+  const blockerStarted = createDeferred();
+  const releaseBlocker = createDeferred();
   const blocker = runExclusiveSessionLifecycleMutation({
     scope: storePath,
     identities: ["main", "agent:main:main", fixture.sessionId],
@@ -1380,6 +1393,166 @@ test("sessions.compact refuses real compaction without interrupting an active ad
   }
 });
 
+test("sessions.compact preserves accepted queued follow-up work", async () => {
+  const { storePath } = await createSessionStoreDir();
+  const sessionId = "sess-compact-followup-queue";
+  const sessionKey = "agent:main:main";
+  await seedSessionEntry({
+    entry: sessionStoreEntry(sessionId),
+    sessionKey,
+    storePath,
+  });
+  await seedTranscriptRows({
+    sessionId,
+    sessionKey,
+    storePath,
+    totalLines: 3,
+  });
+  const queuedRun = {
+    prompt: "please also update the changelog",
+    enqueuedAt: Date.now(),
+    run: {},
+  } as unknown as FollowupRun;
+  expect(
+    enqueueFollowupRun(
+      sessionKey,
+      queuedRun,
+      { mode: "followup", debounceMs: 60_000 },
+      "none",
+      undefined,
+      false,
+    ),
+  ).toBe(true);
+
+  const { ws } = await openClient();
+  try {
+    const compacted = await rpcReq(ws, "sessions.compact", { key: "main" });
+
+    expect(compacted.ok).toBe(false);
+    expect(compacted.error).toMatchObject({
+      code: "INVALID_REQUEST",
+      message: "Session main has queued work; retry after it finishes.",
+    });
+    expect(getExistingFollowupQueue(sessionKey)?.items).toHaveLength(1);
+    expect(embeddedRunMock.compactEmbeddedAgentSession).not.toHaveBeenCalled();
+    expectNoSessionQueueCleanup();
+  } finally {
+    clearFollowupQueue(sessionKey);
+    ws.close();
+  }
+});
+
+test.each([
+  { name: "follow-up-backed", withFollowup: true },
+  { name: "lane-only", withFollowup: false },
+])("sessions.compact preserves accepted $name command-lane work", async ({ withFollowup }) => {
+  const { storePath } = await createSessionStoreDir();
+  const sessionId = "sess-compact-command-queue";
+  const sessionKey = "agent:main:main";
+  await seedSessionEntry({
+    entry: sessionStoreEntry(sessionId),
+    sessionKey,
+    storePath,
+  });
+  await seedTranscriptRows({
+    sessionId,
+    sessionKey,
+    storePath,
+    totalLines: 3,
+  });
+  const lane = resolveEmbeddedSessionLane(sessionKey);
+  const queuedRun = {
+    prompt: "please also update the changelog",
+    enqueuedAt: Date.now(),
+    run: {},
+  } as unknown as FollowupRun;
+  if (withFollowup) {
+    getFollowupQueue(sessionKey, { mode: "collect" }).inFlight.add(queuedRun);
+  }
+  setCommandLaneConcurrency(lane, 0);
+  let commandRan = false;
+  const queuedCommand = enqueueCommandInLane(lane, async () => {
+    commandRan = true;
+  });
+
+  const { ws } = await openClient();
+  try {
+    expect(getCommandLaneSnapshot(lane)).toMatchObject({
+      activeCount: 0,
+      queuedCount: 1,
+    });
+
+    const compacted = await rpcReq(ws, "sessions.compact", { key: "main" });
+
+    expect(compacted.ok).toBe(false);
+    expect(compacted.error).toMatchObject({
+      code: "INVALID_REQUEST",
+      message: "Session main has queued work; retry after it finishes.",
+    });
+    expect(Boolean(getExistingFollowupQueue(sessionKey)?.inFlight.has(queuedRun))).toBe(
+      withFollowup,
+    );
+    expect(getCommandLaneSnapshot(lane).queuedCount).toBe(1);
+    expect(commandRan).toBe(false);
+    expect(embeddedRunMock.compactEmbeddedAgentSession).not.toHaveBeenCalled();
+    expectNoSessionQueueCleanup();
+  } finally {
+    clearFollowupQueue(sessionKey);
+    setCommandLaneConcurrency(lane, 1);
+    await queuedCommand;
+    ws.close();
+  }
+  expect(commandRan).toBe(true);
+});
+
+test("sessions.compact preserves summary-elided queued follow-up work", async () => {
+  const { storePath } = await createSessionStoreDir();
+  const sessionId = "sess-compact-elided-followup-queue";
+  const sessionKey = "agent:main:main";
+  await seedSessionEntry({
+    entry: sessionStoreEntry(sessionId),
+    sessionKey,
+    storePath,
+  });
+  await seedTranscriptRows({
+    sessionId,
+    sessionKey,
+    storePath,
+    totalLines: 3,
+  });
+  const queue = getFollowupQueue(sessionKey, { mode: "followup" });
+  const elidedRun = {
+    prompt: "please also update the changelog",
+    enqueuedAt: Date.now(),
+    run: {},
+  } as unknown as FollowupRun;
+  queue.droppedCount = 1;
+  queue.summaryElisions.push({
+    contextKey: "test",
+    count: 1,
+    sources: [elidedRun],
+    summaryLines: ["elided summary"],
+    sourceRefs: new WeakMap(),
+  });
+
+  const { ws } = await openClient();
+  try {
+    const compacted = await rpcReq(ws, "sessions.compact", { key: "main" });
+
+    expect(compacted.ok).toBe(false);
+    expect(compacted.error).toMatchObject({
+      code: "INVALID_REQUEST",
+      message: "Session main has queued work; retry after it finishes.",
+    });
+    expect(getExistingFollowupQueue(sessionKey)?.summaryElisions).toHaveLength(1);
+    expect(embeddedRunMock.compactEmbeddedAgentSession).not.toHaveBeenCalled();
+    expectNoSessionQueueCleanup();
+  } finally {
+    clearFollowupQueue(sessionKey);
+    ws.close();
+  }
+});
+
 test("sessions.compact refuses real compaction while a worker inference owns the session", async () => {
   const { storePath } = await createSessionStoreDir();
   const sessionId = "sess-compact-worker-inference";
@@ -1423,7 +1596,7 @@ test("sessions.compact refuses real compaction while a worker inference owns the
   expectNoSessionQueueCleanup();
 });
 
-test("sessions.patch rejects archive while terminal compaction owns the session", async () => {
+test("sessions.patch waits for terminal compaction before archiving the session", async () => {
   const { storePath } = await createSessionStoreDir();
   const sessionKey = "agent:main:dashboard:compact-race";
   await seedSessionEntry({
@@ -1454,9 +1627,15 @@ test("sessions.patch rejects archive while terminal compaction owns the session"
   await vi.waitFor(() => {
     expect(embeddedRunMock.compactEmbeddedAgentSession).toHaveBeenCalledTimes(1);
   });
-  const archived = await rpcReq(ws, "sessions.patch", { key: sessionKey, archived: true });
-  expect(archived.ok).toBe(false);
-  expect(archived.error?.message).toContain("active run");
+  let archiveSettled = false;
+  const archiveResult = rpcReq(ws, "sessions.patch", { key: sessionKey, archived: true }).then(
+    (result) => {
+      archiveSettled = true;
+      return result;
+    },
+  );
+  await Promise.resolve();
+  expect(archiveSettled).toBe(false);
 
   compaction.resolve({
     ok: true,
@@ -1469,6 +1648,7 @@ test("sessions.patch rejects archive while terminal compaction owns the session"
     },
   });
   expect((await compactResult).ok).toBe(true);
+  expect((await archiveResult).ok).toBe(true);
   ws.close();
 });
 

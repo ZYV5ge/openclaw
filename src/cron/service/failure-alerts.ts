@@ -1,10 +1,14 @@
 /** Resolves and emits cron failure-alert notifications. */
 import { normalizeOptionalLowercaseString } from "@openclaw/normalization-core/string-coerce";
 import { truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
+import { classifyOAuthRefreshFailure } from "../../agents/auth-profiles/oauth-refresh-failure.js";
 import type { FailoverReason } from "../../agents/embedded-agent-helpers/types.js";
+import type { ReplyPayload } from "../../auto-reply/reply-payload.js";
+import { normalizeAnyChannelId } from "../../channels/registry-normalize.js";
 import { resolveTargetPrefixedChannel } from "../../infra/outbound/channel-target-prefix.js";
+import { normalizeTargetForProvider } from "../../infra/outbound/target-normalization.js";
 import type { CronFailureNotificationDelivery, CronJob, CronMessageChannel } from "../types.js";
-import type { CronServiceState } from "./state.js";
+import type { CronServiceState, DeferredCronNotifications } from "./state.js";
 
 const DEFAULT_FAILURE_ALERT_AFTER = 2;
 const DEFAULT_FAILURE_ALERT_COOLDOWN_MS = 60 * 60_000; // 1 hour
@@ -43,9 +47,18 @@ function normalizeCronMessageChannel(input: unknown): CronMessageChannel | undef
 function resolveFailureAlertChannel(channel: unknown, to?: string): CronMessageChannel | undefined {
   const normalized = normalizeCronMessageChannel(channel);
   if (normalized && normalized !== "last") {
-    return normalized;
+    return normalizeAnyChannelId(normalized) ?? normalized;
   }
   return normalizeCronMessageChannel(resolveTargetPrefixedChannel(to)) ?? normalized;
+}
+
+function normalizeFailureAlertRecipient(channel: CronMessageChannel, to: string): string {
+  try {
+    return normalizeTargetForProvider(channel, to) ?? to;
+  } catch {
+    // Invalid loaded targets are distinct routes; they must not block run finalization.
+    return to;
+  }
 }
 
 function normalizeTo(input: unknown): string | undefined {
@@ -74,8 +87,8 @@ function clampNonNegativeInt(value: unknown, fallback: number): number {
 
 /** Resolves effective failure-alert policy from job config, delivery defaults, and global cron config. */
 export function resolveFailureAlert(
-  state: CronServiceState,
-  job: CronJob,
+  state: { deps: Pick<CronServiceState["deps"], "cronConfig"> },
+  job: Pick<CronJob, "delivery" | "failureAlert">,
 ): ResolvedFailureAlert | null {
   const globalConfig = state.deps.cronConfig?.failureAlert;
   const jobConfig = job.failureAlert === false ? undefined : job.failureAlert;
@@ -108,10 +121,15 @@ export function resolveFailureAlert(
     channel === deliveryChannel || (channel === "last" && !deliveryChannel);
   const compatibleDeliveryTo = inheritsDeliveryChannel ? deliveryTo : undefined;
   const explicitTo = jobTo ?? globalTo;
+  const inheritsDeliveryRoute =
+    inheritsDeliveryChannel &&
+    (explicitTo === undefined ||
+      explicitTo === deliveryTo ||
+      (deliveryTo !== undefined &&
+        normalizeFailureAlertRecipient(channel, explicitTo) ===
+          normalizeFailureAlertRecipient(channel, deliveryTo)));
   const inheritedDeliveryAccountId =
-    mode !== "webhook" && !explicitTo && inheritsDeliveryChannel
-      ? job.delivery?.accountId
-      : undefined;
+    mode !== "webhook" && inheritsDeliveryRoute ? job.delivery?.accountId : undefined;
   const accountId =
     jobConfig?.accountId ??
     (inheritsGlobalRoute ? globalConfig?.accountId : undefined) ??
@@ -119,10 +137,7 @@ export function resolveFailureAlert(
   // A topic belongs to its channel, peer, and account; never attach the
   // primary topic to an independently routed failure destination.
   const inheritsDeliveryThread =
-    mode !== "webhook" &&
-    inheritsDeliveryChannel &&
-    (explicitTo === undefined || explicitTo === deliveryTo) &&
-    accountId === job.delivery?.accountId;
+    mode !== "webhook" && inheritsDeliveryRoute && accountId === job.delivery?.accountId;
 
   // Announce alerts inherit the job delivery target; webhook alerts require an
   // explicit alert target so chat recipients are not reused as URLs.
@@ -169,12 +184,35 @@ function emitFailureAlert(
     ...(errorReason ? [`Cause: ${errorReason}`] : []),
     `${detailLabel}: ${truncatedError}`,
   ].join("\n");
+  const oauthRefreshFailure = params.error ? classifyOAuthRefreshFailure(params.error) : null;
+  const payload: ReplyPayload = {
+    text,
+    ...(params.status === "error" &&
+    (errorReason === "auth" || errorReason === "auth_permanent") &&
+    oauthRefreshFailure?.provider === "openai"
+      ? {
+          presentation: {
+            blocks: [
+              {
+                type: "buttons" as const,
+                buttons: [
+                  {
+                    label: "Log in to Codex",
+                    action: { type: "command" as const, command: "/login codex" },
+                  },
+                ],
+              },
+            ],
+          },
+        }
+      : {}),
+  };
 
   if (state.deps.sendCronFailureAlert) {
     void state.deps
       .sendCronFailureAlert({
         job: params.job,
-        text,
+        payload,
         runAtMs: params.runAtMs,
         channel: params.channel,
         to: params.to,
@@ -191,7 +229,7 @@ function emitFailureAlert(
     return;
   }
 
-  state.deps.enqueueSystemEvent(text, { agentId: params.job.agentId });
+  state.deps.enqueueSystemEvent(payload.text ?? "", { agentId: params.job.agentId });
   if (params.job.wakeMode === "now") {
     state.deps.requestHeartbeat({
       source: "cron",
@@ -214,9 +252,11 @@ export function maybeEmitFailureAlert(
     consecutiveCount: number;
     delivery?: "emit" | "record-only";
     occurredAtMs?: number;
+    deferredNotifications?: DeferredCronNotifications;
   },
 ) {
-  if (!params.alertConfig || params.consecutiveCount < params.alertConfig.after) {
+  const alertConfig = params.alertConfig;
+  if (!alertConfig || params.consecutiveCount < alertConfig.after) {
     return;
   }
   if (
@@ -238,24 +278,33 @@ export function maybeEmitFailureAlert(
   // Cooldown is stored on job state so process restarts and service reloads do
   // not spam operators with repeated alerts for the same failing job.
   const inCooldown =
-    typeof lastAlert === "number" && now - lastAlert < Math.max(0, params.alertConfig.cooldownMs);
+    typeof lastAlert === "number" && now - lastAlert < Math.max(0, alertConfig.cooldownMs);
   if (inCooldown) {
     return;
   }
-  if (params.delivery !== "record-only") {
+  params.job.state.lastFailureAlertAtMs = now;
+  if (params.delivery === "record-only") {
+    return;
+  }
+
+  const job = structuredClone(params.job);
+  const notify = () =>
     emitFailureAlert(state, {
-      job: params.job,
+      job,
       error: params.error,
       errorReason: params.errorReason,
       runAtMs: params.runAtMs,
       consecutiveErrors: params.consecutiveCount,
-      channel: params.alertConfig.channel,
-      to: params.alertConfig.to,
-      mode: params.alertConfig.mode,
-      accountId: params.alertConfig.accountId,
-      threadId: params.alertConfig.threadId,
+      channel: alertConfig.channel,
+      to: alertConfig.to,
+      mode: alertConfig.mode,
+      accountId: alertConfig.accountId,
+      threadId: alertConfig.threadId,
       status: params.status,
     });
+  if (params.deferredNotifications) {
+    params.deferredNotifications.push(notify);
+  } else {
+    notify();
   }
-  params.job.state.lastFailureAlertAtMs = now;
 }

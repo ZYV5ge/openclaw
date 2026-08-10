@@ -6,11 +6,12 @@ import {
   missingScopeErrorShape,
   validateNodeInvokeParams,
 } from "../../../packages/gateway-protocol/src/index.js";
+import { captureNodePairingGeneration } from "../../infra/device-pairing-node-state.js";
+import { pruneMapToMaxSize } from "../../infra/map-size.js";
 import {
   isAdminOnlyNodeInvokeCommand,
   isBrowserProxyNodeInvokeCommand,
 } from "../../infra/node-commands.js";
-import { captureNodePairingGeneration } from "../../infra/node-pairing-state.js";
 import { isForbiddenBrowserProxyMutation } from "../node-browser-proxy-policy.js";
 import { isNodeCommandAllowed, resolveNodeCommandAllowlist } from "../node-command-policy.js";
 import { applyPluginNodeInvokePolicy } from "../node-invoke-plugin-policy.js";
@@ -77,13 +78,7 @@ function emitTalkPttNodeEvent(params: {
   const sessionId = `node:${params.nodeId}:talk:${captureId}`;
   const seq = (talkPttEventSeqBySessionId.get(sessionId) ?? 0) + 1;
   talkPttEventSeqBySessionId.set(sessionId, seq);
-  while (talkPttEventSeqBySessionId.size > 2048) {
-    const oldest = talkPttEventSeqBySessionId.keys().next().value;
-    if (oldest === undefined) {
-      break;
-    }
-    talkPttEventSeqBySessionId.delete(oldest);
-  }
+  pruneMapToMaxSize(talkPttEventSeqBySessionId, 2048);
 
   const type =
     params.command === "talk.ptt.start"

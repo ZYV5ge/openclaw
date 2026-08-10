@@ -8,13 +8,14 @@ import {
 } from "../../../packages/gateway-protocol/src/index.js";
 import { managedWorktrees } from "../../agents/worktrees/service.js";
 import { formatErrorMessage } from "../../infra/errors.js";
-import { resolveRequestedSessionAgentId as resolveRequestedGlobalAgentId } from "../session-create-service.js";
+import { resolveRequestedSessionAgentId as resolveRequestedGlobalAgentId } from "../session-request-agent.js";
 import { SessionMutationAuthorizationChangedError } from "../session-sharing.js";
 import { projectWorkerSessionPlacement } from "../worker-environments/placement-projector.js";
 import {
   isWorkerPlacementSessionRuntimeSupported,
   resolveWorkerPlacementSessionRuntime,
 } from "../worker-environments/placement-session-runtime.js";
+import { isFailedWorkerPlacementEnvironmentGone } from "../worker-environments/session-placement-lifecycle.js";
 import {
   isWorkerDispatchInputError,
   loadAccessorSessionEntryForGatewayTarget,
@@ -164,9 +165,23 @@ export const sessionDispatchHandlers: GatewayRequestHandlers = {
     }
     const existingPlacement = placementReader.getMany([sessionId]).get(sessionId);
     if (
+      existingPlacement?.state === "failed" &&
+      !isFailedWorkerPlacementEnvironmentGone({
+        environmentService: context.workerEnvironmentService,
+        placement: existingPlacement,
+      })
+    ) {
+      respondInvalidWorkerSession(
+        respond,
+        "cloud worker environment must be stopped before redispatch; use Stop cloud worker",
+      );
+      return;
+    }
+    if (
       existingPlacement &&
       existingPlacement.state !== "local" &&
-      existingPlacement.state !== "reclaimed"
+      existingPlacement.state !== "reclaimed" &&
+      existingPlacement.state !== "failed"
     ) {
       respondInvalidWorkerSession(
         respond,

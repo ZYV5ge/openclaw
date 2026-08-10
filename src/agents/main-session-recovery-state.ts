@@ -292,6 +292,7 @@ export function transitionMainSessionRecovery(
         entry.mainRestartRecovery = createCycle(command.cycleId);
       }
       entry.status = "running";
+      entry.lifecycleRunId = undefined;
       entry.abortedLastRun = true;
       if (command.resetRuntime) {
         entry.startedAt = undefined;
@@ -373,8 +374,17 @@ export function transitionMainSessionRecovery(
       if (command.attempt !== state.chargedAttempts + 1) {
         return { kind: "rejected", reason: "stale_revision" };
       }
+      const executionIdentityAdmission =
+        command.executionIdentity.state === "disabled"
+          ? undefined
+          : state.executionIdentity
+            ? ({ kind: "retry-reference", token: state.executionIdentity } as const)
+            : ({ kind: "capture", token: command.executionIdentity.token } as const);
       updateRecoveryState(entry, state, {
         chargedAttempts: command.attempt,
+        ...(executionIdentityAdmission?.kind === "capture"
+          ? { executionIdentity: executionIdentityAdmission.token }
+          : {}),
         reservation: {
           runId: command.runId,
           attempt: command.attempt,
@@ -390,6 +400,7 @@ export function transitionMainSessionRecovery(
           lifecycleGeneration: command.lifecycleGeneration,
           runId: command.runId,
           attempt: command.attempt,
+          ...(executionIdentityAdmission ? { executionIdentityAdmission } : {}),
         },
       };
     }
@@ -413,6 +424,10 @@ export function transitionMainSessionRecovery(
             ? Math.max(0, command.reservation.attempt - 1)
             : state.chargedAttempts,
         reservation: undefined,
+        ...(command.kind === "cancel_reservation" &&
+        command.reservation.executionIdentityAdmission?.kind === "capture"
+          ? { executionIdentity: undefined }
+          : {}),
       });
       return { kind: "applied" };
     }
@@ -431,6 +446,7 @@ export function transitionMainSessionRecovery(
         foregroundClaims: undefined,
       });
       entry.abortedLastRun = false;
+      entry.lifecycleRunId = command.runId;
       recordLifecycleFence(entry, {
         runId: command.runId,
         lifecycleGeneration: command.lifecycleGeneration,
@@ -461,6 +477,7 @@ export function transitionMainSessionRecovery(
         return { kind: "rejected", reason: "stale_reservation" };
       }
       entry.status = "running";
+      entry.lifecycleRunId = undefined;
       entry.abortedLastRun = true;
       entry.startedAt = undefined;
       entry.endedAt = undefined;
@@ -611,6 +628,7 @@ export function transitionMainSessionRecovery(
       });
       entry.abortedLastRun = false;
       entry.status = "failed";
+      entry.lifecycleRunId = undefined;
       entry.endedAt = command.now;
       entry.runtimeMs = Math.max(0, command.now - (entry.startedAt ?? command.now));
       entry.updatedAt = command.now;
@@ -623,6 +641,7 @@ export function transitionMainSessionRecovery(
       }
       const noticeEntry = structuredClone(entry);
       entry.status = "failed";
+      entry.lifecycleRunId = undefined;
       entry.abortedLastRun = true;
       entry.endedAt = command.now;
       entry.updatedAt = command.now;

@@ -105,8 +105,13 @@ describe("plugin npm extended-stable workflow", () => {
     }
   });
 
-  it("overlays the complete trusted packaging helper dependency pair", () => {
+  it("overlays the complete trusted packaging helper dependency set", () => {
     const parsed = workflow();
+    const lockGenerator = readFileSync("scripts/generate-npm-package-lock.mts", "utf8");
+    expect(lockGenerator).toContain(
+      'path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..")',
+    );
+    expect(lockGenerator).not.toContain("./lib/repo-root.mjs");
     const preflightCheckout = step(
       parsed.jobs?.preview_plugin_pack,
       "Checkout trusted packaging helper",
@@ -115,12 +120,26 @@ describe("plugin npm extended-stable workflow", () => {
       "scripts/generate-npm-package-lock.mjs",
     );
     expect(preflightCheckout.with?.["sparse-checkout"]).toContain(
+      "scripts/generate-npm-package-lock.mts",
+    );
+    expect(preflightCheckout.with?.["sparse-checkout"]).toContain(
+      "scripts/lib/npm-json-output.mts",
+    );
+    expect(preflightCheckout.with?.["sparse-checkout"]).toContain(
       "scripts/lib/plugin-npm-package-manifest.mjs",
     );
+    expect(preflightCheckout.with?.["sparse-checkout"]).toContain(
+      "scripts/lib/plugin-npm-package-manifest.mts",
+    );
+    expect(preflightCheckout.with?.["sparse-checkout"]).toContain("scripts/lib/tsx-cli-shim.mjs");
 
     const expectedCopies = [
       "scripts/generate-npm-package-lock.mjs",
+      "scripts/generate-npm-package-lock.mts",
+      "scripts/lib/npm-json-output.mts",
       "scripts/lib/plugin-npm-package-manifest.mjs",
+      "scripts/lib/plugin-npm-package-manifest.mts",
+      "scripts/lib/tsx-cli-shim.mjs",
     ];
     for (const helperPath of expectedCopies) {
       expect(
@@ -202,9 +221,12 @@ describe("plugin npm extended-stable workflow", () => {
     );
     expect(prepare.if).toBeUndefined();
     expect(prepare.run).toContain('bash scripts/plugin-npm-publish.sh --pack "${PACKAGE_DIR}"');
-    expect(prepare.run).toContain('raw.lastIndexOf("[")');
+    expect(prepare.run).toContain(
+      'import { resolveNpmJsonEntries } from "./scripts/lib/npm-json-output.mts";',
+    );
+    expect(prepare.run).toContain('raw[index] !== "[" && raw[index] !== "{"');
+    expect(prepare.run).toContain("const entries = resolveNpmJsonEntries(candidate)");
     expect(prepare.run).toContain("npm can print bundled-dependency summaries");
-    expect(prepare.run).toContain("if (index === 0)");
     expect(prepare.run).toContain(
       "fs.writeFileSync(process.argv[3], `${JSON.stringify(pack, null, 2)}\\n`)",
     );

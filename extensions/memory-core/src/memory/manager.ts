@@ -2,7 +2,11 @@
 import type { DatabaseSync } from "node:sqlite";
 import type { FSWatcher } from "chokidar";
 import { resolveAgentConfig } from "openclaw/plugin-sdk/agent-runtime";
-import { formatErrorMessage, readErrorName } from "openclaw/plugin-sdk/error-runtime";
+import {
+  formatErrorMessage,
+  readErrorName,
+  toErrorObject,
+} from "openclaw/plugin-sdk/error-runtime";
 import { listRegisteredMemoryEmbeddingProviderAdapters } from "openclaw/plugin-sdk/memory-core-host-embedding-registry";
 import { classifyMemoryMultimodalPath } from "openclaw/plugin-sdk/memory-core-host-engine-embeddings";
 import {
@@ -14,7 +18,7 @@ import {
   type OpenClawConfig,
   type ResolvedMemorySearchConfig,
 } from "openclaw/plugin-sdk/memory-core-host-engine-foundation";
-import { extractKeywords } from "openclaw/plugin-sdk/memory-core-host-engine-qmd";
+import { extractKeywords } from "openclaw/plugin-sdk/memory-core-host-engine-sessions";
 import {
   readCuratedProjectMemoryCandidates,
   readMemoryFile,
@@ -83,11 +87,8 @@ import {
   resolveInitialMemoryDirty,
   resolveStatusProviderInfo,
 } from "./manager-status-state.js";
-import {
-  enqueueMemoryTargetedSessionSync,
-  runMemorySyncWithReadonlyRecovery,
-  type MemoryReadonlyRecoveryState,
-} from "./manager-sync-control.js";
+import { enqueueMemoryTargetedSessionSync } from "./manager-sync-control.js";
+import { resolvePersistedMemoryVectorIndexState } from "./manager-vector-rebuild-state.js";
 import { applyProjectRanking } from "./project-ranking.js";
 import { applyTemporalDecayToHybridResults } from "./temporal-decay.js";
 
@@ -490,10 +491,6 @@ export class MemoryIndexManager extends MemoryManagerEmbeddingOps implements Mem
   private queuedForce = false;
   private queuedProgressCallbacks = new Set<NonNullable<MemorySyncParams["progress"]>>();
   private queuedSessionSync: Promise<void> | null = null;
-  private readonlyRecoveryAttempts = 0;
-  private readonlyRecoverySuccesses = 0;
-  private readonlyRecoveryFailures = 0;
-  private readonlyRecoveryLastError?: string;
   private indexIdentityState: MemoryIndexIdentityState = {
     status: "missing",
     reason: "index metadata is missing",
@@ -972,7 +969,7 @@ export class MemoryIndexManager extends MemoryManagerEmbeddingOps implements Mem
           }
         }
         if (closeFailed) {
-          throw toLintErrorObject(firstError, "Embedding provider retirement failed");
+          throw toErrorObject(firstError, "Embedding provider retirement failed");
         }
       });
     this.providerRetirementPromise = retirement;
@@ -1650,7 +1647,11 @@ export class MemoryIndexManager extends MemoryManagerEmbeddingOps implements Mem
   private async searchKeyword(
     query: string,
     limit: number,
-    options?: { boostFallbackRanking?: boolean; exactPathQuery?: string },
+    options?: {
+      boostFallbackRanking?: boolean;
+      exactPathQuery?: string;
+      rankingQuery?: string;
+    },
     sourceFilterList?: MemorySource[],
   ): Promise<KeywordSearchHit[]> {
     if (!this.fts.enabled || !this.fts.available) {
@@ -1667,6 +1668,7 @@ export class MemoryIndexManager extends MemoryManagerEmbeddingOps implements Mem
       buildFtsQuery: (raw) => this.buildFtsQuery(raw),
       bm25RankToScore,
       boostFallbackRanking: options?.boostFallbackRanking,
+      rankingQuery: options?.rankingQuery,
     }).catch((err: unknown) => {
       log.warn(`memory search: body keyword query failed: ${formatErrorMessage(err)}`);
       return [];
@@ -1716,16 +1718,23 @@ export class MemoryIndexManager extends MemoryManagerEmbeddingOps implements Mem
       options,
       sourceFilterList,
     ).catch(() => []);
-    if (fullQueryResults.length > 0) {
+    const nonExactResults = fullQueryResults.filter((result) => result.exactPathSpecificity === 0);
+    if (nonExactResults.length >= limit) {
       return fullQueryResults;
     }
 
-    // Broaden recall for conversational queries when the exact AND query is too
-    // strict, but cap the number of extra FTS probes so long prompts cannot fan
-    // out into unbounded sqlite work.
+    // Supplement thin candidate pools for conversational queries, but cap the
+    // extra FTS probes so long prompts cannot fan out into unbounded sqlite work.
     const fallbackTerms = this.resolveKeywordFallbackTerms(query);
     if (fallbackTerms.length === 0) {
-      return [];
+      return fullQueryResults;
+    }
+    const strictFtsQuery = this.buildFtsQuery(query)?.toLowerCase();
+    const keywordFtsQuery = this.buildFtsQuery(fallbackTerms.join(" "))?.toLowerCase();
+    if (fullQueryResults.length > 0 && strictFtsQuery === keywordFtsQuery) {
+      // Expansion did not normalize this already-matching keyword query; OR
+      // probes can only weaken its strict relevance before importance ranking.
+      return fullQueryResults;
     }
 
     const resultSets = await Promise.all(
@@ -1733,18 +1742,22 @@ export class MemoryIndexManager extends MemoryManagerEmbeddingOps implements Mem
         this.searchKeyword(
           term,
           limit,
-          { ...options, exactPathQuery: query },
+          { ...options, exactPathQuery: query, rankingQuery: query },
           sourceFilterList,
         ).catch(() => []),
       ),
     );
-    return this.limitKeywordSearchHits(this.mergeKeywordSearchHits(resultSets, query), limit);
+    return this.limitKeywordSearchHits(
+      this.mergeKeywordSearchHits([fullQueryResults, ...resultSets], query),
+      limit,
+    );
   }
 
   private resolveKeywordFallbackTerms(query: string): string[] {
+    const normalizedQuery = query.trim().toLowerCase();
     const keywords = extractKeywords(query, {
       ftsTokenizer: this.settings.store.fts.tokenizer,
-    }).filter((term) => term !== query);
+    }).filter((term) => term !== normalizedQuery);
     return keywords.slice(0, KEYWORD_FALLBACK_SEARCH_TERM_LIMIT);
   }
 
@@ -1976,7 +1989,7 @@ export class MemoryIndexManager extends MemoryManagerEmbeddingOps implements Mem
       const runGeneration = async (keywordOnly: boolean) => {
         this.beginSyncProviderGeneration({ forceFtsOnly: keywordOnly });
         try {
-          await this.runSyncWithReadonlyRecovery(params);
+          await this.runSync(params);
         } finally {
           this.endSyncProviderGeneration();
         }
@@ -2037,73 +2050,6 @@ export class MemoryIndexManager extends MemoryManagerEmbeddingOps implements Mem
       },
       targets,
     );
-  }
-
-  private async runSyncWithReadonlyRecovery(params?: MemorySyncParams): Promise<void> {
-    const getClosed = () => this.closed;
-    const getDb = () => this.db;
-    const setDb = (value: DatabaseSync) => {
-      this.db = value;
-    };
-    const getReadonlyRecoveryAttempts = () => this.readonlyRecoveryAttempts;
-    const setReadonlyRecoveryAttempts = (value: number) => {
-      this.readonlyRecoveryAttempts = value;
-    };
-    const getReadonlyRecoverySuccesses = () => this.readonlyRecoverySuccesses;
-    const setReadonlyRecoverySuccesses = (value: number) => {
-      this.readonlyRecoverySuccesses = value;
-    };
-    const getReadonlyRecoveryFailures = () => this.readonlyRecoveryFailures;
-    const setReadonlyRecoveryFailures = (value: number) => {
-      this.readonlyRecoveryFailures = value;
-    };
-    const getReadonlyRecoveryLastError = () => this.readonlyRecoveryLastError;
-    const setReadonlyRecoveryLastError = (value: string | undefined) => {
-      this.readonlyRecoveryLastError = value;
-    };
-    const state: MemoryReadonlyRecoveryState = {
-      get closed() {
-        return getClosed();
-      },
-      get db() {
-        return getDb();
-      },
-      set db(value) {
-        setDb(value);
-      },
-      vector: this.vector,
-      get readonlyRecoveryAttempts() {
-        return getReadonlyRecoveryAttempts();
-      },
-      set readonlyRecoveryAttempts(value) {
-        setReadonlyRecoveryAttempts(value);
-      },
-      get readonlyRecoverySuccesses() {
-        return getReadonlyRecoverySuccesses();
-      },
-      set readonlyRecoverySuccesses(value) {
-        setReadonlyRecoverySuccesses(value);
-      },
-      get readonlyRecoveryFailures() {
-        return getReadonlyRecoveryFailures();
-      },
-      set readonlyRecoveryFailures(value) {
-        setReadonlyRecoveryFailures(value);
-      },
-      get readonlyRecoveryLastError() {
-        return getReadonlyRecoveryLastError();
-      },
-      set readonlyRecoveryLastError(value) {
-        setReadonlyRecoveryLastError(value);
-      },
-      runSync: (nextParams) => this.runSync(nextParams),
-      openDatabase: () => this.openDatabase(),
-      closeDatabase: (db) => closeMemoryDatabase(db),
-      resetVectorState: () => this.resetVectorState(),
-      ensureSchema: () => this.ensureSchema(),
-      readMeta: () => this.readMeta() ?? undefined,
-    };
-    await runMemorySyncWithReadonlyRecovery(state, params);
   }
 
   async readFile(params: {
@@ -2190,6 +2136,12 @@ export class MemoryIndexManager extends MemoryManagerEmbeddingOps implements Mem
         : undefined,
       vector: {
         enabled: this.vector.enabled,
+        index: resolvePersistedMemoryVectorIndexState({
+          db: this.db,
+          vectorTable: VECTOR_TABLE,
+          metaVectorDims: this.vector.dims,
+          hasSemanticChunks: this.hasSemanticChunks(),
+        }),
         storeAvailable: this.vector.available ?? undefined,
         semanticAvailable: this.vector.semanticAvailable,
         available: this.vector.semanticAvailable,
@@ -2214,12 +2166,6 @@ export class MemoryIndexManager extends MemoryManagerEmbeddingOps implements Mem
         providerState: this.providerLifecycle,
         providerUnavailableReason: this.providerUnavailableReason,
         indexIdentity: this.indexIdentityState,
-        readonlyRecovery: {
-          attempts: this.readonlyRecoveryAttempts,
-          successes: this.readonlyRecoverySuccesses,
-          failures: this.readonlyRecoveryFailures,
-          lastError: this.readonlyRecoveryLastError,
-        },
       },
     };
   }
@@ -2331,7 +2277,7 @@ export class MemoryIndexManager extends MemoryManagerEmbeddingOps implements Mem
   private async retryFailedClose(): Promise<void> {
     const retirementErrors = await this.drainPendingProviderRetirements();
     if (this.providersPendingRetirement.size > 0) {
-      throw toLintErrorObject(retirementErrors.at(-1), "Embedding provider retirement failed");
+      throw toErrorObject(retirementErrors.at(-1), "Embedding provider retirement failed");
     }
     if (INDEX_CACHE.get(this.cacheKey) === this) {
       INDEX_CACHE.delete(this.cacheKey);
@@ -2446,7 +2392,7 @@ export class MemoryIndexManager extends MemoryManagerEmbeddingOps implements Mem
       (this.providersPendingRetirement.size > 0 ? retirementErrors.at(-1) : undefined) ??
       closeErrors.values().next().value;
     if (closeError) {
-      throw toLintErrorObject(closeError, "Non-Error thrown");
+      throw toErrorObject(closeError, "Non-Error thrown");
     }
     if (INDEX_CACHE.get(this.cacheKey) === this) {
       INDEX_CACHE.delete(this.cacheKey);
@@ -2461,17 +2407,4 @@ function hasTargetedSessionSyncParams(params: MemorySyncParams | undefined): boo
   );
 }
 
-function toLintErrorObject(value: unknown, fallbackMessage: string): Error {
-  if (value instanceof Error) {
-    return value;
-  }
-  if (typeof value === "string") {
-    return new Error(value);
-  }
-  const error = new Error(fallbackMessage, { cause: value });
-  if ((typeof value === "object" && value !== null) || typeof value === "function") {
-    Object.assign(error, value);
-  }
-  return error;
-}
 /* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */

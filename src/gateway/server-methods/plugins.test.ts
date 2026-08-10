@@ -104,10 +104,15 @@ describe("plugin management Gateway handlers", () => {
   });
 
   it("signals the config reloader after persisted plugin metadata changes", async () => {
+    pluginMetadataChanged.mockResolvedValueOnce({ committed: true, generation: 7 });
     const result = await callHandler("plugins.refresh", {});
 
     expect(pluginMetadataChanged).toHaveBeenCalledOnce();
-    expect(result).toEqual({ ok: true, response: { ok: true }, error: undefined });
+    expect(result).toEqual({
+      ok: true,
+      response: { ok: true, committed: true, generation: 7 },
+      error: undefined,
+    });
   });
 
   it("returns cold Workboard inventory without claiming runtime loaded state", async () => {

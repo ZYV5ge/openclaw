@@ -20,6 +20,17 @@ import {
 } from "./main-session-recovery-store.js";
 
 const sessionKey = "agent:main:main";
+const executionIdentity = (runId: string) => ({
+  tokenVersion: 1 as const,
+  contextId: `context-${runId}`,
+  executionId: `execution-${runId}`,
+  runId,
+  createdAt: 1,
+});
+const enabledExecutionIdentity = (runId: string) => ({
+  state: "enabled" as const,
+  token: executionIdentity(runId),
+});
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 
 describe("main session recovery store", () => {
@@ -74,19 +85,23 @@ describe("main session recovery store", () => {
     };
   }
 
-  function terminalRecoveryEntry(overrides: Partial<SessionEntry> = {}): SessionEntry {
-    return interruptedEntry({
-      abortedLastRun: false,
-      restartRecoveryRuns: [
-        { runId: "recovery-1", lifecycleGeneration: "generation-1" },
-        { runId: "recovery-2", lifecycleGeneration: "generation-2" },
-      ],
-      restartRecoveryTerminalRunIds: ["recovery-1", "recovery-2"],
-      mainRestartRecovery: {
-        cycleId: "cycle-1",
-        revision: 5,
-        chargedAttempts: 2,
-      },
+  type ClaimParams = Parameters<typeof claimMainSessionRecoveryOwner>[0];
+  type CommitParams = Parameters<typeof commitMainSessionRecovery>[0];
+
+  function commitRecovery(
+    command: CommitParams["command"],
+    options: Omit<CommitParams, "command" | "target"> = {},
+  ) {
+    return commitMainSessionRecovery({ command, target: { sessionKey, storePath }, ...options });
+  }
+
+  function claimRecovery(
+    overrides: Omit<ClaimParams, "lifecycleGeneration" | "sessionId" | "target"> = {},
+  ) {
+    return claimMainSessionRecoveryOwner({
+      lifecycleGeneration,
+      sessionId: "session-1",
+      target: { sessionKey, storePath },
       ...overrides,
     });
   }
@@ -100,6 +115,7 @@ describe("main session recovery store", () => {
         now: 200,
         observation: { sessionId: "session-1", cycleId: "cycle-1", revision: 1 },
         runId: "recovery-1",
+        executionIdentity: enabledExecutionIdentity("recovery-1"),
       },
       target: { sessionKey: targetSessionKey, storePath },
     });
@@ -117,16 +133,15 @@ describe("main session recovery store", () => {
       abortedLastRun: true,
     });
 
-    const result = await commitMainSessionRecovery({
-      command: {
+    const result = await commitRecovery(
+      {
         kind: "observe",
         cycleId: "cycle-1",
         lifecycleGeneration,
         sessionKey,
       },
-      requireWriteSuccess: true,
-      target: { sessionKey, storePath },
-    });
+      { requireWriteSuccess: true },
+    );
 
     expect(result.transition).toMatchObject({
       kind: "observed",
@@ -141,22 +156,16 @@ describe("main session recovery store", () => {
   it("preserves a concurrent foreground claim while cancelling its reservation", async () => {
     await write(interruptedEntry());
     const reservation = await reserve();
-    await commitMainSessionRecovery({
-      command: {
-        kind: "claim_foreground",
-        cycleId: "unused",
-        lifecycleGeneration,
-        sessionId: "session-1",
-        sessionKey,
-        claimId: "foreground-1",
-      },
-      target: { sessionKey, storePath },
+    await commitRecovery({
+      kind: "claim_foreground",
+      cycleId: "unused",
+      lifecycleGeneration,
+      sessionId: "session-1",
+      sessionKey,
+      claimId: "foreground-1",
     });
 
-    await commitMainSessionRecovery({
-      command: { kind: "cancel_reservation", reservation },
-      target: { sessionKey, storePath },
-    });
+    await commitRecovery({ kind: "cancel_reservation", reservation });
 
     expect(read().mainRestartRecovery).toMatchObject({
       chargedAttempts: 0,
@@ -180,15 +189,12 @@ describe("main session recovery store", () => {
       }),
     );
 
-    const admitted = await commitMainSessionRecovery({
-      command: {
-        kind: "admit_recovery",
-        lifecycleGeneration,
-        now: 300,
-        runId: "recovery-1",
-        sessionId: "session-1",
-      },
-      target: { sessionKey, storePath },
+    const admitted = await commitRecovery({
+      kind: "admit_recovery",
+      lifecycleGeneration,
+      now: 300,
+      runId: "recovery-1",
+      sessionId: "session-1",
     });
 
     expect(admitted.transition).toEqual({ kind: "admitted_recovery" });
@@ -209,16 +215,14 @@ describe("main session recovery store", () => {
       },
     });
 
-    const result = await commitMainSessionRecovery({
-      command: {
-        kind: "prepare_attempt",
-        attempt: 1,
-        lifecycleGeneration,
-        now: 400,
-        observation: { sessionId: "session-1", cycleId: "cycle-1", revision: 1 },
-        runId: "stale-recovery",
-      },
-      target: { sessionKey, storePath },
+    const result = await commitRecovery({
+      kind: "prepare_attempt",
+      attempt: 1,
+      lifecycleGeneration,
+      now: 400,
+      observation: { sessionId: "session-1", cycleId: "cycle-1", revision: 1 },
+      runId: "stale-recovery",
+      executionIdentity: enabledExecutionIdentity("stale-recovery"),
     });
 
     expect(result.transition).toEqual({ kind: "rejected", reason: "session_replaced" });
@@ -241,10 +245,7 @@ describe("main session recovery store", () => {
       },
     });
 
-    const cancelled = await commitMainSessionRecovery({
-      command: { kind: "cancel_reservation", reservation },
-      target: { sessionKey, storePath },
-    });
+    const cancelled = await commitRecovery({ kind: "cancel_reservation", reservation });
 
     expect(cancelled.transition).toEqual({ kind: "rejected", reason: "stale_reservation" });
     expect(read()).toMatchObject({
@@ -260,19 +261,10 @@ describe("main session recovery store", () => {
   it("does not let an old reservation survive healthy clear and immediate re-wedge", async () => {
     await write(interruptedEntry());
     const reservation = await reserve();
-    await commitMainSessionRecovery({
-      command: { kind: "clear" },
-      target: { sessionKey, storePath },
-    });
-    await commitMainSessionRecovery({
-      command: { kind: "mark_interrupted", cycleId: "cycle-2", now: 300 },
-      target: { sessionKey, storePath },
-    });
+    await commitRecovery({ kind: "clear" });
+    await commitRecovery({ kind: "mark_interrupted", cycleId: "cycle-2", now: 300 });
 
-    const cancelled = await commitMainSessionRecovery({
-      command: { kind: "cancel_reservation", reservation },
-      target: { sessionKey, storePath },
-    });
+    const cancelled = await commitRecovery({ kind: "cancel_reservation", reservation });
 
     expect(cancelled.transition).toEqual({ kind: "rejected", reason: "stale_reservation" });
     expect(read().mainRestartRecovery).toMatchObject({
@@ -285,11 +277,7 @@ describe("main session recovery store", () => {
     await write(interruptedEntry());
     const accessorSpy = vi.spyOn(sessionAccessor, "applySessionEntryReplacements");
 
-    const claim = await claimMainSessionRecoveryOwner({
-      lifecycleGeneration,
-      sessionId: "session-1",
-      target: { sessionKey, storePath },
-    });
+    const claim = await claimRecovery();
 
     expect(claim.kind).toBe("claimed");
     expect(accessorSpy).toHaveBeenCalledOnce();
@@ -305,13 +293,7 @@ describe("main session recovery store", () => {
       }),
     );
 
-    await expect(
-      claimMainSessionRecoveryOwner({
-        lifecycleGeneration,
-        sessionId: "session-1",
-        target: { sessionKey, storePath },
-      }),
-    ).resolves.toEqual({ kind: "not_required" });
+    await expect(claimRecovery()).resolves.toEqual({ kind: "not_required" });
     expect(read()).toMatchObject({
       sessionId: "session-1",
       status: "running",
@@ -319,114 +301,6 @@ describe("main session recovery store", () => {
     });
     expect(read().restartRecoveryRuns).toBeUndefined();
     expect(read().mainRestartRecovery).toBeUndefined();
-  });
-
-  it("atomically retires terminal recovery ownership from a healthy row", async () => {
-    await write(terminalRecoveryEntry());
-
-    await expect(
-      claimMainSessionRecoveryOwner({
-        lifecycleGeneration,
-        sessionId: "session-1",
-        target: { sessionKey, storePath },
-      }),
-    ).resolves.toEqual({ kind: "not_required" });
-    expect(read()).toMatchObject({
-      sessionId: "session-1",
-      status: "running",
-      abortedLastRun: false,
-      restartRecoveryTerminalRunIds: ["recovery-1", "recovery-2"],
-    });
-    expect(read().restartRecoveryRuns).toBeUndefined();
-    expect(read().mainRestartRecovery).toBeUndefined();
-  });
-
-  it.each([
-    {
-      name: "a nonterminal fence",
-      overrides: { restartRecoveryTerminalRunIds: ["recovery-1"] },
-    },
-    {
-      name: "a reservation",
-      overrides: {
-        mainRestartRecovery: {
-          cycleId: "cycle-1",
-          revision: 5,
-          chargedAttempts: 2,
-          reservation: {
-            runId: "recovery-3",
-            attempt: 3,
-            lifecycleGeneration: "generation-3",
-          },
-        },
-      },
-    },
-    {
-      name: "a foreground owner",
-      overrides: {
-        mainRestartRecovery: {
-          cycleId: "cycle-1",
-          revision: 5,
-          chargedAttempts: 2,
-          foregroundClaims: {
-            lifecycleGeneration: "generation-3",
-            tokens: ["foreground-owner"],
-          },
-        },
-      },
-    },
-    {
-      name: "a tombstone",
-      overrides: {
-        mainRestartRecovery: {
-          cycleId: "cycle-1",
-          revision: 5,
-          chargedAttempts: 2,
-          tombstone: { reason: "automatic recovery exhausted" },
-        },
-      },
-    },
-    {
-      name: "a delivery owner",
-      overrides: { restartRecoveryDeliveryRunId: "recovery-2" },
-    },
-  ] satisfies Array<{ name: string; overrides: Partial<SessionEntry> }>)(
-    "keeps terminal recovery ownership fenced while it has $name",
-    async ({ overrides }) => {
-      const entry = terminalRecoveryEntry(overrides);
-      await write(entry);
-      const before = read();
-
-      await expect(
-        claimMainSessionRecoveryOwner({
-          lifecycleGeneration,
-          sessionId: "session-1",
-          target: { sessionKey, storePath },
-        }),
-      ).resolves.toEqual({ kind: "invalidated", reason: "state_changed" });
-      expect(read()).toEqual(before);
-    },
-  );
-
-  it("keeps a current-generation terminal-marked fence authoritative", async () => {
-    const entry = terminalRecoveryEntry({
-      restartRecoveryRuns: [
-        { runId: "recovery-1", lifecycleGeneration: "generation-1" },
-        { runId: "recovery-1", lifecycleGeneration },
-        { runId: "recovery-2", lifecycleGeneration: "generation-2" },
-      ],
-    });
-    await write(entry);
-    const before = read();
-
-    await expect(
-      claimMainSessionRecoveryOwner({
-        lifecycleGeneration,
-        sessionId: "session-1",
-        target: { sessionKey, storePath },
-      }),
-    ).resolves.toEqual({ kind: "invalidated", reason: "state_changed" });
-    expect(read()).toEqual(before);
   });
 
   it("atomically clears orphaned recovery residue from a terminal row", async () => {
@@ -438,13 +312,7 @@ describe("main session recovery store", () => {
       }),
     );
 
-    await expect(
-      claimMainSessionRecoveryOwner({
-        lifecycleGeneration,
-        sessionId: "session-1",
-        target: { sessionKey, storePath },
-      }),
-    ).resolves.toEqual({ kind: "not_required" });
+    await expect(claimRecovery()).resolves.toEqual({ kind: "not_required" });
     expect(read()).toMatchObject({
       sessionId: "session-1",
       status: "failed",
@@ -477,13 +345,7 @@ describe("main session recovery store", () => {
     });
     expect(read().mainRestartRecovery).toBeUndefined();
 
-    await expect(
-      claimMainSessionRecoveryOwner({
-        lifecycleGeneration,
-        sessionId: "session-1",
-        target: { sessionKey, storePath },
-      }),
-    ).resolves.toEqual({ kind: "not_required" });
+    await expect(claimRecovery()).resolves.toEqual({ kind: "not_required" });
     expect(read()).toMatchObject({ status: "done", abortedLastRun: false });
     expect(read().restartRecoveryRuns).toBeUndefined();
   });
@@ -491,12 +353,7 @@ describe("main session recovery store", () => {
   it("binds a foreground claim to its lifecycle run", async () => {
     await write(interruptedEntry());
 
-    const claim = await claimMainSessionRecoveryOwner({
-      lifecycleGeneration,
-      runId: "foreground-run",
-      sessionId: "session-1",
-      target: { sessionKey, storePath },
-    });
+    const claim = await claimRecovery({ runId: "foreground-run" });
 
     if (claim.kind !== "claimed") {
       throw new Error("expected foreground owner claim");
@@ -514,11 +371,7 @@ describe("main session recovery store", () => {
 
   it("releases an owner after the durable row session id rotates", async () => {
     await write(interruptedEntry());
-    const claim = await claimMainSessionRecoveryOwner({
-      lifecycleGeneration,
-      sessionId: "session-1",
-      target: { sessionKey, storePath },
-    });
+    const claim = await claimRecovery();
     if (claim.kind !== "claimed") {
       throw new Error("expected foreground owner claim");
     }
@@ -534,11 +387,7 @@ describe("main session recovery store", () => {
     vi.useFakeTimers();
     try {
       await write(interruptedEntry());
-      const claim = await claimMainSessionRecoveryOwner({
-        lifecycleGeneration,
-        sessionId: "session-1",
-        target: { sessionKey, storePath },
-      });
+      const claim = await claimRecovery();
       if (claim.kind !== "claimed") {
         throw new Error("expected foreground owner claim");
       }
@@ -554,7 +403,10 @@ describe("main session recovery store", () => {
         },
       );
 
-      const immediateRelease = releaseMainSessionRecoveryOwner(claim.lease);
+      const onDeferredSuccess = vi.fn();
+      const immediateRelease = releaseMainSessionRecoveryOwner(claim.lease, {
+        onDeferredSuccess,
+      });
       const immediateReleaseRejected = expect(immediateRelease).rejects.toThrow(
         "transient session-store failure",
       );
@@ -565,6 +417,11 @@ describe("main session recovery store", () => {
       await vi.advanceTimersByTimeAsync(1_000);
       await vi.waitFor(() => {
         expect(read().mainRestartRecovery?.foregroundClaims).toBeUndefined();
+      });
+      expect(onDeferredSuccess).toHaveBeenCalledWith({
+        sessionId: "session-1",
+        sessionKey,
+        storePath,
       });
     } finally {
       vi.useRealTimers();
@@ -599,14 +456,10 @@ describe("main session recovery store", () => {
       }),
     );
 
-    await expect(
-      claimMainSessionRecoveryOwner({
-        lifecycleGeneration,
-        replacementSessionId: "session-2",
-        sessionId: "session-1",
-        target: { sessionKey, storePath },
-      }),
-    ).resolves.toEqual({ kind: "invalidated", reason: "state_changed" });
+    await expect(claimRecovery({ replacementSessionId: "session-2" })).resolves.toEqual({
+      kind: "invalidated",
+      reason: "state_changed",
+    });
   });
 
   it("does not let foreground work bypass an exhausted predecessor", async () => {
@@ -620,23 +473,16 @@ describe("main session recovery store", () => {
       }),
     );
 
-    await expect(
-      claimMainSessionRecoveryOwner({
-        lifecycleGeneration,
-        sessionId: "session-1",
-        target: { sessionKey, storePath },
-      }),
-    ).resolves.toEqual({ kind: "invalidated", reason: "recovery_exhausted" });
+    await expect(claimRecovery()).resolves.toEqual({
+      kind: "invalidated",
+      reason: "recovery_exhausted",
+    });
     expect(read().mainRestartRecovery?.foregroundClaims).toBeUndefined();
   });
 
   it("validates a transferred owner against the latest durable row", async () => {
     await write(interruptedEntry());
-    const claim = await claimMainSessionRecoveryOwner({
-      lifecycleGeneration,
-      sessionId: "session-1",
-      target: { sessionKey, storePath },
-    });
+    const claim = await claimRecovery();
     if (claim.kind !== "claimed") {
       throw new Error("expected foreground owner claim");
     }
@@ -648,16 +494,8 @@ describe("main session recovery store", () => {
 
   it("returns a retry target only when the final foreground owner releases", async () => {
     await write(interruptedEntry());
-    const first = await claimMainSessionRecoveryOwner({
-      lifecycleGeneration,
-      sessionId: "session-1",
-      target: { sessionKey, storePath },
-    });
-    const second = await claimMainSessionRecoveryOwner({
-      lifecycleGeneration,
-      sessionId: "session-1",
-      target: { sessionKey, storePath },
-    });
+    const first = await claimRecovery();
+    const second = await claimRecovery();
     if (first.kind !== "claimed" || second.kind !== "claimed") {
       throw new Error("expected foreground owner claims");
     }
@@ -677,32 +515,19 @@ describe("main session recovery store", () => {
 
   it("does not let an old lease release a same-token claim from a new cycle", async () => {
     await write(interruptedEntry());
-    const oldClaim = await claimMainSessionRecoveryOwner({
-      lifecycleGeneration,
-      sessionId: "session-1",
-      target: { sessionKey, storePath },
-    });
+    const oldClaim = await claimRecovery();
     if (oldClaim.kind !== "claimed") {
       throw new Error("expected foreground owner claim");
     }
-    await commitMainSessionRecovery({
-      command: { kind: "clear" },
-      target: { sessionKey, storePath },
-    });
-    await commitMainSessionRecovery({
-      command: { kind: "mark_interrupted", cycleId: "cycle-2", now: 300 },
-      target: { sessionKey, storePath },
-    });
-    await commitMainSessionRecovery({
-      command: {
-        kind: "claim_foreground",
-        cycleId: "unused",
-        lifecycleGeneration,
-        sessionId: "session-1",
-        sessionKey,
-        claimId: oldClaim.lease.claimId,
-      },
-      target: { sessionKey, storePath },
+    await commitRecovery({ kind: "clear" });
+    await commitRecovery({ kind: "mark_interrupted", cycleId: "cycle-2", now: 300 });
+    await commitRecovery({
+      kind: "claim_foreground",
+      cycleId: "unused",
+      lifecycleGeneration,
+      sessionId: "session-1",
+      sessionKey,
+      claimId: oldClaim.lease.claimId,
     });
 
     await releaseMainSessionRecoveryOwner(oldClaim.lease);
@@ -718,11 +543,7 @@ describe("main session recovery store", () => {
 
   it("retries a transient owner release write failure", async () => {
     await write(interruptedEntry());
-    const claim = await claimMainSessionRecoveryOwner({
-      lifecycleGeneration,
-      sessionId: "session-1",
-      target: { sessionKey, storePath },
-    });
+    const claim = await claimRecovery();
     if (claim.kind !== "claimed") {
       throw new Error("expected foreground owner claim");
     }
@@ -759,23 +580,17 @@ describe("main session recovery store", () => {
     });
     await writerEntered;
 
-    const staleClaim = commitMainSessionRecovery({
-      command: {
-        kind: "claim_foreground",
-        cycleId: "unused",
-        lifecycleGeneration,
-        sessionId: "session-1",
-        sessionKey,
-        claimId: "stale-owner",
-      },
-      target: { sessionKey, storePath },
-    });
-    const staleOwnerClaim = claimMainSessionRecoveryOwner({
-      allowMissingSession: true,
+    const staleClaim = commitRecovery({
+      kind: "claim_foreground",
+      cycleId: "unused",
       lifecycleGeneration,
-      replacementSessionId: "session-2",
       sessionId: "session-1",
-      target: { sessionKey, storePath },
+      sessionKey,
+      claimId: "stale-owner",
+    });
+    const staleOwnerClaim = claimRecovery({
+      allowMissingSession: true,
+      replacementSessionId: "session-2",
     });
     const staleInspection = inspectMainSessionRecoveryRequired({
       expectedSessionId: "session-1",
@@ -784,16 +599,13 @@ describe("main session recovery store", () => {
     });
     await Promise.resolve();
     const currentGeneration = rotateAgentEventLifecycleGeneration();
-    const currentClaim = commitMainSessionRecovery({
-      command: {
-        kind: "claim_foreground",
-        cycleId: "unused",
-        lifecycleGeneration: currentGeneration,
-        sessionId: "session-1",
-        sessionKey,
-        claimId: "current-owner",
-      },
-      target: { sessionKey, storePath },
+    const currentClaim = commitRecovery({
+      kind: "claim_foreground",
+      cycleId: "unused",
+      lifecycleGeneration: currentGeneration,
+      sessionId: "session-1",
+      sessionKey,
+      claimId: "current-owner",
     });
     releaseWriter();
 
@@ -829,15 +641,12 @@ describe("main session recovery store", () => {
     );
     rotateAgentEventLifecycleGeneration();
 
-    const result = await commitMainSessionRecovery({
-      command: {
-        kind: "mark_admitted_recovery_interrupted",
-        lifecycleGeneration,
-        now: 300,
-        runId: "recovery-1",
-        sessionId: "session-1",
-      },
-      target: { sessionKey, storePath },
+    const result = await commitRecovery({
+      kind: "mark_admitted_recovery_interrupted",
+      lifecycleGeneration,
+      now: 300,
+      runId: "recovery-1",
+      sessionId: "session-1",
     });
 
     expect(result.transition).toEqual({ kind: "rejected", reason: "stale_generation" });
@@ -850,11 +659,7 @@ describe("main session recovery store", () => {
 
   it("rejects a transferred foreground lease after lifecycle rotation", async () => {
     await write(interruptedEntry());
-    const claim = await claimMainSessionRecoveryOwner({
-      lifecycleGeneration,
-      sessionId: "session-1",
-      target: { sessionKey, storePath },
-    });
+    const claim = await claimRecovery();
     if (claim.kind !== "claimed") {
       throw new Error("expected foreground owner claim");
     }

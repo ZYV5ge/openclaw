@@ -13,11 +13,13 @@ import type { ControlUiSessionPullRequest } from "../../../../src/gateway/contro
 import type { GatewayBrowserClient } from "../../api/gateway.ts";
 import type { GatewayEventFrame, GatewayEventListener } from "../../api/gateway.ts";
 import type { GatewaySessionRow } from "../../api/types.ts";
+import { createBrowserAnnotationHandoff } from "../../app/browser-annotation-handoff.ts";
 import type { ApplicationContext } from "../../app/context.ts";
 import { createInitialUserMessageHandoff } from "../../app/initial-user-message-handoff.ts";
 import type { CatalogSessionKey } from "../../lib/sessions/catalog-key.ts";
 import type { SessionCapability } from "../../lib/sessions/index.ts";
 import "./chat-pane.ts";
+import type { TaskSuggestionAcceptMode } from "../../lib/task-suggestion-acceptance.ts";
 import { attachChatRealtimeActions, createInitialChatRealtimeState } from "./chat-realtime.ts";
 import type { ChatPageHost } from "./chat-state-host.ts";
 import { createBackgroundTasksProps } from "./components/chat-background-tasks.ts";
@@ -36,8 +38,14 @@ export type TestChatPane = HTMLElement & {
   connectedCallback: () => void;
   connectionGeneration: number;
   createSession: () => Promise<boolean>;
+  restoreArchivedSession: (sessionKey: string) => Promise<void>;
   disconnectedCallback: () => void;
-  acceptTaskSuggestion: (suggestion: TaskSuggestion) => Promise<void>;
+  discardBrowserAnnotations?: () => void;
+  acceptTaskSuggestion: (
+    suggestion: TaskSuggestion,
+    mode: TaskSuggestionAcceptMode,
+    cloudProfileId?: string,
+  ) => Promise<void>;
   handleDocumentKeydown: (event: KeyboardEvent) => void;
   handleTaskSuggestionEvent: (event: TaskSuggestionEvent) => void;
   refreshTaskSuggestions: () => Promise<void>;
@@ -63,6 +71,7 @@ export type TestChatPane = HTMLElement & {
     resolution: "send" | "queue" | "edit" | "dismiss",
   ) => Promise<void>;
   onPaneSessionChange?: (paneId: string, sessionKey: string) => void;
+  paneId: string;
   sessionKey: string;
   switchPaneSession: (nextSessionKey: string) => void;
   deferSessionHydrationUntilTranscript: (
@@ -108,7 +117,7 @@ export type TestChatPane = HTMLElement & {
   renderPaneHeader: (
     workspace: ReturnType<typeof createSessionWorkspaceProps>,
     tasks: ReturnType<typeof createBackgroundTasksProps>,
-    row: undefined,
+    row: GatewaySessionRow | undefined,
     catalog: boolean,
     agentWorkspace: undefined,
     workspaceGit: boolean,
@@ -120,6 +129,8 @@ export function createSessionContext(
   sessions: SessionCapability,
 ): ApplicationContext {
   const eventListeners = new Set<GatewayEventListener>();
+  const agentSelectionListeners = new Set<(state: { selectedId: string | null }) => void>();
+  const agentSelectionState = { selectedId: "main" as string | null };
   const snapshotListeners = new Set<
     (snapshot: ApplicationContext["gateway"]["snapshot"]) => void
   >();
@@ -130,7 +141,7 @@ export function createSessionContext(
         phase: "connected" as const,
         hello: {
           features: {
-            methods: ["taskSuggestions.list", "session.suggestions.list"],
+            methods: ["taskSuggestions.list", "session.suggestions.list", "sessions.patch"],
           },
         },
       },
@@ -156,6 +167,19 @@ export function createSessionContext(
       },
     },
     agents: { state: { agentsList: null } },
+    agentSelection: {
+      state: agentSelectionState,
+      set: (agentId: string | null) => {
+        agentSelectionState.selectedId = agentId;
+        for (const listener of agentSelectionListeners) {
+          listener(agentSelectionState);
+        }
+      },
+      subscribe: (listener: (state: { selectedId: string | null }) => void) => {
+        agentSelectionListeners.add(listener);
+        return () => agentSelectionListeners.delete(listener);
+      },
+    },
     config: {
       current: {
         assistantIdentity: { name: "Molty" },
@@ -163,6 +187,8 @@ export function createSessionContext(
       },
     },
     initialUserMessage: createInitialUserMessageHandoff(),
+    browserAnnotationHandoff: createBrowserAnnotationHandoff(),
+    nativeChatDrafts: { subscribe: () => () => undefined },
     sessions,
   } as unknown as ApplicationContext;
 }
@@ -180,6 +206,8 @@ export function createTestChatPane(params: {
   const state = {
     agentsList: null,
     assistantAgentId: null,
+    chatAttachments: [],
+    chatComposerFallbackByScope: {},
     chatError: null,
     chatHistoryPagination: { hasMore: false },
     chatLoading: false,

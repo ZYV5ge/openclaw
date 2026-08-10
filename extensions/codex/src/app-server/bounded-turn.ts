@@ -42,16 +42,17 @@ import {
 } from "./shared-client.js";
 import { buildCodexRuntimeThreadConfig } from "./thread-lifecycle.js";
 import {
-  assertCodexRingZeroHasNoManagedHooks,
-  attestCodexRingZeroThreadHasNoMcpServers,
+  assertCodexRestrictedToolSurfaceHasNoManagedHooks,
+  attestCodexRestrictedToolSurfaceMcpServersDisabled,
   buildCodexRingZeroThreadConfigPatch,
   readCodexInheritedMcpServerNames,
 } from "./thread-requests.js";
 
-const CODEX_PRIVATE_STDIO_ARGS = ["app-server", "--listen", "stdio://"];
 const CODEX_APP_SERVER_ARGS_ENV_KEY = "OPENCLAW_CODEX_APP_SERVER_ARGS";
 const CODEX_BOUNDED_THREAD_CONFIG: JsonObject = {
+  "agents.enabled": false,
   "features.multi_agent": false,
+  "features.multi_agent_v2": false,
   "features.apps": false,
   "features.plugins": false,
   "features.image_generation": false,
@@ -229,8 +230,12 @@ async function runBoundedCodexAppServerTurnInWorkspace(
       ? await readCodexInheritedMcpServerNames(client, workspace.cwd, abortController.signal)
       : [];
     if (params.requireNoExternalCapabilities) {
-      await assertCodexRingZeroHasNoManagedHooks(client, abortController.signal);
+      await assertCodexRestrictedToolSurfaceHasNoManagedHooks(client, abortController.signal);
     }
+    const threadConfig = buildCodexRuntimeThreadConfig(
+      resolveBoundedThreadConfig(params, workspace, inheritedMcpServerNames),
+      { nativeCodeModeEnabled: false },
+    );
     const thread = assertCodexThreadStartResponse(
       await client.request<unknown>(
         "thread/start",
@@ -243,10 +248,7 @@ async function runBoundedCodexAppServerTurnInWorkspace(
           serviceName: "OpenClaw",
           ...(params.requireNoExternalCapabilities ? { baseInstructions: "" } : {}),
           developerInstructions: params.developerInstructions,
-          config: buildCodexRuntimeThreadConfig(
-            resolveBoundedThreadConfig(params, workspace, inheritedMcpServerNames),
-            { nativeCodeModeEnabled: false },
-          ),
+          config: threadConfig,
           environments: [],
           dynamicTools: [],
           experimentalRawEvents: true,
@@ -262,9 +264,10 @@ async function runBoundedCodexAppServerTurnInWorkspace(
     if (params.requireNoExternalCapabilities) {
       // Attest the started thread before injecting historical tool evidence.
       // Otherwise inherited MCP state could act on a finalization-only turn.
-      await attestCodexRingZeroThreadHasNoMcpServers(
+      await attestCodexRestrictedToolSurfaceMcpServersDisabled(
         client,
         thread.thread.id,
+        threadConfig,
         abortController.signal,
       );
     }
@@ -282,12 +285,12 @@ async function runBoundedCodexAppServerTurnInWorkspace(
     );
     try {
       const turn = assertCodexTurnStartResponse(
+        // Inherit the empty thread environment; a cwd override recreates native tools.
         await client.request<unknown>(
           "turn/start",
           {
             threadId: thread.thread.id,
             input: params.input,
-            cwd: workspace.cwd,
             approvalPolicy: "on-request",
             model,
             effort: "low",
@@ -375,6 +378,19 @@ function buildPrivateCodexAppServerStartOptions(
   start: ReturnType<typeof resolveCodexAppServerRuntimeOptions>["start"],
   codexHome: string,
 ): ReturnType<typeof resolveCodexAppServerRuntimeOptions>["start"] {
+  // Provider identity and model catalogs must survive isolation; hooks, MCP,
+  // sandbox policy, and other process overrides must not cross that boundary.
+  const providerArgs = start.args.flatMap((arg, index) => {
+    const override =
+      arg === "-c" || arg === "--config"
+        ? start.args[index + 1]
+        : arg.startsWith("--config=")
+          ? arg.slice("--config=".length)
+          : undefined;
+    return override && /^\s*(?:openai_base_url|model_catalog_json)\s*=/u.test(override)
+      ? ["-c", override]
+      : [];
+  });
   const privateEnv = Object.fromEntries(
     Object.entries(start.env ?? {}).filter(
       ([name]) => name.trim().toUpperCase() !== CODEX_APP_SERVER_ARGS_ENV_KEY,
@@ -386,7 +402,7 @@ function buildPrivateCodexAppServerStartOptions(
   });
   return {
     ...start,
-    args: [...CODEX_PRIVATE_STDIO_ARGS],
+    args: ["app-server", ...providerArgs, "--listen", "stdio://"],
     env: {
       ...privateEnv,
       CODEX_HOME: codexHome,

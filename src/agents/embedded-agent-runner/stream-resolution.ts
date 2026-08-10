@@ -4,6 +4,7 @@
 import type { LlmRuntime } from "@openclaw/ai";
 import { stripSystemPromptCacheBoundary } from "@openclaw/ai/internal/shared";
 import { createBoundaryAwareStreamFnForModel } from "@openclaw/ai/transports";
+import { hasNonEmptyString as hasResolvedRuntimeApiKey } from "@openclaw/normalization-core/string-coerce";
 import { getStreamLlmRuntime } from "../../llm/model-runtime-binding.js";
 import "../ai-transport-runtime-host.js";
 import { createAnthropicVertexStreamFnForModel } from "../anthropic-vertex-stream.js";
@@ -69,10 +70,6 @@ function isDefaultOpenClawStreamFnForModel(
   return streamFn === provider?.streamSimple || streamFn === provider?.stream;
 }
 
-function hasResolvedRuntimeApiKey(apiKey: string | undefined): boolean {
-  return typeof apiKey === "string" && apiKey.trim().length > 0;
-}
-
 function isOpenAICodexResponsesModel(model: EmbeddedRunAttemptParams["model"]): boolean {
   return model.provider === "openai" && model.api === "openai-chatgpt-responses";
 }
@@ -85,7 +82,12 @@ function resolveOpenClawNativeCodexResponsesStreamFn(params: {
   if (!isOpenAICodexResponsesModel(params.model)) {
     return undefined;
   }
-  if (!isDefaultOpenClawStreamFnForModel(params.model, params.currentStreamFn, params.llmRuntime)) {
+  // Lifecycle-owned session streams wrap auth/retry policy, so their runtime
+  // binding preserves native Codex transport even when function identity differs.
+  if (
+    !isDefaultOpenClawStreamFnForModel(params.model, params.currentStreamFn, params.llmRuntime) &&
+    getStreamLlmRuntime(params.currentStreamFn) !== params.llmRuntime
+  ) {
     return undefined;
   }
   return params.currentStreamFn ?? params.llmRuntime.streamSimple;

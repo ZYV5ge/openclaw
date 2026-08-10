@@ -60,6 +60,44 @@ describe("gateway session list plugin runtime normalization", () => {
     expect(normalizeProviderModelIdWithPluginMock).not.toHaveBeenCalled();
   });
 
+
+  it("does not amplify plugin normalization across configured models or session rows", async () => {
+    const configuredModels = Object.fromEntries(
+      Array.from({ length: 138 }, (_value, index) => [
+        `custom-provider/model-${index}`,
+        { alias: `Model ${index}` },
+      ]),
+    );
+    const cfg = {
+      agents: {
+        defaults: {
+          model: { primary: "custom-provider/model-0" },
+          models: configuredModels,
+        },
+      },
+    } as OpenClawConfig;
+    const store = Object.fromEntries(
+      Array.from({ length: 200 }, (_value, index) => [
+        `session-${index}`,
+        {
+          sessionId: `session-${index}`,
+          updatedAt: 10_000 - index,
+          modelProvider: "custom-provider",
+          model: `model-${index % 138}`,
+        } satisfies SessionEntry,
+      ]),
+    );
+
+    const listed = await sessionUtils.listSessionsFromStoreAsync({
+      cfg,
+      storePath: "",
+      store,
+      opts: { limit: 100 },
+    });
+
+    expect(listed.sessions).toHaveLength(100);
+    expect(normalizeProviderModelIdWithPluginMock).not.toHaveBeenCalled();
+  });
   it("keeps provider runtime normalization for detail rows", async () => {
     normalizeProviderModelIdWithPluginMock.mockImplementation(
       ({ provider, context }: { provider?: string; context?: { modelId?: string } }) => {

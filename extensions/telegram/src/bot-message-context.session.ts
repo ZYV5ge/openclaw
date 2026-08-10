@@ -33,7 +33,7 @@ import type {
   TelegramMessageContextSessionRuntimeOverrides,
   TelegramPromptContextEntry,
 } from "./bot-message-context.types.js";
-import { renderTelegramTextEntities } from "./bot/body-helpers.js";
+import { renderTelegramTextEntities } from "./bot/inbound-text-entities.js";
 import { resolveTelegramPromptMediaPath } from "./prompt-media-path.js";
 
 type TelegramMentionFacts = NonNullable<
@@ -54,7 +54,10 @@ import {
   type TelegramThreadSpec,
 } from "./bot/helpers.js";
 import type { TelegramContext } from "./bot/types.js";
-import { resolveTelegramGroupPromptSettings } from "./group-config-helpers.js";
+import {
+  resolveTelegramDirectToolPolicy,
+  resolveTelegramGroupPromptSettings,
+} from "./group-config-helpers.js";
 import {
   isTelegramHistoryEntryAfterAmbientWatermark,
   isTelegramChatWindowPromptContext,
@@ -230,6 +233,7 @@ export async function buildTelegramInboundContextPayload(params: {
   bodyText: string;
   historyKey?: string;
   historyLimit: number;
+  dmHistoryLimit: number;
   groupHistories: Map<string, HistoryEntry[]>;
   groupConfig?: TelegramGroupConfig | TelegramDirectConfig;
   topicConfig?: TelegramTopicConfig;
@@ -282,6 +286,7 @@ export async function buildTelegramInboundContextPayload(params: {
     bodyText,
     historyKey,
     historyLimit,
+    dmHistoryLimit,
     groupHistories,
     groupConfig,
     topicConfig,
@@ -628,7 +633,7 @@ export async function buildTelegramInboundContextPayload(params: {
     },
     sessionTranscript: {
       chatWindow: true,
-      historyLimit: isGroup ? historyLimit : 10,
+      historyLimit: isGroup ? historyLimit : dmHistoryLimit,
       beforeTimestampMs: options?.receivedAtMs ?? (msg.date ? msg.date * 1000 : undefined),
       minTimestampMs: options?.promptContextMinTimestampMs,
       senderLabels: { assistant: "OpenClaw", user: "User" },
@@ -637,6 +642,14 @@ export async function buildTelegramInboundContextPayload(params: {
       commands: {
         authorized: commandAuthorized,
       },
+      toolPolicy: isGroup
+        ? undefined
+        : resolveTelegramDirectToolPolicy({
+            directConfig: groupConfig,
+            senderId,
+            senderName,
+            senderUsername,
+          }),
       mentions: mentionFacts,
     },
     command:

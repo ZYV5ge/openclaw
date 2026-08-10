@@ -40,6 +40,7 @@ const { spawn, spawnSync } = require("node:child_process");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
+const { pathToFileURL } = require("node:url");
 
 const params = JSON.parse(fs.readFileSync(process.argv[2], "utf-8"));
 
@@ -117,15 +118,96 @@ function isPendingUpdatePayload(payload) {
   );
 }
 
+// Keep this self-contained helper aligned with resolveImmutableSqliteFileUri;
+// the detached script cannot import the TypeScript runtime after replacement.
+function resolveImmutableStateDatabaseUri(databasePath) {
+  if (process.platform === "win32") {
+    const namespacedPath = path.toNamespacedPath(path.resolve(databasePath));
+    return "file:" + encodeURIComponent(namespacedPath) + "?mode=ro&immutable=1";
+  }
+  return pathToFileURL(path.resolve(databasePath)).href + "?mode=ro&immutable=1";
+}
+
+function assertStateDatabaseWriteAllowed(database) {
+  if (
+    !params.stateDatabasePath ||
+    typeof params.stateDatabasePath !== "string" ||
+    (!database && !fs.existsSync(params.stateDatabasePath))
+  ) {
+    return;
+  }
+  const ownsDatabase = !database;
+  let db = database;
+  if (!db) {
+    const sqlite = require("node:sqlite");
+    db = new sqlite.DatabaseSync(resolveImmutableStateDatabaseUri(params.stateDatabasePath), {
+      readOnly: true,
+    });
+  }
+  try {
+    if (ownsDatabase) {
+      db.exec("PRAGMA query_only = ON; PRAGMA trusted_schema = OFF;");
+    }
+    const table = db
+      .prepare("SELECT 1 FROM main.sqlite_schema WHERE type = 'table' AND name = 'config_machine_state' LIMIT 1")
+      .get();
+    if (!table) return;
+    const row = db
+      .prepare("SELECT value_json FROM config_machine_state WHERE state_key = 'gateway.supervision' LIMIT 1")
+      .get();
+    if (!row) return;
+    let value = null;
+    if (typeof row.value_json === "string") {
+      try {
+        value = JSON.parse(row.value_json);
+      } catch {
+        // The shared owner contract below rejects invalid JSON and shape together.
+      }
+    }
+    const keys = value && typeof value === "object" && !Array.isArray(value)
+      ? Object.keys(value).sort()
+      : [];
+    if (
+      keys.join(",") !== "claimedAt,managerId,mode,version" ||
+      value.version !== 1 ||
+      value.mode !== "external" ||
+      typeof value.managerId !== "string" ||
+      !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(value.managerId) ||
+      !Number.isSafeInteger(value.claimedAt) ||
+      value.claimedAt < 0 ||
+      value.claimedAt > 8640000000000000
+    ) {
+      throw new Error("shared-state ownership metadata is malformed");
+    }
+    if ((process.env.OPENCLAW_SUPERVISOR_MODE || "").trim().toLowerCase() !== "external") {
+      throw new Error(
+        "shared state is externally supervised by " +
+          value.managerId +
+          "; use that external supervisor with OPENCLAW_SUPERVISOR_MODE=external",
+      );
+    }
+  } finally {
+    if (ownsDatabase) {
+      db.close();
+    }
+  }
+}
+
 function openStateDatabase() {
   if (!params.stateDatabasePath || typeof params.stateDatabasePath !== "string") {
     return null;
   }
+  let db = null;
+  let transactionOpen = false;
   try {
+    assertStateDatabaseWriteAllowed();
     const sqlite = require("node:sqlite");
     fs.mkdirSync(path.dirname(params.stateDatabasePath), { recursive: true, mode: 0o700 });
-    const db = new sqlite.DatabaseSync(params.nodeSqliteLocation);
+    db = new sqlite.DatabaseSync(params.nodeSqliteLocation);
     db.exec("PRAGMA busy_timeout = ${HANDOFF_STATE_DATABASE_BUSY_TIMEOUT_MS};");
+    db.exec("BEGIN IMMEDIATE;");
+    transactionOpen = true;
+    assertStateDatabaseWriteAllowed(db);
     db.exec([
       "CREATE TABLE IF NOT EXISTS gateway_restart_sentinel (",
       "sentinel_key TEXT NOT NULL PRIMARY KEY,",
@@ -150,8 +232,18 @@ function openStateDatabase() {
     ].join(" "));
     ensureGatewayRestartSentinelColumns(db);
     hardenStateDatabaseFiles();
+    db.exec("COMMIT;");
+    transactionOpen = false;
     return db;
   } catch (err) {
+    if (transactionOpen) {
+      try {
+        db.exec("ROLLBACK;");
+      } catch {}
+    }
+    try {
+      db?.close();
+    } catch {}
     appendLog("failed to open restart sentinel database: " + (err && err.stack ? err.stack : String(err)));
     return null;
   }
@@ -389,6 +481,7 @@ function markUpdateSentinelFailureIfPending(reason) {
   try {
     db.exec("BEGIN IMMEDIATE;");
     transactionOpen = true;
+    assertStateDatabaseWriteAllowed(db);
     const current = readRestartSentinelRecord(db);
     if (
       (snapshot === null && current !== null) ||
@@ -435,7 +528,6 @@ function markUpdateSentinelFailureIfPending(reason) {
     }
     appendLog("failed to write update sentinel failure: " + (err && err.stack ? err.stack : String(err)));
   } finally {
-    hardenStateDatabaseFiles();
     try {
       db.close();
     } catch {}
@@ -579,6 +671,7 @@ type ManagedServiceUpdateHandoffParams = {
   timeoutMs?: number;
   restartDrainTimeoutMs: number | undefined;
   channel?: UpdateChannel;
+  tag?: string;
   restartDelayMs?: number;
   meta: UpdateRestartSentinelMeta;
   handoffId?: string;
@@ -617,12 +710,16 @@ function isNodeLikeRuntime(execPath: string | undefined): boolean {
 function resolveUpdateCliArgv(params: {
   timeoutMs?: number;
   channel?: UpdateChannel;
+  tag?: string;
   execPath?: string;
   argv1?: string;
 }): string[] {
   const updateArgs = ["update", "--yes", "--json"];
   if (params.channel) {
     updateArgs.push("--channel", params.channel);
+  }
+  if (params.tag) {
+    updateArgs.push("--tag", params.tag);
   }
   if (typeof params.timeoutMs === "number" && Number.isFinite(params.timeoutMs)) {
     updateArgs.push("--timeout", String(Math.max(1, Math.ceil(params.timeoutMs / 1000))));
@@ -642,10 +739,14 @@ function resolveUpdateCliArgv(params: {
 export function formatManagedServiceUpdateCommand(params?: {
   timeoutMs?: number;
   channel?: UpdateChannel;
+  tag?: string;
 }): string {
   const args = ["openclaw", "update", "--yes"];
   if (params?.channel) {
     args.push("--channel", params.channel);
+  }
+  if (params?.tag) {
+    args.push("--tag", params.tag);
   }
   if (typeof params?.timeoutMs === "number" && Number.isFinite(params.timeoutMs)) {
     args.push("--timeout", String(Math.max(1, Math.ceil(params.timeoutMs / 1000))));
@@ -877,12 +978,14 @@ async function spawnManagedServiceUpdateHandoff(
   const commandArgv = resolveUpdateCliArgv({
     timeoutMs: params.timeoutMs,
     channel: params.channel,
+    tag: params.tag,
     execPath: params.execPath ?? process.execPath,
     argv1: params.argv1 ?? process.argv[1],
   });
   const commandLabel = formatManagedServiceUpdateCommand({
     timeoutMs: params.timeoutMs,
     channel: params.channel,
+    tag: params.tag,
   });
   const handoffCwd = await resolveManagedServiceHandoffCwd(params.root);
   const metaFile: ControlPlaneUpdateSentinelMetaFile = {

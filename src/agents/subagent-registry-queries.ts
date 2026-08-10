@@ -21,6 +21,15 @@ function resolveConcurrencyOwnerSessionKey(entry: SubagentRunRecord): string {
     : resolveControllerSessionKey(entry);
 }
 
+function isDeliveryTerminalForRequesterSettle(entry: Pick<SubagentRunRecord, "delivery">): boolean {
+  return (
+    isDeliverySuspended(entry) ||
+    entry.delivery?.disposition === "delivered" ||
+    entry.delivery?.disposition === "intentional_non_delivery" ||
+    entry.delivery?.disposition === "permanent_failure"
+  );
+}
+
 /** Lists requester-owned runs, optionally scoped to the lifetime of a requester run. */
 export function listRunsForRequesterFromRuns(
   runs: Map<string, SubagentRunRecord>,
@@ -253,7 +262,10 @@ export function buildSubagentRunReadIndexFromRuns<T extends SubagentRunReadRecor
       }
       const runPending = hasSubagentRunEnded(entry)
         ? typeof entry.cleanupCompletedAt !== "number" &&
-          !(options?.treatSuspendedDeliveryAsSettled === true && isDeliverySuspended(entry))
+          !(
+            options?.treatSuspendedDeliveryAsSettled === true &&
+            isDeliveryTerminalForRequesterSettle(entry)
+          )
         : isLiveUnendedSubagentRun(entry, now);
       if (runPending) {
         count += 1;
@@ -314,10 +326,18 @@ export function buildSubagentRunReadIndexFromRuns<T extends SubagentRunReadRecor
   };
 }
 
-/** Returns the latest-generation run for a child session. */
+/**
+ * Returns the latest-generation run for a child session.
+ *
+ * `matches` narrows the candidates before the generation comparison, so callers
+ * that own a specific row class (a paused continuation target, say) select the
+ * newest row of that class rather than the newest row overall. Without it a
+ * sibling registered at a higher generation hides the row the caller owns.
+ */
 export function getLatestSubagentRunByChildSessionKeyFromRuns(
   runs: Map<string, SubagentRunRecord> | Iterable<SubagentRunRecord>,
   childSessionKey: string,
+  matches?: (entry: SubagentRunRecord) => boolean,
 ): SubagentRunRecord | undefined {
   const key = childSessionKey.trim();
   if (!key) {
@@ -326,6 +346,9 @@ export function getLatestSubagentRunByChildSessionKeyFromRuns(
   let latest: SubagentRunRecord | undefined;
   for (const entry of runs instanceof Map ? runs.values() : runs) {
     if (entry.childSessionKey !== key) {
+      continue;
+    }
+    if (matches && !matches(entry)) {
       continue;
     }
     if (!latest || compareSubagentRunGeneration(entry, latest) > 0) {

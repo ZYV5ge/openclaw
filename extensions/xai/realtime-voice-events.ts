@@ -1,4 +1,5 @@
 import { canonicalizeBase64 } from "openclaw/plugin-sdk/media-runtime";
+import type { RealtimeVoiceSessionConnection } from "openclaw/plugin-sdk/realtime-voice";
 import { isRecord, normalizeOptionalString } from "openclaw/plugin-sdk/string-coerce-runtime";
 import {
   XAI_REALTIME_ACTIVE_RESPONSE_ERROR_PREFIX,
@@ -6,7 +7,6 @@ import {
   readXaiRealtimeErrorDetail,
   type XaiRealtimeEvent,
 } from "./realtime-voice-config.js";
-import type { XaiRealtimeVoiceConnection } from "./realtime-voice-lifecycle.js";
 import { XaiRealtimeVoiceProtocol } from "./realtime-voice-protocol.js";
 
 export class XaiRealtimeMalformedAudioError extends Error {}
@@ -16,10 +16,10 @@ export abstract class XaiRealtimeVoiceEvents extends XaiRealtimeVoiceProtocol {
   private assistantTranscriptFinalized = false;
   private inputTranscriptReplacements = new Map<string, string>();
 
-  protected abstract acceptsEvent(connection: XaiRealtimeVoiceConnection): boolean;
-  protected abstract onSessionUpdated(connection: XaiRealtimeVoiceConnection): void;
+  protected abstract acceptsEvent(connection: RealtimeVoiceSessionConnection): boolean;
+  protected abstract onSessionUpdated(connection: RealtimeVoiceSessionConnection): void;
 
-  protected handleEvent(event: XaiRealtimeEvent, connection: XaiRealtimeVoiceConnection): void {
+  protected handleEvent(event: XaiRealtimeEvent, connection: RealtimeVoiceSessionConnection): void {
     this.config.onEvent?.({
       direction: "server",
       type: event.type,
@@ -77,7 +77,7 @@ export abstract class XaiRealtimeVoiceEvents extends XaiRealtimeVoiceProtocol {
             "xAI realtime voice stream returned malformed base64 audio data",
           );
         }
-        this.config.onAudio(Buffer.from(canonicalAudio, "base64"));
+        this.emitAudioWithPlaybackMark(Buffer.from(canonicalAudio, "base64"));
         if (event.item_id && event.item_id !== this.lastAssistantItemId) {
           this.lastAssistantItemId = event.item_id;
           this.responseStartTimestamp = this.latestMediaTimestamp;
@@ -85,7 +85,6 @@ export abstract class XaiRealtimeVoiceEvents extends XaiRealtimeVoiceProtocol {
           this.responseStartTimestamp = this.latestMediaTimestamp;
         }
         this.responseActive = true;
-        this.sendMark();
         return;
       }
       case "input_audio_buffer.speech_started":
@@ -128,31 +127,44 @@ export abstract class XaiRealtimeVoiceEvents extends XaiRealtimeVoiceProtocol {
         return;
       case "response.done": {
         const status = event.response?.status;
-        const output = event.response?.output ?? [];
-        if (status === undefined || status === "completed") {
-          for (const item of output) {
-            this.emitCompletedToolCall(item, event);
+        const output = Array.isArray(event.response?.output)
+          ? event.response.output.filter(isRecord)
+          : [];
+        try {
+          if (status === undefined || status === "completed") {
+            for (const item of output) {
+              this.emitCompletedToolCall(item, event);
+            }
           }
+          const terminalTranscript = output
+            .filter((item) => item.type === "message" && item.role === "assistant")
+            .flatMap((item) => (Array.isArray(item.content) ? item.content.filter(isRecord) : []))
+            .map((content) =>
+              typeof content.transcript === "string"
+                ? content.transcript
+                : typeof content.text === "string"
+                  ? content.text
+                  : "",
+            )
+            .join("");
+          this.flushAssistantTranscript(terminalTranscript);
+          if (status === "failed" || status === "incomplete") {
+            const details = event.response?.status_details;
+            const error = isRecord(details) ? details.error : undefined;
+            const reason = isRecord(details) ? normalizeOptionalString(details.reason) : undefined;
+            const message = error
+              ? readXaiRealtimeErrorDetail(error)
+              : `xAI realtime voice response ${status}${reason ? `: ${reason}` : ""}`;
+            this.config.onError?.(new Error(message));
+          }
+        } finally {
+          // Keep the response active through terminal tool discovery: callbacks can
+          // submit results synchronously and must not start the next response early.
+          this.responseActive = false;
+          this.responseCreateInFlight = false;
+          this.responseCancelInFlight = false;
+          this.flushPendingResponseCreate();
         }
-        const terminalTranscript = output
-          .filter((item) => item.type === "message" && item.role === "assistant")
-          .flatMap((item) => item.content ?? [])
-          .map((content) => content.transcript ?? content.text ?? "")
-          .join("");
-        this.flushAssistantTranscript(terminalTranscript);
-        this.responseActive = false;
-        this.responseCreateInFlight = false;
-        this.responseCancelInFlight = false;
-        if (status === "failed" || status === "incomplete") {
-          const details = event.response?.status_details;
-          const error = isRecord(details) ? details.error : undefined;
-          const reason = isRecord(details) ? normalizeOptionalString(details.reason) : undefined;
-          const message = error
-            ? readXaiRealtimeErrorDetail(error)
-            : `xAI realtime voice response ${status}${reason ? `: ${reason}` : ""}`;
-          this.config.onError?.(new Error(message));
-        }
-        this.flushPendingResponseCreate();
         return;
       }
       case "response.function_call_arguments.delta": {

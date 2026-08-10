@@ -5,8 +5,13 @@ import type { CronJob } from "../types.js";
 import { recomputeNextRunsForMaintenance } from "./jobs.js";
 import { locked } from "./locked.js";
 import { clearQueuedCronRunReservationMarker, releaseQueuedCronRun } from "./run-admission.js";
-import { emit, type CronServiceState } from "./state.js";
-import { ensureLoaded, persistOrRestore, snapshotStoreForRollback } from "./store.js";
+import { emit, type CronServiceState, type DeferredCronNotifications } from "./state.js";
+import {
+  ensureLoaded,
+  persistOrRestore,
+  pruneCronJobScratchAfterCommit,
+  snapshotStoreForRollback,
+} from "./store.js";
 import { tryFinishCronTaskRunWithoutHistory } from "./task-runs.js";
 import type { TimedCronRunOutcome } from "./timer-execution-timeout.js";
 import { applyOutcomeToStoredJob } from "./timer-outcomes.js";
@@ -134,8 +139,11 @@ export async function finalizeCompletedCronRunOutcomes(
 
       const rollbackSnapshot = snapshotStoreForRollback(state);
       const removedJobs: CronJob[] = [];
+      const postPersistNotifications: DeferredCronNotifications = [];
       for (const outcome of finalizedOutcomes) {
-        const removedJob = applyOutcomeToStoredJob(state, outcome);
+        const removedJob = applyOutcomeToStoredJob(state, outcome, {
+          deferredNotifications: postPersistNotifications,
+        });
         if (removedJob) {
           removedJobs.push(removedJob);
         }
@@ -146,10 +154,21 @@ export async function finalizeCompletedCronRunOutcomes(
       recomputeNextRunsForMaintenance(
         state,
         opts?.repairFutureCronNextRunAtMs === false
-          ? { repairFutureCronNextRunAtMs: false }
-          : undefined,
+          ? {
+              repairFutureCronNextRunAtMs: false,
+              deferredNotifications: postPersistNotifications,
+            }
+          : { deferredNotifications: postPersistNotifications },
       );
-      await persistOrRestore(state, rollbackSnapshot);
+      // Run notifications describe durable state. Drain them only after the
+      // terminal write succeeds so rollback cannot publish a false outcome.
+      await persistOrRestore(state, rollbackSnapshot, {
+        postPersistNotifications,
+      });
+      pruneCronJobScratchAfterCommit(
+        state,
+        removedJobs.map((job) => job.id),
+      );
       finishPersistedQuietCronTaskRuns(state, finalizedOutcomes);
       for (const removedJob of removedJobs) {
         emit(state, { jobId: removedJob.id, action: "removed", job: removedJob });

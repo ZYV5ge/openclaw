@@ -43,6 +43,7 @@ import {
 import {
   clearRuntimeAuthProfileStoreSnapshot as clearRuntimeAuthProfileStoreSnapshotImpl,
   clearRuntimeAuthProfileStoreSnapshots as clearRuntimeAuthProfileStoreSnapshotsImpl,
+  getPreparedRuntimeAuthProfileStoreSnapshot as getPreparedRuntimeAuthProfileStoreSnapshotImpl,
   getRuntimeAuthProfileStoreSnapshot as getRuntimeAuthProfileStoreSnapshotImpl,
   getRuntimeAuthProfileStoreSnapshotRevision,
   noteRuntimeAuthProfileStorePersistedMutation,
@@ -109,7 +110,7 @@ function isEnvOnlyAuthProfileRuntime(): boolean {
   return authProfileRuntimeMode.getStore()?.kind === "env-only";
 }
 
-function resolveRuntimeAuthProfileAgentDir(agentDir?: string): string | undefined {
+export function resolveRuntimeAuthProfileAgentDir(agentDir?: string): string | undefined {
   const mode = authProfileRuntimeMode.getStore();
   return mode?.kind === "agent-dir" ? mode.agentDir : agentDir;
 }
@@ -539,7 +540,9 @@ function pruneAuthProfileStoreReferences(
     : undefined;
   store.usageStats = store.usageStats
     ? Object.fromEntries(
-        Object.entries(store.usageStats).filter(([profileId]) => keptProfileIds.has(profileId)),
+        Object.entries(store.usageStats).filter(
+          ([profileId]) => keptProfileIds.has(profileId) || profileId.startsWith("inline-api-key:"),
+        ),
       )
     : undefined;
   store.runtimePersistedProfileIds = store.runtimePersistedProfileIds
@@ -1167,7 +1170,23 @@ export function ensureAuthProfileStore(
       ...externalCli,
     },
   );
-  if (!runtimeStore || hasScopedExternalCliOverlay(externalCli)) {
+  if (!runtimeStore) {
+    if (
+      hasScopedExternalCliOverlay(externalCli) &&
+      (store.runtimeExternalProfileIds?.length ?? 0) > 0
+    ) {
+      setRuntimeAuthProfileStoreSnapshot(store, effectiveAgentDir);
+    }
+    return store;
+  }
+  if (hasScopedExternalCliOverlay(externalCli)) {
+    // Scoped turn/control-plane resolution returns only the requested overlay, but the lifecycle
+    // snapshot must retain unrelated external profiles. Publish the merged owner fact so prepared
+    // model and chat metadata generations converge without reopening credential sources.
+    const materialized = mergeRuntimeExternalProfileState({ next: store, existing: runtimeStore });
+    if (!isDeepStrictEqual(materialized, runtimeStore)) {
+      setRuntimeAuthProfileStoreSnapshot(materialized, effectiveAgentDir);
+    }
     return store;
   }
   return mergeRuntimeExternalProfileState({
@@ -1314,6 +1333,16 @@ export function getRuntimeAuthProfileStoreSnapshot(
 ): AuthProfileStore | undefined {
   return getRuntimeAuthProfileStoreSnapshotImpl(agentDir);
 }
+
+/** Return the lifecycle-published effective auth store without persisted fallback reads. */
+export function getPreparedRuntimeAuthProfileStoreSnapshot(
+  agentDir?: string,
+  inheritedAuthDir?: string,
+): AuthProfileStore | undefined {
+  return getPreparedRuntimeAuthProfileStoreSnapshotImpl(agentDir, inheritedAuthDir);
+}
+
+export { getRuntimeAuthProfileStoreSnapshotRevision };
 
 /** Replace runtime auth-profile snapshots, used by tests and prepared runtimes. */
 export function replaceRuntimeAuthProfileStoreSnapshots(

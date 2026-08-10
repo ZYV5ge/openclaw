@@ -23,7 +23,7 @@ import {
   migratedSessionAccessorWriteFiles,
   migratedTranscriptWriterFiles,
   readOnlyGatewaySessionAccessorFiles,
-} from "../../scripts/check-session-accessor-boundary.mjs";
+} from "../../scripts/check-session-accessor-boundary.mts";
 
 describe("session accessor boundary guard", () => {
   it("keeps Gateway read paths on non-materializing accessors", () => {
@@ -111,7 +111,6 @@ describe("session accessor boundary guard", () => {
         "src/gateway/server-methods/sessions-read.ts",
         "src/gateway/server-methods/sessions-shared.ts",
         "src/gateway/server-methods/sessions-subscriptions.ts",
-        "src/gateway/server-methods/sessions.ts",
         "src/gateway/server-session-events.ts",
         "src/gateway/session-reset-service.ts",
         "src/infra/outbound/message-action-tts.ts",
@@ -215,7 +214,6 @@ describe("session accessor boundary guard", () => {
         "src/gateway/server-methods/sessions-read.ts",
         "src/gateway/server-methods/sessions-shared.ts",
         "src/gateway/server-methods/sessions-subscriptions.ts",
-        "src/gateway/server-methods/sessions.ts",
         "src/gateway/server-node-events.ts",
         "src/gateway/session-compaction-checkpoints.ts",
         "src/infra/outbound/outbound-session.ts",

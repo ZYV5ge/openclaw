@@ -143,7 +143,6 @@ struct WebChatSwiftUISmokeTests {
         }
         let controller = WebChatSwiftUIWindowController(
             sessionKey: "main",
-            presentation: .window,
             transport: TestTransport(),
             windowTitle: "Studio — OpenClaw")
         let window = try #require(controller._testWindow)
@@ -172,41 +171,9 @@ struct WebChatSwiftUISmokeTests {
         controller.close()
     }
 
-    @Test func `panel controller preserves independent assistant trace preferences`() throws {
-        let reasoningKey = OpenClawChatWindowShell.assistantReasoningDefaultsKey
-        let toolActivityKey = OpenClawChatWindowShell.assistantToolActivityDefaultsKey
-        let legacyKey = OpenClawChatWindowShell.assistantTraceDefaultsKey
-        let previousValues = [legacyKey, reasoningKey, toolActivityKey].map {
-            ($0, UserDefaults.standard.object(forKey: $0))
-        }
-        UserDefaults.standard.removeObject(forKey: legacyKey)
-        UserDefaults.standard.set(false, forKey: reasoningKey)
-        UserDefaults.standard.set(true, forKey: toolActivityKey)
-        defer {
-            for (key, value) in previousValues {
-                if let value {
-                    UserDefaults.standard.set(value, forKey: key)
-                } else {
-                    UserDefaults.standard.removeObject(forKey: key)
-                }
-            }
-        }
-        let anchor = { NSRect(x: 200, y: 400, width: 40, height: 40) }
-        let controller = WebChatSwiftUIWindowController(
-            sessionKey: "main",
-            presentation: .panel(anchorProvider: anchor),
-            transport: TestTransport())
-        let capabilities = try #require(controller._testChatCapabilities)
-
-        #expect(capabilities.displayOptions == .toolActivity)
-        controller.presentAnchored(anchorProvider: anchor)
-        controller.close()
-    }
-
     @Test func `closing a full window releases it and notifies its owner once`() {
         let controller = WebChatSwiftUIWindowController(
             sessionKey: "main",
-            presentation: .window,
             transport: TestTransport())
         var closeCount = 0
         var visibilityChanges: [Bool] = []
@@ -243,7 +210,6 @@ struct WebChatSwiftUISmokeTests {
         let controller = WebChatSwiftUIWindowController(
             sessionKey: "main",
             initialDraft: "Wake up, my friend!",
-            presentation: .window,
             transport: TestTransport())
 
         #expect(controller._testDraft == "Wake up, my friend!")
@@ -260,13 +226,11 @@ struct WebChatSwiftUISmokeTests {
         let explicit = WebChatSwiftUIWindowController(
             sessionKey: "global",
             agentID: " Work ",
-            presentation: .window,
             cachedRoutingIdentity: cachedIdentity,
             store: nil)
         let fallback = WebChatSwiftUIWindowController(
             sessionKey: "global",
             agentID: nil,
-            presentation: .window,
             cachedRoutingIdentity: cachedIdentity,
             store: nil)
 

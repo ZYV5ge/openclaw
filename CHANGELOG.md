@@ -4,15 +4,14 @@ Docs: https://docs.openclaw.ai
 
 ## Unreleased
 
-## 2026.7.2-beta.7.1
-
-Personal integration release retaining the frozen official main fixes and verified local
-repairs while recording official `v2026.7.2-beta.7` as an audited source parent. The
-official beta.7 release-line changes are either patch-equivalent to, or superseded by,
-the newer frozen main implementation; no beta.6 component tree is overlaid on beta.7.
-
 ### Changes
 
+- **macOS app profiles:** isolate named app instances across state, preferences, Keychain, Gateway services, and duplicate-instance ownership while keeping host-global login and node services untouched.
+- **Developer workflow:** remove the obsolete scoped-commit helper and use standard Git commands in isolated worktrees.
+- **Plugin uninstall cleanup:** remove exact recorded install paths from `plugins.load.paths` for marketplace, npm, and other managed installs while preserving parent, child, prefix, and unrelated paths.
+- Fixed Crabbox hydration on unprivileged cloud sandboxes by falling back to a user-writable pnpm store when the shared `/var/cache/crabbox` cache is unavailable, preserving the hardlink import mode after hydration, and making Docker an explicit routed capability instead of an implicit install requirement.
+
+- **Browser extension relay CDP compat:** answer `Target.getBrowserContexts` so Puppeteer-based clients (chrome-devtools-mcp) can drive the paired Chrome without the remote-debugging permission prompt, serve DevTools-style `/json/list` target descriptors, and add `openclaw browser extension cdp` to print the relay endpoint plus auth header for external CDP clients.
 - **Local model setup:** advertise provider-owned Ollama, llama.cpp, and LM Studio setup choices to Control UI and macOS, retry unavailable LM Studio services in place, and verify the exact prepared model before showing success.
 - **Control UI first-run setup:** continue verified model setup into Custodian, explain that the web app is ready without a channel, and offer an optional dismissible path to Channels.
 - **Fish Audio speech:** add hosted S2.1 synthesis with streaming, voice notes, voice discovery, and telephony, plus local Fish S2 Pro reference-voice streaming in native macOS Talk. Thanks @Conan-Scott for the earlier community-plugin implementation.
@@ -29,8 +28,10 @@ the newer frozen main implementation; no beta.6 component tree is overlaid on be
 - **Buzz message fidelity:** preserve Markdown output and accept Buzz normal, rich-content, and structured-diff room messages through the existing authorized inbound path. Thanks @shakkernerd.
 - **Buzz typing indicators:** show room- and thread-scoped typing during agent replies and heartbeat deliveries, refresh through the active authenticated connection without waiting for relay acknowledgement, and drop ephemeral updates safely during disconnects or shutdown. Thanks @shakkernerd.
 - **Buzz sender directory:** expose current bot, member, room, and room-member directory entries from bounded relay state; use current Buzz profile and room names in inbound context while preserving public keys and UUIDs as stable authorization and routing identities. Thanks @shakkernerd.
+- **Buzz native mentions:** resolve unique current room-member names and explicit NIP-27 identities into native `p` tags for replies, proactive sends, and bounded standalone delivery; reject out-of-room identities and unresolved labels without an explicit identity, and preserve Buzz reply-thread session parsing during maintenance and heartbeat runs. Thanks @shakkernerd.
 - **ClickClack guided setup:** configure ClickClack from `openclaw onboard` or `openclaw channels add clickclack` with URL, token, and workspace prompts, default-account env fallback, nonfatal live connection validation, and gateway-aware next steps that connect automatically when OpenClaw is already running. Thanks @shakkernerd.
 - **ClickClack command menus:** publish each bot's native OpenClaw commands to ClickClack composer autocomplete at gateway startup, with per-account opt-out and nonfatal compatibility handling for older tokens and servers. Thanks @shakkernerd.
+- **ClickClack bot collaboration:** add opt-in bot-authored inbound dispatch with explicit sender authorization, mention gating, retry-safe loop protection, and independent thread budgets while keeping bot traffic denied by default. Thanks @jjjhenriksen and @shakkernerd.
 - **Skill Workshop approvals:** run agent-initiated apply, reject, and quarantine actions without an additional approval prompt by default while preserving `skills.workshop.approvalPolicy: "pending"` as an opt-in approval gate. Thanks @shakkernerd.
 - **TUI fuzzy selectors:** delegate list matching to pi-tui, adding slash-token and alpha-number matching while removing the local matcher fork.
 - **macOS paired-node terminals:** advertise duplex Codex and Claude terminal resume commands from the embedded node host and forward interactive input and cancellation through the native app bridge. (#107335)
@@ -62,9 +63,23 @@ the newer frozen main implementation; no beta.6 component tree is overlaid on be
 - **Gateway TTS playback:** add an operator-scoped `tts.speak` RPC that returns configured-provider speech as inline whole-clip audio for remote clients. (#100708, #100770)
 - **Workboard dispatch cap:** add a request-scoped `--max-starts` override while preserving the default cap, sequential starts, and one-card-per-owner guard. (#100174) Thanks @souvikDevloper.
 - **Plugin install provenance warnings:** require explicit `--force` acknowledgement for arbitrary executable plugin sources in CLI and chat installs, keep trusted ClawHub, bundled, official-catalog, and tracked-update flows frictionless, and restrict Crestodian installs to trusted sources. (#102197) Thanks @jesse-merhi.
+- **Custodian rich setup controls:** render the Gateway's sanitized wizard steps as native selects, multiselects, text fields, and masked secret inputs while preserving text-only chat compatibility. (#114631) Thanks @jesse-merhi.
 
 ### Fixes
 
+- **Control UI browser annotations:** keep marked screenshots and generated page context together in structured composer cards, preserve user-written drafts when annotations are removed or replaced, retain complete unsent annotation packages across same-tab route and active split-pane remounts, and offer bounded Undo without restoring removed context into another session. Fixes #120744. Thanks @shakkernerd.
+- **Control UI profile avatar refreshes:** carry canonical content revisions through mutation responses and live presence so rapid replacements refresh every connected browser without stale cache rollback. Thanks @shakkernerd.
+- **Control UI appearance accessibility:** keep the unavailable custom-theme card announced as an Import command while preserving selected-state semantics for selectable themes and text sizes. Thanks @shakkernerd.
+- **Control UI dashboard index refresh:** keep an open Dashboards page current after session changes, agent-scope updates, and Gateway reconnects while preserving the last safe list until replacement hydration completes. Fixes #120602. Thanks @shakkernerd.
+- **Browser extension relay security:** require canonical 64-character relay secrets and safe WebSocket pairing URLs, and recheck OpenClaw tab-group consent at the extension edge before every authority-bearing existing-tab command.
+- **Control UI debug diagnostics:** keep last-good status, health, model, and heartbeat snapshots visible when refreshes fail, show the failure inside Snapshots, isolate it from Manual RPC state, and prevent older manual calls from overwriting newer ones. Thanks @shakkernerd.
+- **Control UI read-only preferences:** keep personal preference edits browser-local without attempting unauthorized config writes or claiming server sync, preserve offline intent for a later authorized reconnect, and restore the current server value on local reset. Thanks @shakkernerd.
+- **Control UI owner handoff:** give browsers opened by host-issued dashboard and graphical onboarding links durable administrator access, including same-browser recovery from a limited credential, while keeping generic, Telegram, mobile, and ordinary scope-upgrade paths bounded. Thanks @shakkernerd.
+- **Control UI agent and skill permissions:** gate Agents, Skills, Skill Workshop, and delayed mutation dispatches by the current Gateway method catalog and operator scopes while preserving read-only browsing and legacy Gateway compatibility. Fixes #119176. Thanks @shakkernerd.
+- **Guided onboarding skip-UI routing:** keep `openclaw onboard --skip-ui` and `openclaw setup --skip-ui` on guided onboarding while skipping both browser and terminal handoffs, instead of silently switching to the classic wizard. Thanks @shakkernerd.
+- **Telegram durable ingress:** preserve pre-identity control-lane ownership during replay and attempt each drain snapshot row only once per pass, preventing targeted commands from spinning the spool and blocking polling shutdown.
+- **Control UI operator session permissions:** honor Gateway-advertised operator scopes for new-thread creation, thread management, checkpoints, and sharing controls while preserving read-only navigation and legacy Gateway compatibility. Fixes #117786. Thanks @shakkernerd.
+- **Control UI delayed session commands:** bind slash-command mutations and confirmed resets to their originating Gateway, recheck current operator scopes after asynchronous work, and retain reset authorization through queued delivery so reconnects cannot target a replacement connection. Thanks @shakkernerd.
 - **Control UI archived session deletion:** send archive-gated delete requests from Sessions-page row and mixed-selection actions so write-scoped operators can remove archived threads while active-session deletion remains admin-only. Thanks @shakkernerd.
 - **Control UI command recovery:** keep delayed detached and immediate command failures scoped to their submitting session, preserving failed drafts and attachments for that pane without overwriting the active session. Fixes #116846. Thanks @shakkernerd.
 - **Microsoft Teams message-tool replies:** keep automatic live previews from duplicating a message already delivered to the current Teams conversation, while preserving distinct follow-up text and cross-conversation sends. Fixes #116397. (#116398) Thanks @a-tokyo.
@@ -77,9 +92,11 @@ the newer frozen main implementation; no beta.6 component tree is overlaid on be
 - **macOS remote tunnel lifecycle:** prevent cancelled or superseded restart backoffs from recreating SSH tunnels, and join a tunnel create that another caller started while the actor was suspended.
 - **macOS location permission requests:** coalesce concurrent prompts so every caller resumes, and stop cancelled timeouts from opening Settings or completing a newer request.
 - **macOS Voice Wake cancellation:** stop superseded silence, capture, and recognizer-restart timers immediately so cancelled work cannot restart the microphone pipeline or keep stale monitor loops alive.
+- **Meeting node audio retention:** bound captured audio and terminal retention for Google Meet, Teams, and Zoom node-host sessions, make close idempotent, and force stalled bridge processes down after the graceful shutdown window.
 - **Control UI update reconciliation:** preserve an unresolved managed-update request across disconnects, accept the replacement Gateway version when it proves success, and otherwise show explicit recovery guidance instead of trusting an unrelated cached update result or failing silently. Fixes #116075. Thanks @shakkernerd.
 - **Control UI model readiness:** put AI setup first when no model is selectable, distinguish signed-in credentials from ready providers, and route accounts with no exposed models directly to provider recovery instead of leading with disabled default controls.
 - **Control UI Talk session isolation:** stop active realtime Talk media and retire its callbacks before chat session changes, Gateway disconnects, or pane disposal so previous-session audio, transcript, camera, and status updates cannot leak into the next view. Thanks @shakkernerd.
+- **Control UI Realtime tool calls:** execute OpenAI WebRTC tools only from completed responses, bound retained call identities and UTF-8 arguments, and ignore provisional or late duplicate events so long Talk sessions cannot grow tool state without limit.
 - **Gateway reconnect event ordering:** reset the shared TypeScript client's outer event-sequence baseline for each replacement WebSocket, preventing gap recovery from comparing unrelated connection generations across Control UI, TUI, SDK, and browser extension clients. Thanks @shakkernerd.
 - **Skill Workshop offline apply:** preserve configless local proposal apply after upgrades under exclusive Gateway startup ownership, while keeping running Gateway snapshot invalidation fail-closed when CLI credentials are unavailable.
 - **macOS and Control UI keyboard navigation:** let Tab traverse links and controls inside embedded Dashboard, browser, and Canvas web views, and keep shortcuts working on non-Latin keyboard layouts without firing during IME composition.

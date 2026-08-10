@@ -1,7 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
+import { createDeferred } from "../../test/helpers/promise.js";
 import type { CronEvent } from "./service.js";
 import { CronService } from "./service.js";
-import { createDeferred, setupCronServiceSuite } from "./service.test-harness.js";
+import { setupCronServiceSuite } from "./service.test-harness.js";
 import { computeJobNextRunAtMs } from "./service/jobs.js";
 import type { CronServiceDeps } from "./service/state.js";
 import { loadCronStore } from "./store.js";
@@ -32,6 +33,7 @@ async function createHarness(params: {
   evaluateCronTrigger?: Evaluator;
   runIsolatedAgentJob?: IsolatedRunner;
   runScriptJob?: ScriptRunner;
+  sendCronWebhook?: CronServiceDeps["sendCronWebhook"];
 }) {
   const { storePath } = await makeStorePath();
   const events: CronEvent[] = [];
@@ -48,6 +50,7 @@ async function createHarness(params: {
     runIsolatedAgentJob,
     ...(params.evaluateCronTrigger ? { evaluateCronTrigger: params.evaluateCronTrigger } : {}),
     ...(params.runScriptJob ? { runScriptJob: params.runScriptJob } : {}),
+    ...(params.sendCronWebhook ? { sendCronWebhook: params.sendCronWebhook } : {}),
     onEvent: (event) => events.push(structuredClone(event)),
   });
   await cron.start();
@@ -219,6 +222,45 @@ describe("cron trigger evaluation", () => {
     }
   });
 
+  it("keeps webhook delivery not-requested when trigger evaluation stops before payload", async () => {
+    const evaluateCronTrigger = vi.fn(async () => ({
+      kind: "error" as const,
+      code: "internal_error" as const,
+      error: "trigger failed",
+    }));
+    const sendCronWebhook = vi.fn();
+    const harness = await createHarness({ evaluateCronTrigger, sendCronWebhook });
+    try {
+      const job = await harness.cron.add(
+        watcher({ delivery: { mode: "webhook", to: "https://example.invalid/hook" } }),
+      );
+      await runWhenDue(harness.cron, job.id);
+
+      expect(sendCronWebhook).not.toHaveBeenCalled();
+      expect(harness.cron.getJob(job.id)?.state).toMatchObject({
+        lastDeliveryStatus: "not-requested",
+      });
+      expect(harness.cron.getJob(job.id)?.state.lastDelivered).toBeUndefined();
+      expect(harness.cron.getJob(job.id)?.state.lastDeliveryError).toBeUndefined();
+
+      const finished = harness.events.find((event) => event.action === "finished");
+      expect(finished).toMatchObject({ deliveryStatus: "not-requested" });
+      expect(finished?.delivered).toBeUndefined();
+      expect(finished?.deliveryError).toBeUndefined();
+
+      const history = readCronTaskRunHistoryPage({
+        storeKey: cronStoreKey(harness.storePath),
+        jobId: job.id,
+      }).entries;
+      expect(history).toHaveLength(1);
+      expect(history[0]).toMatchObject({ deliveryStatus: "not-requested" });
+      expect(history[0]?.delivered).toBeUndefined();
+      expect(history[0]?.deliveryError).toBeUndefined();
+    } finally {
+      harness.cron.stop();
+    }
+  });
+
   it("treats evaluator saturation as a quiet skip with no trigger state update", async () => {
     const evaluateCronTrigger = vi.fn(async () => ({ kind: "busy" as const }));
     const harness = await createHarness({ evaluateCronTrigger });
@@ -276,7 +318,7 @@ describe("cron trigger evaluation", () => {
     ["replaced", false],
     ["restored after replacement", true],
   ] as const)("preserves a %s trigger edited during a manual fired run", async (_, restore) => {
-    const started = createDeferred<void>();
+    const started = createDeferred();
     const completion = createDeferred<{ status: "ok"; summary: string }>();
     const evaluateCronTrigger = vi.fn(async () => ({
       kind: "evaluated" as const,
@@ -324,7 +366,7 @@ describe("cron trigger evaluation", () => {
     ["edited", false],
     ["restored after an edit", true],
   ] as const)("preserves trigger state %s during a manual fired run", async (_, restore) => {
-    const started = createDeferred<void>();
+    const started = createDeferred();
     const completion = createDeferred<{ status: "ok"; summary: string }>();
     const harness = await createHarness({
       evaluateCronTrigger: vi.fn(async () => ({
@@ -374,7 +416,7 @@ describe("cron trigger evaluation", () => {
   ] as const)(
     "does not let a %s active payload script overwrite shared state",
     async (_, restore) => {
-      const started = createDeferred<void>();
+      const started = createDeferred();
       const completion = createDeferred<{
         status: "ok";
         stateChanged: true;
@@ -427,7 +469,7 @@ describe("cron trigger evaluation", () => {
     ["trigger definition", true],
     ["trigger state only", false],
   ] as const)("preserves %s edited during its suspended quiet evaluation", async (_, replace) => {
-    const started = createDeferred<void>();
+    const started = createDeferred();
     const evaluation = createDeferred<{
       kind: "evaluated";
       fire: false;

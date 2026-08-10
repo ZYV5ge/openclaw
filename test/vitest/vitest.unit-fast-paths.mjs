@@ -65,7 +65,6 @@ export const forcedUnitFastTestFiles = [
   "packages/memory-host-sdk/src/host/embeddings-remote-fetch.test.ts",
   "packages/memory-host-sdk/src/host/internal.test.ts",
   "packages/memory-host-sdk/src/host/post-json.test.ts",
-  "packages/memory-host-sdk/src/host/qmd-process.test.ts",
   "packages/memory-host-sdk/src/host/session-files.test.ts",
   "src/acp/client.test.ts",
   "src/acp/control-plane/manager.failover.test.ts",
@@ -167,7 +166,9 @@ const broadUnitFastCandidateGlobs = [
   "test/**/*.test.ts",
 ];
 const ownerRoutedUnitTestPatterns = [
+  "src/agents/embedded-agent-runner/run/attempt.abort-race.test.ts",
   "src/agents/openai-transport-stream.*.test.ts",
+  "src/agents/embedded-agent-runner/run.shared-integration.test.ts",
   "src/auto-reply/reply/dispatch-from-config.test.ts",
 ];
 const broadUnitFastCandidateSkipGlobs = [

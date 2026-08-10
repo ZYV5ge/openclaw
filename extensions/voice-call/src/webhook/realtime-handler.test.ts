@@ -1,6 +1,7 @@
 // Voice Call tests cover realtime handler plugin behavior.
 import http from "node:http";
 import { expectDefined } from "@openclaw/normalization-core";
+import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import type {
   RealtimeVoiceBridge,
   RealtimeVoiceProviderPlugin,
@@ -200,17 +201,6 @@ function requireFirstMockCall(calls: readonly unknown[][], label: string): unkno
     throw new Error(`expected ${label} call`);
   }
   return call;
-}
-
-function createDeferred<T>(): {
-  promise: Promise<T>;
-  resolve: (value: T) => void;
-} {
-  let resolve!: (value: T) => void;
-  const promise = new Promise<T>((resolvePromise) => {
-    resolve = resolvePromise;
-  });
-  return { promise, resolve };
 }
 
 type RealtimeBridgeRequest = Parameters<RealtimeVoiceProviderPlugin["createBridge"]>[0];
@@ -1535,7 +1525,7 @@ describe("RealtimeCallHandler path routing", () => {
         expect(JSON.stringify(args)).not.toContain("consultPolicy");
         expect(JSON.stringify(args)).not.toContain("openclaw_agent_consult");
         expect(callId).toBe("call-1");
-        expect(context).toEqual({});
+        expect(context).toEqual({ abortSignal: expect.any(AbortSignal) });
         await waitForRealtimeTest(() => {
           expect(sendUserMessage).toHaveBeenCalledTimes(1);
           expect(requireFirstMockCall(sendUserMessage.mock.calls, "user message")).toEqual([
@@ -1634,7 +1624,7 @@ describe("RealtimeCallHandler path routing", () => {
     }
   });
 
-  it("does not deliver a forced consult after its realtime session closes", async () => {
+  it("aborts a forced consult when its realtime session closes", async () => {
     let callbacks:
       | {
           onTranscript?: (role: "user" | "assistant", text: string, isFinal: boolean) => void;
@@ -1658,8 +1648,20 @@ describe("RealtimeCallHandler path routing", () => {
         realtimeProvider: makeRealtimeProvider(createBridge),
       },
     );
-    const consultResult = createDeferred<{ text: string }>();
-    const consult = vi.fn(() => consultResult.promise);
+    let consultSignal: AbortSignal | undefined;
+    const consult = vi.fn(
+      async (_args: unknown, _callId: string, context: { abortSignal?: AbortSignal }) => {
+        consultSignal = context.abortSignal;
+        return await new Promise<{ text: string }>((_resolve, reject) => {
+          context.abortSignal?.addEventListener(
+            "abort",
+            () =>
+              reject(new Error("forced consult aborted", { cause: context.abortSignal?.reason })),
+            { once: true },
+          );
+        });
+      },
+    );
     handler.registerToolHandler("openclaw_agent_consult", consult);
     const clearAudio = vi.spyOn(RealtimeAudioPacer.prototype, "clearAudio");
     const server = await startRealtimeServer(handler);
@@ -1689,7 +1691,7 @@ describe("RealtimeCallHandler path routing", () => {
         expect(closeBridge).toHaveBeenCalledTimes(1);
       });
 
-      consultResult.resolve({ text: "The deployment is healthy." });
+      expect(consultSignal?.aborted).toBe(true);
       await new Promise<void>((resolve) => {
         setTimeout(resolve, 0);
       });
@@ -1993,17 +1995,20 @@ describe("RealtimeCallHandler path routing", () => {
     }
   });
 
-  it("restores the prior transcript owner when replacement bridge creation fails", async () => {
+  it("preserves the predecessor when replacement closes with error during creation", async () => {
     const callbacks: RealtimeBridgeRequest[] = [];
+    const oldTriggerGreeting = vi.fn();
     const createBridge = vi.fn((request: RealtimeBridgeRequest) => {
       callbacks.push(request);
       if (callbacks.length === 1) {
-        return makeBridge();
+        return makeBridge({ triggerGreeting: oldTriggerGreeting });
       }
       request.onTranscript?.("user", "Failed ", false);
+      request.onClose?.("error");
       throw new Error("replacement bridge failed");
     });
     const processEvent = vi.fn();
+    const hangupCall = vi.fn(async () => {});
     const sharedCallSid = "CA-transcript-rollback";
     const call = makeCallRecord(sharedCallSid);
     const handler = makeHandler(undefined, {
@@ -2011,6 +2016,7 @@ describe("RealtimeCallHandler path routing", () => {
         getCallByProviderCallId: vi.fn(() => call),
         processEvent,
       },
+      provider: { hangupCall },
       realtimeProvider: makeRealtimeProvider(createBridge),
     });
     const oldServer = await startRealtimeServer(handler);
@@ -2042,6 +2048,17 @@ describe("RealtimeCallHandler path routing", () => {
         await waitForRealtimeTest(() => {
           expect(createBridge).toHaveBeenCalledTimes(2);
         });
+
+        expect(handler.speak(call.callId, "Continue the existing call.")).toEqual({
+          success: true,
+        });
+        expect(oldTriggerGreeting).toHaveBeenCalledWith("Continue the existing call.");
+        expect(hangupCall).not.toHaveBeenCalled();
+        expect(
+          processEvent.mock.calls
+            .map(([event]) => event as NormalizedEvent)
+            .filter((event) => event.type === "call.ended"),
+        ).toHaveLength(0);
 
         callbacks[0]?.onTranscript?.("user", "caller", true);
         await waitForRealtimeTest(() => {
@@ -2451,7 +2468,10 @@ describe("RealtimeCallHandler path routing", () => {
           "Realtime provider supplied a shorter consult question: message",
         );
         expect(callId).toBe("call-1");
-        expect(context).toEqual({ partialUserTranscript: "Send a Discord message." });
+        expect(context).toEqual({
+          partialUserTranscript: "Send a Discord message.",
+          abortSignal: expect.any(AbortSignal),
+        });
         await waitForRealtimeTest(() => {
           expect(submitToolResult).toHaveBeenLastCalledWith(
             "consult-call",

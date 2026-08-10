@@ -1,53 +1,20 @@
 // Startup migration checkpoint tests cover shared-state version records and leases.
 import { existsSync, mkdirSync } from "node:fs";
 import path from "node:path";
-import type { DatabaseSync } from "node:sqlite";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-
-const integrityProbe = vi.hoisted(() => ({
-  afterNextFullCheck: null as (() => void) | null,
-  failFullWith: null as Error | null,
-  failTableWith: null as Error | null,
-  fullChecks: 0,
-  tableChecks: 0,
-}));
-
-vi.mock("./sqlite-integrity.js", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("./sqlite-integrity.js")>();
-  return {
-    ...actual,
-    assertSqliteIntegrity: (...args: Parameters<typeof actual.assertSqliteIntegrity>) => {
-      integrityProbe.fullChecks += 1;
-      const failure = integrityProbe.failFullWith;
-      integrityProbe.failFullWith = null;
-      if (failure) {
-        throw failure;
-      }
-      const result = actual.assertSqliteIntegrity(...args);
-      const afterCheck = integrityProbe.afterNextFullCheck;
-      integrityProbe.afterNextFullCheck = null;
-      afterCheck?.();
-      return result;
-    },
-    assertSqliteTableIntegrity: (...args: Parameters<typeof actual.assertSqliteTableIntegrity>) => {
-      integrityProbe.tableChecks += 1;
-      const failure = integrityProbe.failTableWith;
-      integrityProbe.failTableWith = null;
-      if (failure) {
-        throw failure;
-      }
-      return actual.assertSqliteTableIntegrity(...args);
-    },
-  };
-});
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import type { DB as OpenClawStateKyselyDatabase } from "../state/openclaw-state-db.generated.js";
 import {
   closeOpenClawStateDatabaseForTest,
   OPENCLAW_STATE_SCHEMA_VERSION,
+  runOpenClawStateWriteTransaction,
   withOpenClawStateStartupMigrationCheckpointDatabase,
 } from "../state/openclaw-state-db.js";
 import { resolveOpenClawStateSqlitePath } from "../state/openclaw-state-db.paths.js";
+import {
+  OpenClawStateOwnershipError,
+  STATE_SUPERVISION_KEY,
+} from "../state/openclaw-state-ownership.js";
 import {
   executeSqliteQuerySync,
   executeSqliteQueryTakeFirstSync,
@@ -56,20 +23,15 @@ import {
 import { requireNodeSqlite } from "./node-sqlite.js";
 import {
   acquireStartupMigrationLease,
+  acquireStartupMigrationLeaseWithWait,
   hasActiveStartupMigrationLease,
+  needsStateMigrationCheckpoint,
   needsStartupMigrationCheckpoint,
   readStartupMigrationVersion,
+  recordSuccessfulStateMigrations,
   recordSuccessfulStartupMigrations,
-  type StartupMigrationLease,
+  STARTUP_MIGRATION_LEASE_TTL_MS,
 } from "./startup-migration-checkpoint.js";
-
-beforeEach(() => {
-  integrityProbe.afterNextFullCheck = null;
-  integrityProbe.failFullWith = null;
-  integrityProbe.failTableWith = null;
-  integrityProbe.fullChecks = 0;
-  integrityProbe.tableChecks = 0;
-});
 
 afterEach(() => {
   closeOpenClawStateDatabaseForTest();
@@ -78,70 +40,16 @@ afterEach(() => {
 
 const startupMigrationTempDirs = useAutoCleanupTempDirTracker(afterEach);
 
-type StartupMigrationLeaseTestDatabase = Pick<OpenClawStateKyselyDatabase, "state_leases">;
+type StartupMigrationLeaseTestDatabase = Pick<
+  OpenClawStateKyselyDatabase,
+  "schema_meta" | "state_leases"
+>;
 
-function releaseStartupMigrationLeaseAt(lease: StartupMigrationLease, nowMs: number): void {
-  lease.release({ nowMs });
-}
-
-function withRawStartupMigrationDatabase<T>(
-  env: NodeJS.ProcessEnv,
-  operation: (db: DatabaseSync) => T,
-): T {
-  const sqlite = requireNodeSqlite();
-  const db = new sqlite.DatabaseSync(resolveOpenClawStateSqlitePath(env));
-  try {
-    return operation(db);
-  } finally {
-    db.close();
-  }
-}
-
-function overwriteStartupMigrationLeaseExpiresAt(env: NodeJS.ProcessEnv, expiresAt: number): void {
-  withRawStartupMigrationDatabase(env, (db) => {
-    db.prepare("UPDATE state_leases SET expires_at = ? WHERE scope = ? AND lease_key = ?").run(
-      expiresAt,
-      "startup-migrations",
-      "global",
-    );
-  });
-}
-
-function overwriteStartupMigrationLeaseOwner(
-  env: NodeJS.ProcessEnv,
-  owner: string,
-  expiresAt: number,
-): void {
-  withRawStartupMigrationDatabase(env, (db) => {
-    db.prepare(
-      "UPDATE state_leases SET owner = ?, expires_at = ? WHERE scope = ? AND lease_key = ?",
-    ).run(owner, expiresAt, "startup-migrations", "global");
-  });
-}
-
-function readStartupMigrationLeaseOwner(env: NodeJS.ProcessEnv): string | null {
-  return withRawStartupMigrationDatabase(env, (db) => {
-    const row = db
-      .prepare("SELECT owner FROM state_leases WHERE scope = ? AND lease_key = ?")
-      .get("startup-migrations", "global") as { owner?: unknown } | undefined;
-    return typeof row?.owner === "string" ? row.owner : null;
-  });
-}
-
-function dropStartupMigrationCheckpointTable(env: NodeJS.ProcessEnv): void {
-  withRawStartupMigrationDatabase(env, (db) => {
-    db.exec("DROP TABLE schema_meta;");
-  });
-}
-
-function hasStartupMigrationCheckpointTable(env: NodeJS.ProcessEnv): boolean {
-  return withRawStartupMigrationDatabase(env, (db) => {
-    const row = db
-      .prepare("SELECT 1 AS ok FROM sqlite_master WHERE type = 'table' AND name = 'schema_meta'")
-      .get() as { ok?: unknown } | undefined;
-    return row?.ok === 1;
-  });
-}
+const migrationIdentity = {
+  effectiveConfigFingerprint: "effective-config",
+  pluginDoctorConfigFingerprint: "plugin-doctor-config",
+  pluginMigrationFingerprint: "plugin-migrations",
+};
 
 /** Rewrites only the recorded owner start time so the live owner PID looks recycled. */
 function overwriteStartupMigrationLeaseOwnerStartedAt(
@@ -163,7 +71,7 @@ function overwriteStartupMigrationLeaseOwnerStartedAt(
         }),
       );
     },
-    { env, purpose: "lease-metadata" },
+    { env },
   );
 }
 
@@ -175,15 +83,6 @@ describe("startup migration checkpoint", () => {
     const dbPath = resolveOpenClawStateSqlitePath(env);
 
     expect(hasActiveStartupMigrationLease({ env })).toBe(false);
-    expect(existsSync(dbPath)).toBe(false);
-    expect(
-      needsStartupMigrationCheckpoint({
-        env,
-        version: "2026.7.2-beta.7.1",
-        buildIdentity: "frozen-sha",
-      }),
-    ).toBe(true);
-    expect(integrityProbe.fullChecks).toBe(0);
     expect(existsSync(dbPath)).toBe(false);
   });
 
@@ -198,6 +97,15 @@ describe("startup migration checkpoint", () => {
         env,
         version: "2026.7.1",
         buildIdentity: "2026-07-11T00:00:00.000Z",
+        identity: migrationIdentity,
+      }),
+    ).toBe(true);
+    expect(
+      needsStateMigrationCheckpoint({
+        env,
+        version: "2026.7.1",
+        buildIdentity: "2026-07-11T00:00:00.000Z",
+        identity: migrationIdentity,
       }),
     ).toBe(true);
 
@@ -205,6 +113,7 @@ describe("startup migration checkpoint", () => {
       env,
       version: "2026.7.1",
       buildIdentity: "2026-07-11T00:00:00.000Z",
+      identity: migrationIdentity,
       nowMs: 1234,
     });
 
@@ -214,6 +123,15 @@ describe("startup migration checkpoint", () => {
         env,
         version: "2026.7.1",
         buildIdentity: "2026-07-11T00:00:00.000Z",
+        identity: migrationIdentity,
+      }),
+    ).toBe(false);
+    expect(
+      needsStateMigrationCheckpoint({
+        env,
+        version: "2026.7.1",
+        buildIdentity: "2026-07-11T00:00:00.000Z",
+        identity: migrationIdentity,
       }),
     ).toBe(false);
     expect(
@@ -221,6 +139,7 @@ describe("startup migration checkpoint", () => {
         env,
         version: "2026.7.1",
         buildIdentity: "2026-07-11T00:01:00.000Z",
+        identity: migrationIdentity,
       }),
     ).toBe(true);
     expect(
@@ -228,8 +147,41 @@ describe("startup migration checkpoint", () => {
         env,
         version: "2026.7.2",
         buildIdentity: "2026-07-11T00:00:00.000Z",
+        identity: migrationIdentity,
       }),
     ).toBe(true);
+    for (const [field, value] of [
+      ["effectiveConfigFingerprint", "effective-config-changed"],
+      ["pluginDoctorConfigFingerprint", "plugin-doctor-config-changed"],
+      ["pluginMigrationFingerprint", "plugin-migrations-changed"],
+    ] as const) {
+      expect(
+        needsStartupMigrationCheckpoint({
+          env,
+          version: "2026.7.1",
+          buildIdentity: "2026-07-11T00:00:00.000Z",
+          identity: { ...migrationIdentity, [field]: value },
+        }),
+      ).toBe(true);
+    }
+  });
+
+  it("keeps state-only completion narrower than gateway startup", () => {
+    const env = {
+      OPENCLAW_STATE_DIR: startupMigrationTempDirs.make("openclaw-startup-migration-"),
+    };
+    const checkpoint = {
+      env,
+      version: "2026.7.1",
+      buildIdentity: "2026-07-11T00:00:00.000Z",
+      identity: migrationIdentity,
+    };
+
+    recordSuccessfulStateMigrations({ ...checkpoint, nowMs: 1234 });
+
+    expect(needsStateMigrationCheckpoint(checkpoint)).toBe(false);
+    expect(needsStartupMigrationCheckpoint(checkpoint)).toBe(true);
+    expect(readStartupMigrationVersion(env)).toBeNull();
   });
 
   it("keeps the fast path disabled without immutable build provenance", () => {
@@ -241,19 +193,64 @@ describe("startup migration checkpoint", () => {
       env,
       version: "2026.7.1",
       buildIdentity: null,
+      identity: migrationIdentity,
       nowMs: 1234,
     });
 
-    expect(needsStartupMigrationCheckpoint({ env, version: "2026.7.1", buildIdentity: null })).toBe(
-      true,
-    );
+    expect(
+      needsStartupMigrationCheckpoint({
+        env,
+        version: "2026.7.1",
+        buildIdentity: null,
+        identity: migrationIdentity,
+      }),
+    ).toBe(true);
     expect(
       needsStartupMigrationCheckpoint({
         env,
         version: "2026.7.1",
         buildIdentity: "2026-07-11T00:00:00.000Z",
+        identity: migrationIdentity,
       }),
     ).toBe(true);
+    expect(
+      needsStartupMigrationCheckpoint({
+        env,
+        version: "2026.7.1",
+        buildIdentity: "2026-07-11T00:00:00.000Z",
+        identity: null,
+      }),
+    ).toBe(true);
+  });
+
+  it("treats legacy build-only checkpoints as stale once", () => {
+    const env = {
+      OPENCLAW_STATE_DIR: startupMigrationTempDirs.make("openclaw-startup-migration-"),
+    };
+    const checkpoint = {
+      env,
+      version: "2026.7.1",
+      buildIdentity: "2026-07-11T00:00:00.000Z",
+      identity: migrationIdentity,
+    };
+    recordSuccessfulStartupMigrations({ ...checkpoint, nowMs: 1234 });
+    withOpenClawStateStartupMigrationCheckpointDatabase(
+      (db) => {
+        const kysely = getNodeSqliteKysely<StartupMigrationLeaseTestDatabase>(db);
+        executeSqliteQuerySync(
+          db,
+          kysely.updateTable("schema_meta").set({
+            app_version: `${checkpoint.version}\n${checkpoint.buildIdentity}`,
+            schema_version: 2,
+          }),
+        );
+      },
+      { env },
+    );
+
+    expect(needsStartupMigrationCheckpoint(checkpoint)).toBe(true);
+    expect(needsStateMigrationCheckpoint(checkpoint)).toBe(true);
+    expect(readStartupMigrationVersion(env)).toBe("2026.7.1");
   });
 
   it("serializes startup migrations with an expiring shared-state lease", () => {
@@ -265,18 +262,164 @@ describe("startup migration checkpoint", () => {
     expect(hasActiveStartupMigrationLease({ env, nowMs: 1001 })).toBe(true);
 
     expect(() => acquireStartupMigrationLease({ env, nowMs: 1001, owner: "second" })).toThrow(
-      `OpenClaw startup migrations are already running for this state directory; retry after the other gateway finishes or after 1970-01-01T00:05:01.000Z. (held by pid ${process.pid})`,
+      `OpenClaw startup migrations are already running for this state directory; retry after the other OpenClaw process finishes or after 1970-01-01T00:05:01.000Z. (held by pid ${process.pid})`,
     );
 
-    releaseStartupMigrationLeaseAt(lease, 1002);
+    lease.release();
 
     expect(hasActiveStartupMigrationLease({ env, nowMs: 1002 })).toBe(false);
 
     const next = acquireStartupMigrationLease({ env, nowMs: 1002, owner: "second" });
-    releaseStartupMigrationLeaseAt(next, 1003);
+    next.release();
   });
 
-  it("reclaims an active startup migration lease whose owner process is gone", () => {
+  it("rechecks external ownership inside the final lease write transaction", () => {
+    const env = {
+      OPENCLAW_STATE_DIR: startupMigrationTempDirs.make("openclaw-startup-migration-"),
+    };
+    runOpenClawStateWriteTransaction(() => undefined, { env });
+    closeOpenClawStateDatabaseForTest();
+    const databasePath = resolveOpenClawStateSqlitePath(env);
+    const { DatabaseSync } = requireNodeSqlite();
+    const originalExec = Object.getOwnPropertyDescriptor(DatabaseSync.prototype, "exec")?.value as
+      | ((this: import("node:sqlite").DatabaseSync, sql: string) => void)
+      | undefined;
+    if (!originalExec) {
+      throw new Error("DatabaseSync.exec descriptor is unavailable");
+    }
+    // Schema setup commits before the lease helper starts its own transaction.
+    // Claim at that exact boundary so the final transaction must fence the new owner.
+    let immediateTransactionCount = 0;
+    const exec = vi.spyOn(DatabaseSync.prototype, "exec").mockImplementation(function (
+      this: import("node:sqlite").DatabaseSync,
+      sql: string,
+    ) {
+      if (sql === "BEGIN IMMEDIATE" && ++immediateTransactionCount === 2) {
+        const claimant = new DatabaseSync(databasePath);
+        try {
+          claimant
+            .prepare(
+              `INSERT INTO config_machine_state (state_key, value_json, updated_at_ms)
+               VALUES (?, ?, ?)`,
+            )
+            .run(
+              STATE_SUPERVISION_KEY,
+              JSON.stringify({
+                version: 1,
+                mode: "external",
+                managerId: "race-manager",
+                claimedAt: 1,
+              }),
+              1,
+            );
+        } finally {
+          claimant.close();
+        }
+      }
+      return originalExec.call(this, sql);
+    });
+
+    try {
+      expect(() => acquireStartupMigrationLease({ env, owner: "unmarked", nowMs: 1 })).toThrow(
+        OpenClawStateOwnershipError,
+      );
+    } finally {
+      exec.mockRestore();
+    }
+
+    const verify = new DatabaseSync(databasePath, { readOnly: true });
+    try {
+      expect(
+        verify
+          .prepare(
+            `SELECT COUNT(*) AS count
+             FROM state_leases
+             WHERE scope = 'startup-migrations' AND lease_key = 'global'`,
+          )
+          .get(),
+      ).toEqual({ count: 0 });
+      expect(
+        verify
+          .prepare(
+            `SELECT COUNT(*) AS count
+             FROM schema_meta
+             WHERE meta_key IN ('state-migrations', 'startup-migrations')`,
+          )
+          .get(),
+      ).toEqual({ count: 0 });
+    } finally {
+      verify.close();
+    }
+  });
+
+  it("waits for a live same-host startup migration lease to be released", async () => {
+    const env = {
+      OPENCLAW_STATE_DIR: startupMigrationTempDirs.make("openclaw-startup-migration-"),
+    };
+    let nowMs = 1001;
+    let elapsedMs = 0;
+    let sleepCount = 0;
+    const lease = acquireStartupMigrationLease({ env, nowMs: 1000, owner: "first" });
+    const checkpoint = {
+      env,
+      version: "2026.7.1",
+      buildIdentity: "2026-07-11T00:00:00.000Z",
+      identity: migrationIdentity,
+    };
+
+    expect(needsStartupMigrationCheckpoint(checkpoint)).toBe(true);
+
+    const acquired = await acquireStartupMigrationLeaseWithWait({
+      env,
+      owner: "second",
+      timeoutMs: 1000,
+      pollIntervalMs: 250,
+      now: () => nowMs,
+      monotonicNow: () => elapsedMs,
+      sleep: async (ms) => {
+        sleepCount += 1;
+        recordSuccessfulStartupMigrations({ ...checkpoint, lease, nowMs });
+        lease.release();
+        nowMs += ms;
+        elapsedMs += ms;
+      },
+    });
+
+    expect(sleepCount).toBe(1);
+    expect(acquired.owner).toBe("second");
+    expect(needsStartupMigrationCheckpoint(checkpoint)).toBe(false);
+    acquired.release();
+  });
+
+  it("preserves the existing lease error when the wait bound expires", async () => {
+    const env = {
+      OPENCLAW_STATE_DIR: startupMigrationTempDirs.make("openclaw-startup-migration-"),
+    };
+    let nowMs = 1001;
+    let elapsedMs = 0;
+    const lease = acquireStartupMigrationLease({ env, nowMs: 1000, owner: "first" });
+
+    await expect(
+      acquireStartupMigrationLeaseWithWait({
+        env,
+        owner: "second",
+        timeoutMs: 500,
+        pollIntervalMs: 250,
+        now: () => nowMs,
+        monotonicNow: () => elapsedMs,
+        sleep: async (ms) => {
+          nowMs += ms;
+          elapsedMs += ms;
+        },
+      }),
+    ).rejects.toThrow(
+      `OpenClaw startup migrations are already running for this state directory; retry after the other OpenClaw process finishes or after 1970-01-01T00:05:01.000Z. (held by pid ${process.pid})`,
+    );
+
+    lease.release();
+  });
+
+  it("reclaims an active startup migration lease whose owner process is gone", async () => {
     const env = {
       OPENCLAW_STATE_DIR: startupMigrationTempDirs.make("openclaw-startup-migration-"),
     };
@@ -290,10 +433,14 @@ describe("startup migration checkpoint", () => {
 
     expect(hasActiveStartupMigrationLease({ env, nowMs: 1001 })).toBe(false);
 
-    const replacement = acquireStartupMigrationLease({ env, nowMs: 1001, owner: "replacement" });
-    releaseStartupMigrationLeaseAt(stale, 1002);
+    const replacement = await acquireStartupMigrationLeaseWithWait({
+      env,
+      owner: "replacement",
+      now: () => 1001,
+    });
+    stale.release();
     expect(hasActiveStartupMigrationLease({ env, nowMs: 1002 })).toBe(true);
-    releaseStartupMigrationLeaseAt(replacement, 1003);
+    replacement.release();
   });
 
   // PID numbers are recycled by the OS. Without the start-time guard a stale lease whose PID was
@@ -312,9 +459,9 @@ describe("startup migration checkpoint", () => {
       expect(hasActiveStartupMigrationLease({ env, nowMs: 1001 })).toBe(false);
 
       const replacement = acquireStartupMigrationLease({ env, nowMs: 1001, owner: "replacement" });
-      releaseStartupMigrationLeaseAt(stale, 1002);
+      stale.release();
       expect(hasActiveStartupMigrationLease({ env, nowMs: 1002 })).toBe(true);
-      releaseStartupMigrationLeaseAt(replacement, 1003);
+      replacement.release();
     },
   );
 
@@ -326,7 +473,7 @@ describe("startup migration checkpoint", () => {
 
     expect(hasActiveStartupMigrationLease({ env, nowMs: 301_001 })).toBe(false);
 
-    releaseStartupMigrationLeaseAt(lease, 301_001);
+    lease.release();
   });
 
   it("renews startup migration leases while the owner is still running", () => {
@@ -341,7 +488,7 @@ describe("startup migration checkpoint", () => {
       "OpenClaw startup migrations are already running",
     );
 
-    releaseStartupMigrationLeaseAt(lease, 301_002);
+    lease.release();
   });
 
   it("does not checkpoint startup migrations after the lease is lost", () => {
@@ -356,12 +503,40 @@ describe("startup migration checkpoint", () => {
         env,
         lease: first,
         version: "2026.7.1",
+        buildIdentity: "2026-07-11T00:00:00.000Z",
+        identity: migrationIdentity,
         nowMs: 400_001,
       }),
     ).toThrow("startup migration lease was lost");
     expect(readStartupMigrationVersion(env)).toBeNull();
 
-    releaseStartupMigrationLeaseAt(second, 400_002);
+    second.release();
+  });
+
+  it("checks exact lease ownership inside the caller write transaction", () => {
+    const env = {
+      OPENCLAW_STATE_DIR: startupMigrationTempDirs.make("openclaw-startup-migration-"),
+    };
+    const nowMs = Date.now();
+    const first = acquireStartupMigrationLease({ env, nowMs, owner: "first" });
+    const second = acquireStartupMigrationLease({
+      env,
+      nowMs: nowMs + STARTUP_MIGRATION_LEASE_TTL_MS + 1,
+      owner: "second",
+    });
+
+    runOpenClawStateWriteTransaction(
+      ({ db }) => {
+        expect(() => first.assertOwnedInTransaction(db)).toThrow(
+          "startup migration lease was lost",
+        );
+        expect(() => second.assertOwnedInTransaction(db)).not.toThrow();
+      },
+      { env },
+    );
+
+    first.release();
+    second.release();
   });
 
   it("reads the checkpoint without requiring the full state schema to be canonical", () => {
@@ -385,7 +560,7 @@ describe("startup migration checkpoint", () => {
 
     expect(needsStartupMigrationCheckpoint({ env, version: "2026.7.1" })).toBe(true);
     const lease = acquireStartupMigrationLease({ env, nowMs: 1000, owner: "first" });
-    releaseStartupMigrationLeaseAt(lease, 1001);
+    lease.release();
   });
 
   it("refuses future-version state databases before creating checkpoint tables", () => {
@@ -399,21 +574,9 @@ describe("startup migration checkpoint", () => {
     db.exec(`PRAGMA user_version = ${OPENCLAW_STATE_SCHEMA_VERSION + 1};`);
     db.close();
 
-    expect(() =>
-      needsStartupMigrationCheckpoint({
-        env,
-        version: "2026.7.2-beta.7.1",
-        buildIdentity: "frozen-sha",
-      }),
-    ).toThrow("newer schema version " + String(OPENCLAW_STATE_SCHEMA_VERSION + 1));
-    expect(integrityProbe.fullChecks).toBe(0);
-    expect(integrityProbe.tableChecks).toBe(0);
-
     expect(() => acquireStartupMigrationLease({ env, nowMs: 1000, owner: "first" })).toThrow(
       `newer schema version ${OPENCLAW_STATE_SCHEMA_VERSION + 1}`,
     );
-    expect(integrityProbe.fullChecks).toBe(0);
-    expect(integrityProbe.tableChecks).toBe(0);
 
     const verify = new sqlite.DatabaseSync(dbPath, { readOnly: true });
     const row = verify
@@ -421,206 +584,5 @@ describe("startup migration checkpoint", () => {
       .get() as { ok?: unknown } | undefined;
     verify.close();
     expect(row).toBeUndefined();
-  });
-
-  it("runs full integrity only at acquire and post-migration record boundaries", () => {
-    const env = {
-      OPENCLAW_STATE_DIR: startupMigrationTempDirs.make("openclaw-startup-migration-"),
-    };
-
-    expect(
-      needsStartupMigrationCheckpoint({
-        env,
-        version: "2026.7.2-beta.7.1",
-        buildIdentity: "frozen-sha",
-      }),
-    ).toBe(true);
-
-    const lease = acquireStartupMigrationLease({ env, nowMs: 1000, owner: "first" });
-    lease.heartbeat({ nowMs: 1100 });
-    lease.heartbeat({ nowMs: 1200 });
-    lease.heartbeat({ nowMs: 1300 });
-
-    expect(integrityProbe.fullChecks).toBe(1);
-
-    recordSuccessfulStartupMigrations({
-      env,
-      lease,
-      version: "2026.7.2-beta.7.1",
-      buildIdentity: "frozen-sha",
-      nowMs: 1400,
-    });
-    releaseStartupMigrationLeaseAt(lease, 1500);
-
-    expect(integrityProbe.fullChecks).toBe(2);
-    expect(
-      needsStartupMigrationCheckpoint({
-        env,
-        version: "2026.7.2-beta.7.1",
-        buildIdentity: "frozen-sha",
-      }),
-    ).toBe(false);
-    expect(integrityProbe.fullChecks).toBe(2);
-  });
-
-  it("fails closed when the checkpoint table integrity check fails", () => {
-    const env = {
-      OPENCLAW_STATE_DIR: startupMigrationTempDirs.make("openclaw-startup-migration-"),
-    };
-    recordSuccessfulStartupMigrations({
-      env,
-      version: "2026.7.2-beta.7.1",
-      buildIdentity: "frozen-sha",
-      nowMs: 1000,
-    });
-    integrityProbe.fullChecks = 0;
-    integrityProbe.tableChecks = 0;
-    integrityProbe.failTableWith = new Error("schema_meta table is corrupt");
-
-    expect(() =>
-      needsStartupMigrationCheckpoint({
-        env,
-        version: "2026.7.2-beta.7.1",
-        buildIdentity: "frozen-sha",
-      }),
-    ).toThrow("schema_meta table is corrupt");
-    expect(integrityProbe.fullChecks).toBe(0);
-  });
-
-  it("fails closed when the lease table integrity check fails", () => {
-    const env = {
-      OPENCLAW_STATE_DIR: startupMigrationTempDirs.make("openclaw-startup-migration-"),
-    };
-    const lease = acquireStartupMigrationLease({ env, nowMs: 1000, owner: "first" });
-    integrityProbe.fullChecks = 0;
-    integrityProbe.tableChecks = 0;
-    integrityProbe.failTableWith = new Error("state_leases table is corrupt");
-
-    expect(() => hasActiveStartupMigrationLease({ env, nowMs: 1001 })).toThrow(
-      "state_leases table is corrupt",
-    );
-    expect(integrityProbe.fullChecks).toBe(0);
-
-    releaseStartupMigrationLeaseAt(lease, 1002);
-  });
-
-  it("starts the acquisition TTL after its full integrity check", () => {
-    const env = {
-      OPENCLAW_STATE_DIR: startupMigrationTempDirs.make("openclaw-startup-migration-"),
-    };
-    const now = vi.spyOn(Date, "now").mockReturnValue(1000);
-    integrityProbe.afterNextFullCheck = () => {
-      now.mockReturnValue(400_000);
-    };
-
-    const lease = acquireStartupMigrationLease({ env, owner: "first" });
-
-    expect(hasActiveStartupMigrationLease({ env, nowMs: 400_001 })).toBe(true);
-    releaseStartupMigrationLeaseAt(lease, 400_002);
-  });
-
-  it("checks lease expiry using time captured after post-migration integrity", () => {
-    const env = {
-      OPENCLAW_STATE_DIR: startupMigrationTempDirs.make("openclaw-startup-migration-"),
-    };
-    const lease = acquireStartupMigrationLease({ env, nowMs: 1000, owner: "first" });
-    const now = vi.spyOn(Date, "now").mockReturnValue(1001);
-    integrityProbe.afterNextFullCheck = () => {
-      now.mockReturnValue(301_001);
-    };
-
-    expect(() =>
-      recordSuccessfulStartupMigrations({
-        env,
-        lease,
-        version: "2026.7.2-beta.7.1",
-        buildIdentity: "frozen-sha",
-      }),
-    ).toThrow("startup migration lease was lost");
-    expect(readStartupMigrationVersion(env)).toBeNull();
-  });
-
-  it("does not write the checkpoint when post-migration integrity fails", () => {
-    const env = {
-      OPENCLAW_STATE_DIR: startupMigrationTempDirs.make("openclaw-startup-migration-"),
-    };
-    const lease = acquireStartupMigrationLease({ env, nowMs: 1000, owner: "first" });
-    integrityProbe.failFullWith = new Error("post-migration integrity failed");
-
-    expect(() =>
-      recordSuccessfulStartupMigrations({
-        env,
-        lease,
-        version: "2026.7.2-beta.7.1",
-        buildIdentity: "frozen-sha",
-        nowMs: 1001,
-      }),
-    ).toThrow("post-migration integrity failed");
-    expect(readStartupMigrationVersion(env)).toBeNull();
-
-    releaseStartupMigrationLeaseAt(lease, 1002);
-    expect(integrityProbe.fullChecks).toBe(2);
-  });
-
-  it("does not delete an expired lease during idempotent release", () => {
-    const env = {
-      OPENCLAW_STATE_DIR: startupMigrationTempDirs.make("openclaw-startup-migration-"),
-    };
-    const lease = acquireStartupMigrationLease({ env, nowMs: 1000, owner: "first" });
-    overwriteStartupMigrationLeaseExpiresAt(env, 1000);
-    integrityProbe.fullChecks = 0;
-
-    releaseStartupMigrationLeaseAt(lease, 1000);
-
-    expect(integrityProbe.fullChecks).toBe(0);
-    expect(readStartupMigrationLeaseOwner(env)).toBe("first");
-  });
-
-  it("does not recreate checkpoint schema after a leased migration loses the table", () => {
-    const env = {
-      OPENCLAW_STATE_DIR: startupMigrationTempDirs.make("openclaw-startup-migration-"),
-    };
-    const lease = acquireStartupMigrationLease({ env, nowMs: 1000, owner: "first" });
-    dropStartupMigrationCheckpointTable(env);
-    integrityProbe.fullChecks = 0;
-
-    expect(() =>
-      recordSuccessfulStartupMigrations({
-        env,
-        lease,
-        version: "2026.7.2-beta.7.1",
-        buildIdentity: "frozen-sha",
-        nowMs: 1001,
-      }),
-    ).toThrow();
-    expect(hasStartupMigrationCheckpointTable(env)).toBe(false);
-    expect(integrityProbe.fullChecks).toBe(1);
-
-    releaseStartupMigrationLeaseAt(lease, 1002);
-  });
-
-  it("rejects a lease owner replaced after post-migration integrity", () => {
-    const env = {
-      OPENCLAW_STATE_DIR: startupMigrationTempDirs.make("openclaw-startup-migration-"),
-    };
-    const lease = acquireStartupMigrationLease({ env, nowMs: 1000, owner: "first" });
-    integrityProbe.fullChecks = 0;
-    integrityProbe.afterNextFullCheck = () => {
-      overwriteStartupMigrationLeaseOwner(env, "second", 400_000);
-    };
-
-    expect(() =>
-      recordSuccessfulStartupMigrations({
-        env,
-        lease,
-        version: "2026.7.2-beta.7.1",
-        buildIdentity: "frozen-sha",
-        nowMs: 1001,
-      }),
-    ).toThrow("startup migration lease was lost");
-    expect(readStartupMigrationVersion(env)).toBeNull();
-    expect(integrityProbe.fullChecks).toBe(1);
-
-    releaseStartupMigrationLeaseAt(lease, 1002);
   });
 });

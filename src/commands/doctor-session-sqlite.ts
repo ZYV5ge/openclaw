@@ -56,18 +56,16 @@ import {
 import { recoverDoctorSessionSqliteTargets } from "./doctor-session-sqlite-recover-report.js";
 import { restoreDoctorSessionSqliteTargets } from "./doctor-session-sqlite-restore-report.js";
 import {
+  createDoctorSessionSqliteTotals,
+  createDoctorSessionSqliteTargetReport,
   isSessionSqliteMigrationWarning,
+  sumDoctorSessionSqliteTargets,
   type DoctorSessionSqliteIssue,
   type DoctorSessionSqliteMode,
   type DoctorSessionSqliteOptions,
   type DoctorSessionSqliteReport,
   type DoctorSessionSqliteTargetReport,
 } from "./doctor-session-sqlite-types.js";
-import {
-  assertDoctorSqliteCompactionDiskSpace,
-  isDoctorSqliteDiskSpaceError,
-  type DoctorSqliteDiskSpaceError,
-} from "./doctor-sqlite-compact.js";
 import {
   assertDoctorSqliteMaintenancePathsNotAliased,
   isDestructiveDoctorSessionSqliteMode,
@@ -300,45 +298,19 @@ async function inspectOrMigrateTarget(params: {
   const referencedTranscriptFiles = new Set(
     allRecords.flatMap((record) => (record.transcriptPath ? [record.transcriptPath] : [])),
   );
-  const report: DoctorSessionSqliteTargetReport = {
+  const report = createDoctorSessionSqliteTargetReport({
     agentId: params.target.agentId,
     archivedLegacyStoreFiles: [],
-    archivedTranscriptFiles: [],
-    archivedUnreferencedJsonlFiles: [],
-    importedEntries: 0,
-    importedTranscriptEvents: 0,
     issues,
     legacyEntries: records.length,
     referencedTranscriptFiles: referencedTranscriptFiles.size,
-    sqliteEntries: 0,
+    sqliteEntries: readSqliteEntryCount(params.target),
     sqlitePath: resolveTargetSqlitePath(params.target),
     storePath: params.target.storePath,
     unreferencedJsonlFiles: listUnreferencedJsonlFiles(params.target.storePath, [
       ...referencedTranscriptFiles,
     ]),
-    validatedEntries: 0,
-    validatedTranscriptEvents: 0,
-  };
-  if (params.mode === "import" && blockingIssueCount(report) === 0) {
-    try {
-      assertDoctorSqliteCompactionDiskSpace({
-        sqlitePath: report.sqlitePath,
-        stage: "before-import",
-      });
-    } catch (error) {
-      if (!isDoctorSqliteDiskSpaceError(error)) {
-        throw error;
-      }
-      report.issues.push(createDoctorSqliteDiskSpaceIssue(error));
-      updateMigrationManifestTarget(
-        params.activeRun,
-        createMigrationTargetInput(params.target),
-        report.issues,
-        { validationBeforeArchive: "not_run" },
-      );
-      return report;
-    }
-  }
+  });
   if (params.mode === "inspect") {
     report.sqliteEntries = readSqliteEntryCount(params.target);
     appendSqliteDbStats(params.target, report);
@@ -346,10 +318,7 @@ async function inspectOrMigrateTarget(params: {
     return report;
   }
   if (params.mode === "compact") {
-    const compactOutcome = compactSqliteDatabase(params.target, report, { env: params.env });
-    if (compactOutcome === "disk-blocked") {
-      return report;
-    }
+    compactSqliteDatabase(params.target, report, { env: params.env });
     report.sqliteEntries = readSqliteEntryCount(params.target);
     appendSqliteDbStats(params.target, report);
     return report;
@@ -388,19 +357,11 @@ async function inspectOrMigrateTarget(params: {
     if (validationPassed) {
       // Post-import compact retrofits auto_vacuum=INCREMENTAL onto pre-flip
       // databases and returns the pages the import churn freed.
-      const compactOutcome = compactSqliteDatabase(params.target, report, {
+      compactSqliteDatabase(params.target, report, {
         closeImportedHandle: true,
         env: params.env,
         migrateOlderSchema: true,
       });
-      if (compactOutcome === "disk-blocked") {
-        updateMigrationManifestTarget(
-          params.activeRun,
-          createMigrationTargetInput(params.target),
-          report.issues,
-        );
-        return report;
-      }
     }
   }
   report.unreferencedJsonlFiles = listUnreferencedJsonlFiles(params.target.storePath, [
@@ -1153,22 +1114,6 @@ function appendSqliteDbStats(
   }
 }
 
-type DoctorSqliteCompactOutcome = "completed" | "failed" | "disk-blocked";
-
-function createDoctorSqliteDiskSpaceIssue(
-  error: DoctorSqliteDiskSpaceError,
-): DoctorSessionSqliteIssue {
-  return {
-    code: error.code,
-    message: error.message,
-    stage: error.stage,
-    ...(error.availableBytes !== undefined ? { availableBytes: error.availableBytes } : {}),
-    ...(error.dbSizeBytes !== undefined ? { dbSizeBytes: error.dbSizeBytes } : {}),
-    ...(error.requiredBytes !== undefined ? { requiredBytes: error.requiredBytes } : {}),
-    ...(error.walSizeBytes !== undefined ? { walSizeBytes: error.walSizeBytes } : {}),
-  };
-}
-
 function compactSqliteDatabase(
   target: SessionStoreTarget,
   report: DoctorSessionSqliteTargetReport,
@@ -1177,7 +1122,7 @@ function compactSqliteDatabase(
     env?: NodeJS.ProcessEnv;
     migrateOlderSchema?: boolean;
   } = {},
-): DoctorSqliteCompactOutcome {
+): void {
   try {
     if (options.closeImportedHandle) {
       closeOpenClawAgentDatabaseByPath(resolveTargetSqlitePath(target));
@@ -1188,17 +1133,11 @@ function compactSqliteDatabase(
           migrateOlderSchema: true,
         })
       : compactDoctorSessionSqliteTarget(target, { env: options.env });
-    return "completed";
   } catch (err) {
-    if (isDoctorSqliteDiskSpaceError(err)) {
-      report.issues.push(createDoctorSqliteDiskSpaceIssue(err));
-      return "disk-blocked";
-    }
     report.issues.push({
       code: "sqlite_compact_failed",
       message: `SQLite database compact failed: ${String(err)}`,
     });
-    return "failed";
   }
 }
 
@@ -1390,6 +1329,8 @@ function summarizeDoctorSessionSqliteReport(
   targets: DoctorSessionSqliteTargetReport[],
   activeRun?: ActiveSessionSqliteMigrationRun,
 ): DoctorSessionSqliteReport {
+  const sum = (value: (target: DoctorSessionSqliteTargetReport) => number) =>
+    sumDoctorSessionSqliteTargets(targets, value);
   return {
     ...(activeRun
       ? {
@@ -1407,51 +1348,18 @@ function summarizeDoctorSessionSqliteReport(
       : {}),
     mode,
     targets,
-    totals: {
-      archivedLegacyStoreFiles: targets.reduce(
-        (total, target) => total + (target.archivedLegacyStoreFiles?.length ?? 0),
-        0,
-      ),
-      archivedTranscriptFiles: targets.reduce(
-        (total, target) => total + target.archivedTranscriptFiles.length,
-        0,
-      ),
-      archivedUnreferencedJsonlFiles: targets.reduce(
-        (total, target) => total + target.archivedUnreferencedJsonlFiles.length,
-        0,
-      ),
-      importedEntries: sumTargets(targets, "importedEntries"),
-      importedTranscriptEvents: sumTargets(targets, "importedTranscriptEvents"),
-      issues: targets.reduce((total, target) => total + target.issues.length, 0),
-      legacyEntries: sumTargets(targets, "legacyEntries"),
-      reclaimedBytes: targets.reduce(
-        (total, target) => total + (target.compact?.reclaimedBytes ?? 0),
-        0,
-      ),
-      sqliteEntries: sumTargets(targets, "sqliteEntries"),
-      targets: targets.length,
-      unreferencedJsonlFiles: targets.reduce(
-        (total, target) => total + target.unreferencedJsonlFiles.length,
-        0,
-      ),
-      validatedEntries: sumTargets(targets, "validatedEntries"),
-      validatedTranscriptEvents: sumTargets(targets, "validatedTranscriptEvents"),
-    },
+    totals: createDoctorSessionSqliteTotals(targets, {
+      archivedLegacyStoreFiles: sum((target) => target.archivedLegacyStoreFiles?.length ?? 0),
+      archivedTranscriptFiles: sum((target) => target.archivedTranscriptFiles.length),
+      archivedUnreferencedJsonlFiles: sum((target) => target.archivedUnreferencedJsonlFiles.length),
+      importedEntries: sum((target) => target.importedEntries),
+      importedTranscriptEvents: sum((target) => target.importedTranscriptEvents),
+      legacyEntries: sum((target) => target.legacyEntries),
+      reclaimedBytes: sum((target) => target.compact?.reclaimedBytes ?? 0),
+      unreferencedJsonlFiles: sum((target) => target.unreferencedJsonlFiles.length),
+      validatedEntries: sum((target) => target.validatedEntries),
+      validatedTranscriptEvents: sum((target) => target.validatedTranscriptEvents),
+    }),
   };
-}
-
-function sumTargets(
-  targets: DoctorSessionSqliteTargetReport[],
-  key: keyof Pick<
-    DoctorSessionSqliteTargetReport,
-    | "importedEntries"
-    | "importedTranscriptEvents"
-    | "legacyEntries"
-    | "sqliteEntries"
-    | "validatedEntries"
-    | "validatedTranscriptEvents"
-  >,
-): number {
-  return targets.reduce((total, target) => total + target[key], 0);
 }
 /* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */

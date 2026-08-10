@@ -44,6 +44,21 @@ Before a harness is selected, OpenClaw has already resolved:
 A harness runs a prepared attempt; it does not pick providers, replace channel
 delivery, or silently switch models.
 
+### Native tool-policy enforcement
+
+Set `conversationToolPolicySupport: "exact"` only when `runAttempt` enforces every
+explicit OpenClaw tool-policy layer across native and built-in tools, OpenClaw
+tools, requester and configured MCP servers, apps, delegation, and resumed
+threads. Core passes `params.pluginHarnessToolPolicyRestricted` as the prepared
+decision that the native surface must be isolated. Default tool-profile narrowing
+does not set this flag.
+
+Omit the declaration when any native capability can bypass those layers.
+OpenClaw then visibly rejects explicitly restricted turns before invoking the
+harness. The operator can switch the session to the embedded runtime or upgrade
+the harness. Channel `/btw` side questions with a restrictive direct policy are
+rejected by core and are not covered by this declaration.
+
 ### Harness-owned auth bootstrap
 
 By default, core resolves provider credentials before calling a harness. A
@@ -204,6 +219,18 @@ fallback only applies when no registered plugin harness supports the resolved
 provider/model. Once a plugin harness has claimed a run, OpenClaw does not
 replay that same turn through another runtime, because that can change
 auth/runtime semantics or duplicate side effects.
+
+A failure that occurs before the harness starts any model work may use
+`AgentHarnessPreflightError` from
+`openclaw/plugin-sdk/agent-harness-runtime`. The default error remains terminal
+for the whole model-fallback chain. Pass `{ scope: "harness" }` only when the
+failure is local to the selected harness and retrying another model on that same
+harness would repeat it. OpenClaw records the actual selected harness at the
+attempt boundary, skips only later candidates proven to use that harness, and
+runs any differently owned candidate through its normal runtime and policy
+checks. Plugins opt into the scope but never name the harness owner on the
+error. Do not use harness scope after a request or tool action may have produced
+side effects.
 
 Configured runtime policy remains authoritative about the desired runtime. A
 persisted session `agentHarnessId` keeps ownership of its native transcript

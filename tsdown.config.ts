@@ -10,17 +10,18 @@ import {
   buildPluginSdkEntrySources,
   pluginSdkEntrypoints,
   productionPluginSdkEntrypoints,
-} from "./scripts/lib/plugin-sdk-entries.mjs";
+  publicPluginSdkEntrypoints,
+} from "./scripts/lib/plugin-sdk-entries.mts";
 import {
   createStateSchemaInlinePlugin,
   STATE_SCHEMA_INLINE_PLUGIN_NAME,
-} from "./scripts/lib/state-schema-inline-plugin.mjs";
+} from "./scripts/lib/state-schema-inline-plugin.mts";
 import {
   TSDOWN_PACKAGE_CONFIG_GROUP,
   TSDOWN_UNIFIED_CONFIG_GROUP,
   TSDOWN_UNIFIED_DTS_CONFIG_GROUPS,
-} from "./scripts/lib/tsdown-config-groups.mjs";
-import { tsdownPackageOutputRoot } from "./scripts/lib/tsdown-output-roots.mjs";
+} from "./scripts/lib/tsdown-config-groups.mts";
+import { tsdownPackageOutputRoot } from "./scripts/lib/tsdown-output-roots.mts";
 
 type InputOptionsFactory = Extract<NonNullable<UserConfig["inputOptions"]>, Function>;
 type InputOptionsArg = InputOptionsFactory extends (
@@ -289,6 +290,8 @@ function buildCoreDistEntries(): Record<string, string> {
     "agents/compaction-planning.worker": "src/agents/compaction-planning.worker.ts",
     "agents/model-provider-auth.worker": "src/agents/model-provider-auth.worker.ts",
     "audit/audit-event-writer.worker": "src/audit/audit-event-writer.worker.ts",
+    "config/sessions/session-accessor.sqlite-archive.worker":
+      "src/config/sessions/session-accessor.sqlite-archive.worker.ts",
     "config/sessions/session-transcript-reconcile.worker":
       "src/config/sessions/session-transcript-reconcile.worker.ts",
     "state/openclaw-database-verify.worker": "src/state/openclaw-database-verify.worker.ts",
@@ -299,6 +302,7 @@ function buildCoreDistEntries(): Record<string, string> {
     "provider-dispatcher.runtime": "src/auto-reply/reply/provider-dispatcher.runtime.ts",
     "server-close.runtime": "src/gateway/server-close.runtime.ts",
     "gateway/worker-environments/runtime": "src/gateway/worker-environments/runtime.ts",
+    "worker/workspace-rsync-receiver": "src/worker/workspace-rsync-receiver.ts",
     "plugins/hook-runner-global": "src/plugins/hook-runner-global.ts",
     "plugins/memory-state": "src/plugins/memory-state.ts",
     "plugins/synthetic-auth.runtime": "src/plugins/synthetic-auth.runtime.ts",
@@ -410,14 +414,6 @@ function buildPackageDistEntriesFromExports(packageDir: string): Record<string, 
   return Object.fromEntries(Object.entries(entries).toSorted(([a], [b]) => a.localeCompare(b)));
 }
 
-function buildSpeechCoreDistEntries(): Record<string, string> {
-  return {
-    "runtime-api": "packages/speech-core/runtime-api.ts",
-    speaker: "packages/speech-core/speaker.ts",
-    "voice-models": "packages/speech-core/voice-models.ts",
-  };
-}
-
 function buildLlmCoreDistEntries(): Record<string, string> {
   return {
     index: "packages/llm-core/src/index.ts",
@@ -456,10 +452,6 @@ function shouldExternalizeGatewayClientDependency(id: string): boolean {
 
 function shouldExternalizeNetPolicyDependency(id: string): boolean {
   return id === "ipaddr.js" || id.startsWith("ipaddr.js/");
-}
-
-function shouldExternalizeSpeechCoreDependency(id: string): boolean {
-  return id === "openclaw" || id.startsWith("openclaw/");
 }
 
 function shouldExternalizeLlmCoreDependency(id: string): boolean {
@@ -593,10 +585,13 @@ function buildUnifiedDeclarationPartitions(
     extensionEntriesById.set(extensionId, extensionEntries);
   }
 
-  const pluginSdkPartitions = partitionUnifiedEntryGroups(
-    pluginSdkEntries.map((entry) => [entry]),
-    2,
+  const publicPluginSdkEntryNames = new Set(
+    publicPluginSdkEntrypoints.map((entry) => `plugin-sdk/${entry}`),
   );
+  const pluginSdkPartitions = [
+    pluginSdkEntries.filter(([name]) => publicPluginSdkEntryNames.has(name)),
+    pluginSdkEntries.filter(([name]) => !publicPluginSdkEntryNames.has(name)),
+  ];
   const extensionPartitions = partitionUnifiedEntryGroups(
     [...extensionEntriesById.entries()]
       .toSorted(([left], [right]) => left.localeCompare(right))
@@ -663,12 +658,6 @@ const configs = [
   nodeWorkspacePackageBuildConfig("terminal-core", {
     deps: {
       neverBundle: shouldExternalizeTerminalCoreDependency,
-    },
-  }),
-  nodeWorkspacePackageBuildConfig("speech-core", {
-    entry: buildSpeechCoreDistEntries(),
-    deps: {
-      neverBundle: shouldExternalizeSpeechCoreDependency,
     },
   }),
   nodeWorkspacePackageBuildConfig("llm-core", {

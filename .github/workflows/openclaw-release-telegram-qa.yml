@@ -477,7 +477,7 @@ jobs:
             OPENCLAW_BUILD_PRIVATE_QA=1 \
             PATH="$PATH" \
             RUNNER_TEMP="$RUNNER_TEMP" \
-            pnpm exec node scripts/build-all.mjs qaRuntime
+            pnpm exec node --import tsx scripts/build-all.mts qaRuntime
 
       - name: Move built candidate outside trusted workspace
         id: move_candidate
@@ -539,7 +539,7 @@ jobs:
           pnpm_version="$(pnpm --version)"
           jq -n \
             --arg archiveRoot "$archive_root" \
-            --arg buildCommand "node scripts/build-all.mjs qaRuntime" \
+            --arg buildCommand "node --import tsx scripts/build-all.mts qaRuntime" \
             --arg candidateSha "$TARGET_SHA" \
             --arg candidateTree "$CANDIDATE_TREE" \
             --arg nodeVersion "$node_version" \
@@ -748,7 +748,7 @@ jobs:
               .candidateSha == $candidateSha and
               .candidateTree == $candidateTree and
               .archiveRoot == "openclaw-telegram-candidate" and
-              .buildCommand == "node scripts/build-all.mjs qaRuntime" and
+              .buildCommand == "node --import tsx scripts/build-all.mts qaRuntime" and
               .sourceJob == "build_candidate"
             ' "$manifest_path" >/dev/null
           [[ -d "$candidate_root/node_modules" && -f "$candidate_root/dist/index.js" ]]
@@ -899,7 +899,7 @@ jobs:
         id: build_harness
         env:
           NODE_OPTIONS: --max-old-space-size=8192
-        run: node scripts/build-all.mjs qaRuntime
+        run: node --import tsx scripts/build-all.mts qaRuntime
 
       - name: Validate candidate artifact metadata
         id: metadata
@@ -1819,8 +1819,15 @@ jobs:
           sut_tmp="${temp_root}/sut-tmp"
           install -d -o "$SUT_UID" -g "$SUT_GID" -m 0700 "$sut_tmp"
           export TMPDIR="$sut_tmp"
+          workspace="${temp_root}/workspace"
+          [[ -d "$workspace" && ! -L "$workspace" ]]
+          [[ "$(realpath -e "$workspace")" == "$workspace" ]]
+          # The trusted scenario host creates fixtures while the isolated SUT reads
+          # and mutates the workspace. Keep every other runtime directory SUT-private.
+          chown -R "$RUNNER_UID:$SUT_GID" "$workspace"
+          chmod -R u=rwX,g=rwX,o= "$workspace"
+          find "$workspace" -type d -exec chmod g+s {} +
           for path in \
-            "$temp_root/workspace" \
             "${OPENCLAW_HOME:?}" \
             "${OPENCLAW_STATE_DIR:?}" \
             "${XDG_CACHE_HOME:?}" \

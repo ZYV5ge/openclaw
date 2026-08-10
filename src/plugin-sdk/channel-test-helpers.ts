@@ -15,7 +15,7 @@ export {
   createOutboundTestPlugin,
   createTestRegistry,
   initializeGlobalHookRunner,
-  releasePinnedPluginChannelRegistry,
+  resetPluginRuntimeStateForTest,
   resetGlobalHookRunner,
   setActivePluginRegistry,
   type PluginHookRegistration,
@@ -45,7 +45,6 @@ export {
   getRequiredHookHandler,
   registerHookHandlersForTest,
 } from "./test-helpers/subagent-hooks.js";
-export { assertBundledChannelEntries } from "./test-helpers/bundled-channel-entry.js";
 export {
   escapeRegExp,
   formatEnvelopeTimestamp,

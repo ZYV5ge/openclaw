@@ -3,13 +3,13 @@ import { describe, expect, it, vi } from "vitest";
 import {
   createAbortAwareIsolatedRunner,
   createDefaultIsolatedRunner,
-  createDeferred,
   createDueIsolatedJob,
   createIsolatedRegressionJob,
   createRunningCronServiceState,
   noopLogger,
   setupCronRegressionFixtures,
 } from "../../../test/helpers/cron/service-regression-fixtures.js";
+import { createDeferred } from "../../../test/helpers/promise.js";
 import { DEFAULT_CRON_MAX_CONCURRENT_RUNS } from "../../config/cron-limits.js";
 import { HEARTBEAT_SKIP_LANES_BUSY, type HeartbeatRunResult } from "../../infra/heartbeat-wake.js";
 import { CRON_TASK_KIND } from "../../tasks/cron-task-contract.js";
@@ -455,7 +455,7 @@ describe("cron service timer regressions", () => {
       const now = scheduledAt;
       let abortObserved = false;
       let timerSettled = false;
-      const runnerStarted = createDeferred<void>();
+      const runnerStarted = createDeferred();
       const state = createCronServiceState({
         cronEnabled: true,
         storePath: store.storePath,
@@ -718,9 +718,9 @@ describe("cron service timer regressions", () => {
       await saveCronStore(store.storePath, { version: 1, jobs: [cronJob] });
 
       let now = scheduledAt;
-      const runnerStarted = createDeferred<void>();
-      const cleanupStarted = createDeferred<void>();
-      const releaseCleanup = createDeferred<void>();
+      const runnerStarted = createDeferred();
+      const cleanupStarted = createDeferred();
+      const releaseCleanup = createDeferred();
       const cleanupTimedOutAgentRun = vi.fn(async () => {
         cleanupStarted.resolve();
         await releaseCleanup.promise;
@@ -797,8 +797,8 @@ describe("cron service timer regressions", () => {
       await saveCronStore(store.storePath, { version: 1, jobs: [cronJob] });
 
       let now = scheduledAt;
-      const runnerEntered = createDeferred<void>();
-      const laneAcquired = createDeferred<void>();
+      const runnerEntered = createDeferred();
+      const laneAcquired = createDeferred();
       let observedAbortSignal: AbortSignal | undefined;
       const state = createCronServiceState({
         cronEnabled: true,
@@ -866,7 +866,7 @@ describe("cron service timer regressions", () => {
       const activeJobMarker = markCronJobActive(cronJob.id);
 
       let now = scheduledAt;
-      const runnerEntered = createDeferred<void>();
+      const runnerEntered = createDeferred();
       const state = createCronServiceState({
         cronEnabled: true,
         storePath: store.storePath,
@@ -943,7 +943,7 @@ describe("cron service timer regressions", () => {
       const activeJobMarker = markCronJobActive(cronJob.id);
 
       const now = scheduledAt;
-      const runnerEntered = createDeferred<void>();
+      const runnerEntered = createDeferred();
       const state = createCronServiceState({
         cronEnabled: true,
         storePath: store.storePath,
@@ -1144,7 +1144,7 @@ describe("cron service timer regressions", () => {
 
       vi.setSystemTime(scheduledAt);
       let now = scheduledAt;
-      const started = createDeferred<void>();
+      const started = createDeferred();
       let observedAbortSignal: AbortSignal | undefined;
       const onIsolatedAgentSetupTimeout = vi.fn();
       const state = createCronServiceState({
@@ -1200,7 +1200,7 @@ describe("cron service timer regressions", () => {
 
       vi.setSystemTime(scheduledAt);
       let now = scheduledAt;
-      const started = createDeferred<void>();
+      const started = createDeferred();
       const state = createCronServiceState({
         cronEnabled: true,
         storePath: store.storePath,
@@ -1401,7 +1401,7 @@ describe("cron service timer regressions", () => {
 
       let abortObserved = false;
       let timerSettled = false;
-      const runnerStarted = createDeferred<void>();
+      const runnerStarted = createDeferred();
       const runnerResult = createDeferred<{
         status: "ok";
         notify: string;
@@ -1570,7 +1570,7 @@ describe("cron service timer regressions", () => {
     };
     await saveCronStore(store.storePath, { version: 1, jobs: [cronJob] });
 
-    const entered = createDeferred<void>();
+    const entered = createDeferred();
     const release = createDeferred<{ status: "ok"; notify: string }>();
     const state = createCronServiceState({
       cronEnabled: true,
@@ -1649,7 +1649,7 @@ describe("cron service timer regressions", () => {
     });
     await saveCronStore(store.storePath, { version: 1, jobs: [cronJob] });
 
-    const entered = createDeferred<void>();
+    const entered = createDeferred();
     const release = createDeferred<{ status: "ok"; summary: string }>();
     const state = createCronServiceState({
       cronEnabled: true,
@@ -1858,9 +1858,9 @@ describe("cron service timer regressions", () => {
     await saveCronStore(store.storePath, { version: 1, jobs: [first, second] });
 
     let now = dueAt;
-    const firstStarted = createDeferred<void>();
+    const firstStarted = createDeferred();
     const releaseFirst = createDeferred<{ status: "ok"; summary: string }>();
-    const secondStarted = createDeferred<void>();
+    const secondStarted = createDeferred();
     const releaseSecond = createDeferred<{ status: "ok"; summary: string }>();
     const state = createCronServiceState({
       cronEnabled: true,
@@ -1930,7 +1930,7 @@ describe("cron service timer regressions", () => {
     });
     await saveCronStore(store.storePath, { version: 1, jobs: [activeManualJob, catchupJob] });
 
-    const activeStarted = createDeferred<void>();
+    const activeStarted = createDeferred();
     const releaseActive = createDeferred<{ status: "ok"; summary: string }>();
     const runIsolatedAgentJob = vi.fn(async ({ job }: { job: { id: string } }) => {
       if (job.id === activeManualJob.id) {
@@ -2050,8 +2050,8 @@ describe("cron service timer regressions", () => {
     });
     await saveCronStore(store.storePath, { version: 1, jobs: [job] });
 
-    const releaseServiceLock = createDeferred<void>();
-    const serviceLockHeld = createDeferred<void>();
+    const releaseServiceLock = createDeferred();
+    const serviceLockHeld = createDeferred();
     const runIsolatedAgentJob = vi.fn(async () => ({ status: "ok" as const }));
     const state = createCronServiceState({
       cronEnabled: true,
@@ -2109,7 +2109,7 @@ describe("cron service timer regressions", () => {
 
       let now = dueAt;
       let startedCount = 0;
-      const bothStarted = createDeferred<void>();
+      const bothStarted = createDeferred();
       const onIsolatedAgentSetupTimeout = vi.fn();
       const state = createCronServiceState({
         cronEnabled: true,
@@ -2172,8 +2172,8 @@ describe("cron service timer regressions", () => {
       await saveCronStore(store.storePath, { version: 1, jobs: [first, second] });
 
       let now = dueAt;
-      const firstStarted = createDeferred<void>();
-      const secondStarted = createDeferred<void>();
+      const firstStarted = createDeferred();
+      const secondStarted = createDeferred();
       const onIsolatedAgentSetupTimeout = vi.fn();
       const state = createCronServiceState({
         cronEnabled: true,
@@ -2235,7 +2235,7 @@ describe("cron service timer regressions", () => {
       await saveCronStore(store.storePath, { version: 1, jobs: [first, second] });
 
       let now = dueAt;
-      const secondStarted = createDeferred<void>();
+      const secondStarted = createDeferred();
       const onIsolatedAgentSetupTimeout = vi.fn();
       const state = createCronServiceState({
         cronEnabled: true,
@@ -2303,8 +2303,8 @@ describe("cron service timer regressions", () => {
       await saveCronStore(store.storePath, { version: 1, jobs: [scheduledJob, manualJob] });
 
       let now = dueAt;
-      const manualStarted = createDeferred<void>();
-      const scheduledStarted = createDeferred<void>();
+      const manualStarted = createDeferred();
+      const scheduledStarted = createDeferred();
       const onIsolatedAgentSetupTimeout = vi.fn();
       const state = createCronServiceState({
         cronEnabled: true,
@@ -2376,7 +2376,7 @@ describe("cron service timer regressions", () => {
 
       vi.setSystemTime(scheduledAt);
       let now = scheduledAt;
-      const manualStarted = createDeferred<void>();
+      const manualStarted = createDeferred();
       const scheduledStarted = vi.fn();
       const onIsolatedAgentSetupTimeout = vi.fn();
       const state = createCronServiceState({
@@ -2470,7 +2470,7 @@ describe("cron service timer regressions", () => {
       jobs: [job, unstartedJob, replacementClaimedJob],
     });
 
-    const runStarted = createDeferred<void>();
+    const runStarted = createDeferred();
     const releaseRun = createDeferred<{ status: "ok"; summary: string }>();
     const state = createCronServiceState({
       cronEnabled: true,
@@ -2540,7 +2540,7 @@ describe("cron service timer regressions", () => {
       jobs: [runningJob, replacementClaimedJob],
     });
 
-    const runStarted = createDeferred<void>();
+    const runStarted = createDeferred();
     const releaseRun = createDeferred<{ status: "ok"; summary: string }>();
     const state = createCronServiceState({
       cronEnabled: true,
@@ -2607,9 +2607,9 @@ describe("cron service timer regressions", () => {
 
       vi.setSystemTime(scheduledAt);
       let now = scheduledAt;
-      const manualStarted = createDeferred<void>();
-      const firstScheduledStarted = createDeferred<void>();
-      const finishFirstScheduled = createDeferred<void>();
+      const manualStarted = createDeferred();
+      const firstScheduledStarted = createDeferred();
+      const finishFirstScheduled = createDeferred();
       const secondScheduledStarted = vi.fn();
       const onIsolatedAgentSetupTimeout = vi.fn();
       const state = createCronServiceState({
@@ -2818,6 +2818,209 @@ describe("cron service timer regressions", () => {
       );
     },
   );
+
+  it.each(["timer maintenance", "startup catch-up"] as const)(
+    "persists schedule auto-disable before notifying during %s",
+    async (path) => {
+      const store = timerRegressionFixtures.makeStorePath();
+      const now = Date.parse("2026-08-01T11:00:00.000Z");
+      const malformed = createIsolatedRegressionJob({
+        id: `malformed-${path}`,
+        name: `malformed ${path}`,
+        scheduledAt: now,
+        schedule: { kind: "cron", expr: "0 1 * * *" },
+        payload: { kind: "agentTurn", message: "malformed" },
+        state: { scheduleErrorCount: 2 },
+      });
+      const jobs =
+        path === "startup catch-up"
+          ? [
+              createDueIsolatedJob({ id: "due-startup-catch-up", nowMs: now, nextRunAtMs: now }),
+              malformed,
+            ]
+          : [malformed];
+      await saveCronStore(store.storePath, { version: 1, jobs });
+
+      const order: string[] = [];
+      const enqueueSystemEvent = vi.fn(() => {
+        expect(order.at(-1)).toBe("persist");
+        order.push("notify");
+      });
+      const requestHeartbeat = vi.fn(() => {
+        expect(order.at(-1)).toBe("notify");
+        order.push("heartbeat");
+      });
+      const state = createCronServiceState({
+        cronEnabled: true,
+        storePath: store.storePath,
+        log: noopLogger,
+        nowMs: () => now,
+        enqueueSystemEvent,
+        requestHeartbeat,
+        runIsolatedAgentJob: createDefaultIsolatedRunner(),
+      });
+      const computeNextRunAtMs = schedule.computeNextRunAtMs;
+      vi.spyOn(schedule, "computeNextRunAtMs").mockImplementation((cronSchedule, nowMs) => {
+        if (cronSchedule.kind === "cron" && cronSchedule.expr === "0 1 * * *") {
+          throw new Error("simulated schedule failure");
+        }
+        return computeNextRunAtMs(cronSchedule, nowMs);
+      });
+      const saveCronJobsStore = cronStoreModule.saveCronJobsStore;
+      vi.spyOn(cronStoreModule, "saveCronJobsStore").mockImplementation(async (...args) => {
+        await saveCronJobsStore(...args);
+        order.push("persist");
+      });
+
+      if (path === "startup catch-up") {
+        await runMissedJobs(state);
+      } else {
+        await onTimer(state);
+      }
+
+      const notifyAt = order.indexOf("notify");
+      expect(order.slice(notifyAt - 1, notifyAt + 2)).toEqual(["persist", "notify", "heartbeat"]);
+      expect(state.store?.jobs.find((job) => job.id === malformed.id)?.enabled).toBe(false);
+      expect(
+        (await loadCronStore(store.storePath)).jobs.find((job) => job.id === malformed.id),
+      ).toMatchObject({ enabled: false });
+    },
+  );
+
+  it("auto-disables a recurring job on its tenth consecutive run failure", () => {
+    const startedAt = Date.parse("2026-08-01T12:00:00.000Z");
+    const deferredNotifications: Array<() => void> = [];
+    const state = createCronServiceState({
+      cronEnabled: true,
+      storePath: "/tmp/cron-consecutive-failure-threshold.json",
+      log: noopLogger,
+      nowMs: () => startedAt,
+      enqueueSystemEvent: vi.fn(),
+      requestHeartbeat: vi.fn(),
+      runIsolatedAgentJob: createDefaultIsolatedRunner(),
+    });
+    const job = createIsolatedRegressionJob({
+      id: "recurring-failure-threshold",
+      name: "recurring failure threshold",
+      scheduledAt: startedAt,
+      schedule: { kind: "every", everyMs: 60_000, anchorMs: startedAt },
+      payload: { kind: "agentTurn", message: "fail" },
+      state: { consecutiveErrors: 8 },
+    });
+
+    applyJobResult(
+      state,
+      job,
+      { status: "error", error: "ninth failure", startedAt, endedAt: startedAt + 10 },
+      { deferredNotifications },
+    );
+    expect(job.enabled).toBe(true);
+    expect(job.state.consecutiveErrors).toBe(9);
+    expect(job.state.autoDisabled).toBeUndefined();
+    expect(deferredNotifications).toHaveLength(0);
+
+    applyJobResult(
+      state,
+      job,
+      {
+        status: "error",
+        error: "tenth failure",
+        startedAt: startedAt + 60_000,
+        endedAt: startedAt + 60_010,
+      },
+      { deferredNotifications },
+    );
+    expect(job.enabled).toBe(false);
+    expect(job.state.nextRunAtMs).toBeUndefined();
+    expect(job.state.autoDisabled).toEqual({
+      reason: "consecutive-failures",
+      atMs: startedAt + 60_010,
+      consecutiveErrors: 10,
+    });
+    expect(deferredNotifications).toHaveLength(1);
+  });
+
+  it("resets the auto-disable streak after a successful recurring run", () => {
+    const startedAt = Date.parse("2026-08-01T13:00:00.000Z");
+    const state = createCronServiceState({
+      cronEnabled: true,
+      storePath: "/tmp/cron-consecutive-failure-reset.json",
+      log: noopLogger,
+      nowMs: () => startedAt,
+      enqueueSystemEvent: vi.fn(),
+      requestHeartbeat: vi.fn(),
+      runIsolatedAgentJob: createDefaultIsolatedRunner(),
+    });
+    const job = createIsolatedRegressionJob({
+      id: "recurring-failure-reset",
+      name: "recurring failure reset",
+      scheduledAt: startedAt,
+      schedule: { kind: "every", everyMs: 60_000, anchorMs: startedAt },
+      payload: { kind: "agentTurn", message: "recover" },
+      state: {},
+    });
+    const apply = (status: "ok" | "error", run: number) =>
+      applyJobResult(
+        state,
+        job,
+        {
+          status,
+          ...(status === "error" ? { error: `failure ${run}` } : {}),
+          startedAt: startedAt + run * 60_000,
+          endedAt: startedAt + run * 60_000 + 10,
+        },
+        { deferredNotifications: [] },
+      );
+
+    for (let run = 0; run < 9; run += 1) {
+      apply("error", run);
+    }
+    apply("ok", 9);
+    for (let run = 10; run < 19; run += 1) {
+      apply("error", run);
+    }
+
+    expect(job.enabled).toBe(true);
+    expect(job.state.consecutiveErrors).toBe(9);
+    expect(job.state.autoDisabled).toBeUndefined();
+  });
+
+  it.each([
+    { name: "stale schedule", opts: { scheduleOwnership: "stale" as const } },
+    { name: "forced run", opts: { scheduleMode: "preserve" as const } },
+  ])("does not auto-disable after a $name failure", ({ opts }) => {
+    const startedAt = Date.parse("2026-08-01T14:00:00.000Z");
+    const deferredNotifications: Array<() => void> = [];
+    const state = createCronServiceState({
+      cronEnabled: true,
+      storePath: "/tmp/cron-non-owning-failure.json",
+      log: noopLogger,
+      nowMs: () => startedAt,
+      enqueueSystemEvent: vi.fn(),
+      requestHeartbeat: vi.fn(),
+      runIsolatedAgentJob: createDefaultIsolatedRunner(),
+    });
+    const job = createIsolatedRegressionJob({
+      id: "non-owning-recurring-failure",
+      name: "non-owning recurring failure",
+      scheduledAt: startedAt,
+      schedule: { kind: "every", everyMs: 60_000, anchorMs: startedAt },
+      payload: { kind: "agentTurn", message: "fail" },
+      state: { consecutiveErrors: 9, nextRunAtMs: startedAt + 60_000 },
+    });
+
+    applyJobResult(
+      state,
+      job,
+      { status: "error", error: "tenth failure", startedAt, endedAt: startedAt + 10 },
+      { ...opts, deferredNotifications },
+    );
+
+    expect(job.enabled).toBe(true);
+    expect(job.state.consecutiveErrors).toBe(10);
+    expect(job.state.autoDisabled).toBeUndefined();
+    expect(deferredNotifications).toHaveLength(0);
+  });
 
   it("keeps state updates when cron next-run computation throws after a successful run (#30905)", () => {
     const startedAt = Date.parse("2026-03-02T12:00:00.000Z");
@@ -3033,6 +3236,37 @@ describe("cron service timer regressions", () => {
       status: "error",
       error: "cron script payload failed (timeout): wall-clock timeout exceeded",
       errorClassification: { kind: "reason", reason: "timeout" },
+      executionStarted: true,
+      startedAt,
+      endedAt,
+    });
+
+    expect(job.state.lastErrorReason).toBe("timeout");
+    expect(job.state.nextRunAtMs).toBe(endedAt + 30_000);
+    expect(job.enabled).toBe(true);
+  });
+
+  it("classifies interrupted agent transport before applying bounded retry", () => {
+    const startedAt = Date.parse("2026-07-21T12:00:00.000Z");
+    const endedAt = startedAt + 500;
+    const job = createIsolatedRegressionJob({
+      id: "transient-agent-transport",
+      name: "transient-agent-transport",
+      scheduledAt: startedAt,
+      schedule: { kind: "at", at: new Date(startedAt).toISOString() },
+      payload: { kind: "agentTurn", message: "ping" },
+      state: { runningAtMs: startedAt },
+    });
+    const state = createRunningCronServiceState({
+      storePath: "/tmp/cron-transient-agent-transport.json",
+      log: noopLogger,
+      nowMs: () => endedAt,
+      jobs: [job],
+    });
+
+    applyJobResult(state, job, {
+      status: "error",
+      error: "stream disconnected before completion: upstream reset",
       executionStarted: true,
       startedAt,
       endedAt,

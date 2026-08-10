@@ -2,6 +2,7 @@
 // prefixes/aliases and runtime config for cron delivery destinations.
 
 import { expectDefined } from "@openclaw/normalization-core";
+import { createRequireRecord } from "openclaw/plugin-sdk/test-fixtures";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ChannelPlugin } from "../../channels/plugins/types.public.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
@@ -11,6 +12,12 @@ import {
   createChannelTestPluginBase,
   createTestRegistry,
 } from "../../test-utils/channel-plugins.js";
+import {
+  createCronCreatorAuthorityRunScope,
+  mintCronCreatorAuthorityGrant,
+  revokeCronCreatorAuthorityRunScope,
+  type CronCreatorAuthorityGrant,
+} from "../cron-creator-authority-grant.js";
 import { getGatewayProcessInstanceId } from "../process-instance.js";
 import type { GatewayClient } from "./types.js";
 
@@ -123,31 +130,39 @@ function setCronValidationTestRegistry(): void {
 
 function createCronContext(currentJobs?: CronJob | CronJob[]) {
   const jobs = currentJobs ? (Array.isArray(currentJobs) ? currentJobs : [currentJobs]) : [];
-  const update = vi.fn(async (id: string, patch: Partial<CronJob>) =>
-    createCronJob({
+  const committedAdds: Partial<CronJob>[] = [];
+  const committedUpdates: Array<{ id: string; patch: Partial<CronJob> }> = [];
+  const update = vi.fn(async (id: string, patch: Partial<CronJob>) => {
+    committedUpdates.push({ id, patch });
+    return createCronJob({
       ...jobs.find((job) => job.id === id),
       ...patch,
       id,
-    }),
-  );
+    });
+  });
   return {
+    committedAdds,
+    committedUpdates,
     cron: {
-      add: vi.fn(async (input: Partial<CronJob>, _opts?: unknown) =>
-        createCronJob({ ...input, id: "cron-1" }),
-      ),
+      add: vi.fn(async (input: Partial<CronJob>, opts?: { commitGuard?: () => void }) => {
+        opts?.commitGuard?.();
+        committedAdds.push(input);
+        return createCronJob({ ...input, id: "cron-1" });
+      }),
       update,
       updateWithPrecondition: vi.fn(
         async (
           id: string,
           patch: Partial<CronJob>,
           precondition: (job: CronJob, nowMs: number) => void | Promise<void>,
-          _opts?: unknown,
+          opts?: { commitGuard?: () => void },
         ) => {
           const job = jobs.find((candidate) => candidate.id === id);
           if (!job) {
             throw new Error(`unknown automation id: ${id}`);
           }
           await precondition(job, Date.now());
+          opts?.commitGuard?.();
           return await update(id, patch);
         },
       ),
@@ -312,6 +327,13 @@ function callerClient(
   };
 }
 
+function callerClientWithCronCreatorAuthority(grant: CronCreatorAuthorityGrant): GatewayClient {
+  const client = callerClient("ops");
+  client.internal!.agentRuntimeIdentity!.cronToolsAllowCapture = "final-executable-surface";
+  client.internal!.agentRuntimeIdentity!.cronCreatorAuthorityGrant = grant;
+  return client;
+}
+
 function telegramDeliveryWithSlackFailure(overrides: Partial<CronDelivery> = {}): CronDelivery {
   return {
     mode: "announce",
@@ -441,12 +463,7 @@ function expectCronReadSuccess(respond: ReturnType<typeof vi.fn>, job: CronJob):
   );
 }
 
-function requireRecord(value: unknown, label: string): Record<string, unknown> {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    throw new Error(`expected ${label} to be an object`);
-  }
-  return value as Record<string, unknown>;
-}
+const requireRecord = createRequireRecord("record", "expected-label-object");
 
 function requireCronAddPayload(
   context: ReturnType<typeof createCronContext>,
@@ -1230,6 +1247,136 @@ describe("cron method validation", () => {
       accountId: "work",
     });
     expectCronSuccess(respond);
+  });
+
+  it("consumes an exact live configured-MCP grant once at cron.add commit", async () => {
+    const scope = createCronCreatorAuthorityRunScope("run-add");
+    const grant = mintCronCreatorAuthorityGrant(scope);
+    const context = createCronContext();
+    const client = callerClientWithCronCreatorAuthority(grant);
+
+    const first = await invokeCron("cron.add", agentTurnCronParams(), { context, client });
+    expectCronSuccess(first.respond);
+    expect(context.committedAdds).toHaveLength(1);
+
+    const replay = await invokeCron("cron.add", agentTurnCronParams(), { context, client });
+    expectResponseError(replay.respond, {
+      code: "INVALID_REQUEST",
+      messageIncludes: "Configured MCP cron authority is no longer active",
+    });
+    expect(context.committedAdds).toHaveLength(1);
+    revokeCronCreatorAuthorityRunScope(scope);
+  });
+
+  it("rejects a mismatched cron.add runId without consuming the exact grant", async () => {
+    const scope = createCronCreatorAuthorityRunScope("run-add");
+    const grant = mintCronCreatorAuthorityGrant(scope);
+    const context = createCronContext();
+
+    const mismatch = await invokeCron("cron.add", agentTurnCronParams(), {
+      context,
+      client: callerClientWithCronCreatorAuthority({ ...grant, runId: "run-other" }),
+    });
+    expectResponseError(mismatch.respond, {
+      code: "INVALID_REQUEST",
+      messageIncludes: "Configured MCP cron authority is no longer active",
+    });
+    expect(context.committedAdds).toHaveLength(0);
+
+    const exact = await invokeCron("cron.add", agentTurnCronParams(), {
+      context,
+      client: callerClientWithCronCreatorAuthority(grant),
+    });
+    expectCronSuccess(exact.respond);
+    expect(context.committedAdds).toHaveLength(1);
+    revokeCronCreatorAuthorityRunScope(scope);
+  });
+
+  it("keeps cron.add mutation at zero after the admitted run revokes its grant", async () => {
+    const scope = createCronCreatorAuthorityRunScope("run-add-revoked");
+    const grant = mintCronCreatorAuthorityGrant(scope);
+    revokeCronCreatorAuthorityRunScope(scope);
+    const context = createCronContext();
+
+    const result = await invokeCron("cron.add", agentTurnCronParams(), {
+      context,
+      client: callerClientWithCronCreatorAuthority(grant),
+    });
+
+    expectResponseError(result.respond, {
+      code: "INVALID_REQUEST",
+      messageIncludes: "Configured MCP cron authority is no longer active",
+    });
+    expect(context.committedAdds).toHaveLength(0);
+  });
+
+  it("keeps cron.update mutation at zero after resolution outlives its run", async () => {
+    const scope = createCronCreatorAuthorityRunScope("run-update-revoked");
+    const grant = mintCronCreatorAuthorityGrant(scope);
+    revokeCronCreatorAuthorityRunScope(scope);
+    const currentJob = createCronJob({
+      agentId: "ops",
+      owner: { agentId: "ops", sessionKey: "agent:ops:main", accountId: "default" },
+      scheduledToolPolicy: {
+        version: 1,
+        mode: "account",
+        ownerSessionKey: "agent:ops:main",
+        ownerAccountId: "default",
+      },
+    });
+    const context = createCronContext(currentJob);
+
+    const result = await invokeCron(
+      "cron.update",
+      {
+        jobId: currentJob.id,
+        patch: {
+          payload: { kind: "agentTurn", message: "updated", toolsAllow: ["read"] },
+        },
+      },
+      { context, client: callerClientWithCronCreatorAuthority(grant) },
+    );
+
+    expectResponseError(result.respond, {
+      code: "INVALID_REQUEST",
+      messageIncludes: "Configured MCP cron authority is no longer active",
+    });
+    expect(context.committedUpdates).toHaveLength(0);
+  });
+
+  it("consumes an exact live configured-MCP grant once at cron.update commit", async () => {
+    const scope = createCronCreatorAuthorityRunScope("run-update");
+    const grant = mintCronCreatorAuthorityGrant(scope);
+    const currentJob = createCronJob({
+      agentId: "ops",
+      owner: { agentId: "ops", sessionKey: "agent:ops:main", accountId: "default" },
+      scheduledToolPolicy: {
+        version: 1,
+        mode: "account",
+        ownerSessionKey: "agent:ops:main",
+        ownerAccountId: "default",
+      },
+    });
+    const context = createCronContext(currentJob);
+    const client = callerClientWithCronCreatorAuthority(grant);
+    const params = {
+      jobId: currentJob.id,
+      patch: {
+        payload: { kind: "agentTurn", message: "updated", toolsAllow: ["read"] },
+      },
+    };
+
+    const first = await invokeCron("cron.update", params, { context, client });
+    expectCronSuccess(first.respond);
+    expect(context.committedUpdates).toHaveLength(1);
+
+    const replay = await invokeCron("cron.update", params, { context, client });
+    expectResponseError(replay.respond, {
+      code: "INVALID_REQUEST",
+      messageIncludes: "Configured MCP cron authority is no longer active",
+    });
+    expect(context.committedUpdates).toHaveLength(1);
+    revokeCronCreatorAuthorityRunScope(scope);
   });
 
   it("keeps scoped read access with the stamped owner after operator retargeting", async () => {
@@ -2080,18 +2227,21 @@ describe("cron method validation", () => {
     expectResponseError(systemEvent.respond, { code: "INVALID_REQUEST", messageIncludes: "text" });
   });
 
-  it("rejects ambiguous announce delivery on add when multiple channels are configured", async () => {
+  it("forwards implicit announce delivery to the service-owned ambiguity validation", async () => {
     setRuntimeConfig(telegramSlackConfig({ includeMainSession: true }));
 
+    // Implicit routing (no channel given) is validated by the cron service on the
+    // merged job, where session-backed and best-effort shapes are visible; the
+    // method layer must not pre-reject it (see assertAnnounceDeliveryChannelSupport).
     const { context, respond } = await invokeCronAdd(
       agentTurnCronParams({
-        name: "ambiguous announce add",
+        name: "implicit announce add",
         delivery: { mode: "announce" },
       }),
     );
 
-    expect(context.cron.add).not.toHaveBeenCalled();
-    expectResponseError(respond, { messageIncludes: "delivery.channel is required" });
+    expect(context.cron.add).toHaveBeenCalled();
+    expectCronSuccess(respond);
   });
 
   it("ignores stale ownerless channel config when validating default announce delivery", async () => {
@@ -2490,482 +2640,353 @@ describe("cron method validation", () => {
     });
   });
 
-  it("rejects an unknown failureAlert channel on cron.update before the mutation (#103864)", async () => {
-    setRuntimeConfig(telegramSlackConfig());
+  const failureAlertChannelError = {
+    code: "INVALID_REQUEST",
+    messageIncludes: "failureAlert.channel",
+  } as const;
 
-    const { context, respond } = await invokeCronUpdate(
-      { id: "cron-1", patch: { failureAlert: { channel: "C0EXAMPLE01" } } },
-      createCronJob(),
-    );
+  function globalFailureAlertConfig(
+    config: OpenClawConfig,
+    failureAlert: NonNullable<OpenClawConfig["cron"]>["failureAlert"],
+  ): OpenClawConfig {
+    return { ...config, cron: { failureAlert } };
+  }
 
-    // Regression: --failure-alert-channel writes patch.failureAlert (not delivery),
-    // so it must be validated even though the patch has no delivery key.
-    expect(context.cron.update).not.toHaveBeenCalled();
-    expectResponseError(respond, {
-      code: "INVALID_REQUEST",
-      messageIncludes: "failureAlert.channel",
+  function createRoutedCronJob(
+    channel: string,
+    to: string,
+    overrides: Pick<Partial<CronJob>, "failureAlert"> = {},
+  ): CronJob {
+    return createCronJob({ delivery: { mode: "announce", channel, to }, ...overrides });
+  }
+
+  function failureAlertUpdateAccepted(
+    title: string,
+    patch: Record<string, unknown>,
+    currentJob: CronJob = createCronJob(),
+    config: OpenClawConfig = telegramSlackConfig(),
+  ): void {
+    it(title, async () => {
+      setRuntimeConfig(config);
+      const { context, respond } = await invokeCronUpdate({ id: "cron-1", patch }, currentJob);
+      expect(context.cron.update).toHaveBeenCalled();
+      expectCronSuccess(respond);
     });
+  }
+
+  function failureAlertUpdateRejected(
+    title: string,
+    patch: Record<string, unknown>,
+    currentJob: CronJob = createCronJob(),
+    config: OpenClawConfig = telegramSlackConfig(),
+  ): void {
+    it(title, async () => {
+      setRuntimeConfig(config);
+      const { context, respond } = await invokeCronUpdate({ id: "cron-1", patch }, currentJob);
+      expect(context.cron.update).not.toHaveBeenCalled();
+      expectResponseError(respond, failureAlertChannelError);
+    });
+  }
+
+  function failureAlertAddAccepted(
+    title: string,
+    params: Record<string, unknown>,
+    config: OpenClawConfig = telegramSlackConfig(),
+  ): void {
+    it(title, async () => {
+      setRuntimeConfig(config);
+      const { context, respond } = await invokeCronAdd(params);
+      expect(context.cron.add).toHaveBeenCalled();
+      expectCronSuccess(respond);
+    });
+  }
+
+  function failureAlertAddRejected(
+    title: string,
+    params: Record<string, unknown>,
+    config: OpenClawConfig,
+  ): void {
+    it(title, async () => {
+      setRuntimeConfig(config);
+      const { context, respond } = await invokeCronAdd(params);
+      expect(context.cron.add).not.toHaveBeenCalled();
+      expectResponseError(respond, failureAlertChannelError);
+    });
+  }
+
+  // Regression: --failure-alert-channel writes patch.failureAlert (not delivery),
+  // so it must be validated even though the patch has no delivery key.
+  failureAlertUpdateRejected(
+    "rejects an unknown failureAlert channel on cron.update before the mutation (#103864)",
+    { failureAlert: { channel: "C0EXAMPLE01" } },
+  );
+
+  failureAlertUpdateAccepted("accepts a configured failureAlert channel on cron.update", {
+    failureAlert: { channel: "slack" },
   });
 
-  it("accepts a configured failureAlert channel on cron.update", async () => {
-    setRuntimeConfig(telegramSlackConfig());
-
-    const { context, respond } = await invokeCronUpdate(
-      { id: "cron-1", patch: { failureAlert: { channel: "slack" } } },
-      createCronJob(),
-    );
-
-    expect(context.cron.update).toHaveBeenCalled();
-    expectCronSuccess(respond);
-  });
-
-  it("does not channel-type-validate a webhook-mode failureAlert on cron.update", async () => {
-    setRuntimeConfig(telegramSlackConfig());
-
-    const { context, respond } = await invokeCronUpdate(
-      {
-        id: "cron-1",
-        patch: {
-          // A channel is set, but webhook mode POSTs to `to`, so the channel type
-          // is not validated even though it is not a known channel.
-          failureAlert: {
-            mode: "webhook",
-            channel: "C0EXAMPLE01",
-            to: "https://example.invalid/hook",
-          },
-        },
+  failureAlertUpdateAccepted(
+    "does not channel-type-validate a webhook-mode failureAlert on cron.update",
+    {
+      // A channel is set, but webhook mode POSTs to `to`, so the channel type
+      // is not validated even though it is not a known channel.
+      failureAlert: {
+        mode: "webhook",
+        channel: "C0EXAMPLE01",
+        to: "https://example.invalid/hook",
       },
-      createCronJob(),
-    );
+    },
+  );
 
-    expect(context.cron.update).toHaveBeenCalled();
-    expectCronSuccess(respond);
-  });
+  // Editing --failure-alert-after must not re-validate a channel stored before
+  // this validation existed; the patch carries no channel key.
+  failureAlertUpdateAccepted(
+    "does not block an unrelated failureAlert edit on a job with a pre-existing invalid channel",
+    { failureAlert: { after: 3 } },
+    createCronJob({ failureAlert: { channel: "c0example01", mode: "announce" } }),
+  );
 
-  it("does not block an unrelated failureAlert edit on a job with a pre-existing invalid channel", async () => {
-    setRuntimeConfig(telegramSlackConfig());
+  failureAlertUpdateAccepted(
+    "accepts correcting a pre-existing invalid failureAlert channel to a configured one",
+    { failureAlert: { channel: "slack" } },
+    createCronJob({ failureAlert: { channel: "c0example01", mode: "announce" } }),
+  );
 
-    // Editing --failure-alert-after must not re-validate a channel stored before
-    // this validation existed; the patch carries no channel key.
-    const { context, respond } = await invokeCronUpdate(
-      { id: "cron-1", patch: { failureAlert: { after: 3 } } },
-      createCronJob({ failureAlert: { channel: "c0example01", mode: "announce" } }),
-    );
+  // Job omits mode and inherits the global webhook mode, so runtime never uses
+  // the channel; validation must not reject it (matches resolveFailureAlert).
+  failureAlertUpdateAccepted(
+    "does not validate an inherited-webhook failureAlert channel on cron.update (global mode)",
+    { failureAlert: { channel: "C0EXAMPLE01", to: "https://example.invalid/hook" } },
+    createCronJob(),
+    globalFailureAlertConfig(telegramSlackConfig(), { enabled: true, mode: "webhook" }),
+  );
 
-    expect(context.cron.update).toHaveBeenCalled();
-    expectCronSuccess(respond);
-  });
+  failureAlertAddAccepted(
+    "does not validate an inherited-webhook failureAlert channel on cron.add (global mode)",
+    agentTurnCronParams({
+      name: "inherited webhook alert",
+      failureAlert: { channel: "C0EXAMPLE01", to: "https://example.invalid/hook" },
+    }),
+    globalFailureAlertConfig(slackConfig(), { enabled: true, mode: "webhook" }),
+  );
 
-  it("accepts correcting a pre-existing invalid failureAlert channel to a configured one", async () => {
-    setRuntimeConfig(telegramSlackConfig());
+  // Job mode wins over the global default, so an explicit announce alert with an
+  // unknown channel is still rejected even when global mode is webhook.
+  failureAlertUpdateRejected(
+    "still validates the failureAlert channel when the job sets announce mode over a global webhook default",
+    { failureAlert: { mode: "announce", channel: "C0EXAMPLE01" } },
+    createCronJob(),
+    globalFailureAlertConfig(telegramSlackConfig(), { enabled: true, mode: "webhook" }),
+  );
 
-    const { context, respond } = await invokeCronUpdate(
-      { id: "cron-1", patch: { failureAlert: { channel: "slack" } } },
-      createCronJob({ failureAlert: { channel: "c0example01", mode: "announce" } }),
-    );
+  // Storing a channel under webhook mode is allowed (unused). Flipping to
+  // announce activates it, so a mode-only patch must re-validate the channel.
+  failureAlertUpdateRejected(
+    "validates a mode-only flip to announce that makes a stored channel live",
+    { failureAlert: { mode: "announce" } },
+    createCronJob({ failureAlert: { channel: "c0example01", mode: "webhook" } }),
+  );
 
-    expect(context.cron.update).toHaveBeenCalled();
-    expectCronSuccess(respond);
-  });
+  // The alert owns its prefixed channel even when primary delivery is valid;
+  // reject that independently selected channel when it is not configured.
+  failureAlertUpdateRejected(
+    "rejects a provider-prefixed failureAlert.to for an unconfigured channel",
+    { failureAlert: { to: "slack:C123" } },
+    createRoutedCronJob("telegram", "telegram:1"),
+    telegramConfig(),
+  );
 
-  it("does not validate an inherited-webhook failureAlert channel on cron.update (global mode)", async () => {
-    // Job omits mode and inherits the global webhook mode, so runtime never uses
-    // the channel; validation must not reject it (matches resolveFailureAlert).
-    setRuntimeConfig({
-      ...telegramSlackConfig(),
-      cron: { failureAlert: { enabled: true, mode: "webhook" } },
-    } as OpenClawConfig);
+  failureAlertUpdateAccepted(
+    "accepts a provider-prefixed failureAlert.to for a configured channel",
+    { failureAlert: { to: "telegram:123" } },
+    createCronJob(),
+    telegramConfig(),
+  );
 
-    const { context, respond } = await invokeCronUpdate(
-      {
-        id: "cron-1",
-        patch: { failureAlert: { channel: "C0EXAMPLE01", to: "https://example.invalid/hook" } },
-      },
-      createCronJob(),
-    );
+  // No own channel and no provider prefix: runtime falls back to the job
+  // delivery channel (already validated), so this must not be rejected as
+  // "channel required" even though multiple channels are configured.
+  failureAlertUpdateAccepted(
+    "accepts a bare failureAlert.to that inherits the job delivery channel (multi-channel)",
+    { failureAlert: { to: "C123" } },
+    createRoutedCronJob("slack", "slack:C1"),
+  );
 
-    expect(context.cron.update).toHaveBeenCalled();
-    expectCronSuccess(respond);
-  });
+  // Legacy job: delivery.channel was stored before validation existed and the
+  // alert has no route of its own. Flipping the alert to announce makes runtime
+  // route through that invalid inherited channel, so it must be rejected now.
+  failureAlertUpdateRejected(
+    "rejects a routing-changing alert edit that would activate a legacy-invalid inherited delivery channel",
+    { failureAlert: { mode: "announce" } },
+    createRoutedCronJob("c0legacyinvalid", "123", {
+      failureAlert: { mode: "webhook", after: 2 },
+    }),
+  );
 
-  it("does not validate an inherited-webhook failureAlert channel on cron.add (global mode)", async () => {
-    setRuntimeConfig({
-      ...slackConfig(),
-      cron: { failureAlert: { enabled: true, mode: "webhook" } },
-    } as OpenClawConfig);
+  failureAlertUpdateAccepted(
+    "accepts a routing-changing alert edit that inherits a valid delivery channel",
+    { failureAlert: { mode: "announce" } },
+    createRoutedCronJob("slack", "slack:C1", {
+      failureAlert: { mode: "webhook", after: 2 },
+    }),
+  );
 
-    const { context, respond } = await invokeCronAdd(
-      agentTurnCronParams({
-        name: "inherited webhook alert",
-        failureAlert: { channel: "C0EXAMPLE01", to: "https://example.invalid/hook" },
-      }),
-    );
+  // Enabling an alert with no routing key of its own makes it inherit the job
+  // delivery channel; a legacy-invalid one must be rejected, not persisted.
+  failureAlertUpdateRejected(
+    "validates a newly enabled alert (--failure-alert-after) that inherits a legacy-invalid delivery channel",
+    { failureAlert: { after: 3 } },
+    createRoutedCronJob("c0legacyinvalid", "123"),
+  );
 
-    expect(context.cron.add).toHaveBeenCalled();
-    expectCronSuccess(respond);
-  });
+  // Global alerts are enabled, so a job with no per-job alert is already sending
+  // via its (legacy) delivery channel. A --failure-alert-after edit is not newly
+  // enabling and must not be blocked by that pre-existing inherited channel.
+  failureAlertUpdateAccepted(
+    "does not block a threshold-only edit when global alerts already deliver via the inherited route",
+    { failureAlert: { after: 3 } },
+    createRoutedCronJob("c0legacyinvalid", "123"),
+    globalFailureAlertConfig(telegramSlackConfig(), { enabled: true }),
+  );
 
-  it("still validates the failureAlert channel when the job sets announce mode over a global webhook default", async () => {
-    // Job mode wins over the global default, so an explicit announce alert with an
-    // unknown channel is still rejected even when global mode is webhook.
-    setRuntimeConfig({
-      ...telegramSlackConfig(),
-      cron: { failureAlert: { enabled: true, mode: "webhook" } },
-    } as OpenClawConfig);
+  // Clearing the concrete channel keeps a bare `to` and routes via `last`; the
+  // delivery validator accepts this, so an alert inheriting the same route must
+  // be judged identically and not rejected as ambiguous.
+  failureAlertUpdateAccepted(
+    "accepts clearing delivery.channel to a bare-`to` `last` route with an inheriting alert (multi-channel)",
+    { delivery: { channel: null } },
+    createRoutedCronJob("slack", "123", { failureAlert: { after: 2 } }),
+  );
 
-    const { context, respond } = await invokeCronUpdate(
-      { id: "cron-1", patch: { failureAlert: { mode: "announce", channel: "C0EXAMPLE01" } } },
-      createCronJob(),
-    );
+  failureAlertUpdateAccepted(
+    "accepts enabling an alert that inherits a valid delivery channel",
+    { failureAlert: { after: 3 } },
+    createRoutedCronJob("slack", "slack:C1"),
+  );
 
-    expect(context.cron.update).not.toHaveBeenCalled();
-    expectResponseError(respond, {
-      code: "INVALID_REQUEST",
-      messageIncludes: "failureAlert.channel",
-    });
-  });
+  // The alert has its own bare `to` but no channel. Switching delivery to webhook
+  // clears the inherited channel, and runtime then routes through `last`.
+  failureAlertUpdateAccepted(
+    "preserves the last-channel fallback when a delivery mode change clears inheritance",
+    { delivery: { mode: "webhook", to: "https://example.invalid/hook" } },
+    createRoutedCronJob("slack", "slack:X", { failureAlert: { to: "C123" } }),
+  );
 
-  it("validates a mode-only flip to announce that makes a stored channel live", async () => {
-    // Storing a channel under webhook mode is allowed (unused). Flipping to
-    // announce activates it, so a mode-only patch must re-validate the channel.
-    setRuntimeConfig(telegramSlackConfig());
-
-    const { context, respond } = await invokeCronUpdate(
-      { id: "cron-1", patch: { failureAlert: { mode: "announce" } } },
-      createCronJob({ failureAlert: { channel: "c0example01", mode: "webhook" } }),
-    );
-
-    expect(context.cron.update).not.toHaveBeenCalled();
-    expectResponseError(respond, {
-      code: "INVALID_REQUEST",
-      messageIncludes: "failureAlert.channel",
-    });
-  });
-
-  it("rejects a provider-prefixed failureAlert.to for an unconfigured channel", async () => {
-    // No explicit channel, but `slack:...` resolves to slack, which is not
-    // configured here, so it must be rejected up front rather than at delivery.
-    setRuntimeConfig(telegramConfig());
-
-    const { context, respond } = await invokeCronUpdate(
-      { id: "cron-1", patch: { failureAlert: { to: "slack:C123" } } },
-      createCronJob(),
-    );
-
-    expect(context.cron.update).not.toHaveBeenCalled();
-    expectResponseError(respond, {
-      code: "INVALID_REQUEST",
-      messageIncludes: "failureAlert.channel",
-    });
-  });
-
-  it("accepts a provider-prefixed failureAlert.to for a configured channel", async () => {
-    setRuntimeConfig(telegramConfig());
-
-    const { context, respond } = await invokeCronUpdate(
-      { id: "cron-1", patch: { failureAlert: { to: "telegram:123" } } },
-      createCronJob(),
-    );
-
-    expect(context.cron.update).toHaveBeenCalled();
-    expectCronSuccess(respond);
-  });
-
-  it("accepts a bare failureAlert.to that inherits the job delivery channel (multi-channel)", async () => {
-    // No own channel and no provider prefix: runtime falls back to the job
-    // delivery channel (already validated), so this must not be rejected as
-    // "channel required" even though multiple channels are configured.
-    setRuntimeConfig(telegramSlackConfig());
-
-    const { context, respond } = await invokeCronUpdate(
-      { id: "cron-1", patch: { failureAlert: { to: "C123" } } },
-      createCronJob({ delivery: { mode: "announce", channel: "slack", to: "slack:C1" } }),
-    );
-
-    expect(context.cron.update).toHaveBeenCalled();
-    expectCronSuccess(respond);
-  });
-
-  it("rejects a routing-changing alert edit that would activate a legacy-invalid inherited delivery channel", async () => {
-    // Legacy job: delivery.channel was stored before validation existed and the
-    // alert has no route of its own. Flipping the alert to announce makes runtime
-    // route through that invalid inherited channel, so it must be rejected now.
+  it.each([
+    {
+      name: "provider-prefixed recipient",
+      delivery: { mode: "announce", channel: "telegram", to: "telegram:1" },
+      alertTo: "slack:C123",
+    },
+    {
+      name: "provider-alias recipient",
+      delivery: { mode: "announce", channel: "slack", to: "slack:C123" },
+      alertTo: "tg:123",
+    },
+  ] as const)("lets a $name select its own alert channel", async ({ delivery, alertTo }) => {
     setRuntimeConfig(telegramSlackConfig());
 
     const { context, respond } = await invokeCronUpdate(
-      { id: "cron-1", patch: { failureAlert: { mode: "announce" } } },
-      createCronJob({
-        delivery: { mode: "announce", channel: "c0legacyinvalid", to: "123" },
-        failureAlert: { mode: "webhook", after: 2 },
-      }),
-    );
-
-    expect(context.cron.update).not.toHaveBeenCalled();
-    expectResponseError(respond, {
-      code: "INVALID_REQUEST",
-      messageIncludes: "failureAlert.channel",
-    });
-  });
-
-  it("accepts a routing-changing alert edit that inherits a valid delivery channel", async () => {
-    setRuntimeConfig(telegramSlackConfig());
-
-    const { context, respond } = await invokeCronUpdate(
-      { id: "cron-1", patch: { failureAlert: { mode: "announce" } } },
-      createCronJob({
-        delivery: { mode: "announce", channel: "slack", to: "slack:C1" },
-        failureAlert: { mode: "webhook", after: 2 },
-      }),
+      { id: "cron-1", patch: { failureAlert: { to: alertTo } } },
+      createCronJob({ delivery }),
     );
 
     expect(context.cron.update).toHaveBeenCalled();
     expectCronSuccess(respond);
   });
 
-  it("validates a newly enabled alert (--failure-alert-after) that inherits a legacy-invalid delivery channel", async () => {
-    // Enabling an alert with no routing key of its own makes it inherit the job
-    // delivery channel; a legacy-invalid one must be rejected, not persisted.
-    setRuntimeConfig(telegramSlackConfig());
+  failureAlertAddAccepted(
+    "accepts a provider-prefixed alert on another channel when creating a job",
+    agentTurnCronParams({
+      delivery: { mode: "announce", channel: "telegram", to: "telegram:1" },
+      failureAlert: { to: "slack:C123" },
+    }),
+  );
 
-    const { context, respond } = await invokeCronUpdate(
-      { id: "cron-1", patch: { failureAlert: { after: 3 } } },
-      createCronJob({ delivery: { mode: "announce", channel: "c0legacyinvalid", to: "123" } }),
-    );
+  failureAlertUpdateAccepted(
+    "does not inherit a primary recipient for another explicit failure-alert channel",
+    { failureAlert: { channel: "slack" } },
+    createRoutedCronJob("telegram", "telegram:1"),
+  );
 
-    expect(context.cron.update).not.toHaveBeenCalled();
-    expectResponseError(respond, {
-      code: "INVALID_REQUEST",
-      messageIncludes: "failureAlert.channel",
-    });
-  });
+  failureAlertAddRejected(
+    "rejects an unconfigured inherited global failure-alert channel",
+    agentTurnCronParams({
+      delivery: { mode: "announce", channel: "telegram", to: "telegram:1" },
+    }),
+    globalFailureAlertConfig(telegramConfig(), {
+      enabled: true,
+      channel: "slack",
+      to: "slack:C123",
+    }),
+  );
 
-  it("does not block a threshold-only edit when global alerts already deliver via the inherited route", async () => {
-    // Global alerts are enabled, so a job with no per-job alert is already sending
-    // via its (legacy) delivery channel. A --failure-alert-after edit is not newly
-    // enabling and must not be blocked by that pre-existing inherited channel.
-    setRuntimeConfig({
-      ...telegramSlackConfig(),
-      cron: { failureAlert: { enabled: true } },
-    } as OpenClawConfig);
+  // No own channel, no delivery channel, and no provider prefix: runtime uses
+  // its remembered last channel, so gateway validation must preserve that path.
+  failureAlertUpdateAccepted(
+    "accepts a bare failureAlert.to through the runtime last-channel fallback",
+    { failureAlert: { to: "C123" } },
+  );
 
-    const { context, respond } = await invokeCronUpdate(
-      { id: "cron-1", patch: { failureAlert: { after: 3 } } },
-      createCronJob({ delivery: { mode: "announce", channel: "c0legacyinvalid", to: "123" } }),
-    );
+  failureAlertUpdateRejected(
+    "validates a null failureAlert reset that reactivates global alert delivery",
+    { failureAlert: null },
+    createRoutedCronJob("c0legacyinvalid", "123", {
+      failureAlert: { channel: "slack", mode: "announce" },
+    }),
+    globalFailureAlertConfig(telegramSlackConfig(), { enabled: true }),
+  );
 
-    expect(context.cron.update).toHaveBeenCalled();
-    expectCronSuccess(respond);
-  });
+  failureAlertUpdateAccepted(
+    "does not revalidate a no-op null reset on an inherited global alert",
+    { failureAlert: null },
+    createRoutedCronJob("c0legacyinvalid", "123"),
+    globalFailureAlertConfig(telegramSlackConfig(), { enabled: true }),
+  );
 
-  it("accepts clearing delivery.channel to a bare-`to` `last` route with an inheriting alert (multi-channel)", async () => {
-    // Clearing the concrete channel keeps a bare `to` and routes via `last`; the
-    // delivery validator accepts this, so an alert inheriting the same route must
-    // be judged identically and not rejected as ambiguous.
-    setRuntimeConfig(telegramSlackConfig());
+  failureAlertUpdateAccepted(
+    "does not revalidate a threshold-only reset on an inherited global alert",
+    { failureAlert: null },
+    createRoutedCronJob("c0legacyinvalid", "123", { failureAlert: { after: 2 } }),
+    globalFailureAlertConfig(telegramSlackConfig(), { enabled: true }),
+  );
 
-    const { context, respond } = await invokeCronUpdate(
-      { id: "cron-1", patch: { delivery: { channel: null } } },
-      createCronJob({
-        delivery: { mode: "announce", channel: "slack", to: "123" },
-        failureAlert: { after: 2 },
-      }),
-    );
+  // A provider-prefixed alert owns its channel even without `channel`, so a
+  // primary-delivery change cannot invalidate that independent destination.
+  failureAlertUpdateAccepted(
+    "keeps a provider-prefixed failure alert when primary delivery changes channels",
+    { delivery: { channel: "telegram", to: "telegram:9" } },
+    createRoutedCronJob("slack", "slack:C1", { failureAlert: { to: "slack:C123" } }),
+  );
 
-    expect(context.cron.update).toHaveBeenCalled();
-    expectCronSuccess(respond);
-  });
+  // Editing delivery.bestEffort must not revalidate an alert that has its own
+  // (stale) channel, since it does not inherit the changed delivery field.
+  failureAlertUpdateAccepted(
+    "does not block a non-routing delivery edit on a job with a stale explicit alert channel",
+    { delivery: { bestEffort: true } },
+    createRoutedCronJob("slack", "slack:C1", {
+      failureAlert: { channel: "c0example01", mode: "announce" },
+    }),
+  );
 
-  it("accepts enabling an alert that inherits a valid delivery channel", async () => {
-    setRuntimeConfig(telegramSlackConfig());
+  // The alert only sets a threshold and inherits delivery, so a delivery edit
+  // that stays valid must not be blocked by the failureAlert revalidation.
+  failureAlertUpdateAccepted(
+    "does not block a delivery-only patch when the alert has no own routing (pure inheritance)",
+    { delivery: { channel: "telegram", to: "telegram:9" } },
+    createRoutedCronJob("slack", "slack:C1", { failureAlert: { after: 2 } }),
+  );
 
-    const { context, respond } = await invokeCronUpdate(
-      { id: "cron-1", patch: { failureAlert: { after: 3 } } },
-      createCronJob({ delivery: { mode: "announce", channel: "slack", to: "slack:C1" } }),
-    );
-
-    expect(context.cron.update).toHaveBeenCalled();
-    expectCronSuccess(respond);
-  });
-
-  it("preserves the last-channel fallback when a delivery mode change clears inheritance", async () => {
-    // The alert has its own bare `to` but no channel. Switching delivery to webhook
-    // clears the inherited channel, and runtime then routes through `last`.
-    setRuntimeConfig(telegramSlackConfig());
-
-    const { context, respond } = await invokeCronUpdate(
-      {
-        id: "cron-1",
-        patch: { delivery: { mode: "webhook", to: "https://example.invalid/hook" } },
-      },
-      createCronJob({
-        delivery: { mode: "announce", channel: "slack", to: "slack:X" },
-        failureAlert: { to: "C123" },
-      }),
-    );
-
-    expect(context.cron.update).toHaveBeenCalled();
-    expectCronSuccess(respond);
-  });
-
-  it("rejects a failureAlert.to whose prefix conflicts with the inherited delivery channel", async () => {
-    // The alert omits its own channel, so runtime sends via the delivery channel
-    // (telegram); a `slack:`-prefixed target would route to the wrong place, so
-    // reject it up front instead of letting it fail at delivery.
-    setRuntimeConfig(telegramSlackConfig());
-
-    const { context, respond } = await invokeCronUpdate(
-      { id: "cron-1", patch: { failureAlert: { to: "slack:C123" } } },
-      createCronJob({ delivery: { mode: "announce", channel: "telegram", to: "telegram:1" } }),
-    );
-
-    expect(context.cron.update).not.toHaveBeenCalled();
-    expectResponseError(respond, {
-      code: "INVALID_REQUEST",
-      messageIncludes: "failureAlert.channel",
-    });
-  });
-
-  it("accepts a bare failureAlert.to through the runtime last-channel fallback", async () => {
-    // No own channel, no delivery channel, and no provider prefix: runtime uses
-    // its remembered last channel, so gateway validation must preserve that path.
-    setRuntimeConfig(telegramSlackConfig());
-
-    const { context, respond } = await invokeCronUpdate(
-      { id: "cron-1", patch: { failureAlert: { to: "C123" } } },
-      createCronJob(),
-    );
-
-    expect(context.cron.update).toHaveBeenCalled();
-    expectCronSuccess(respond);
-  });
-
-  it("validates a null failureAlert reset that reactivates global alert delivery", async () => {
-    setRuntimeConfig({
-      ...telegramSlackConfig(),
-      cron: { failureAlert: { enabled: true } },
-    } as OpenClawConfig);
-
-    const { context, respond } = await invokeCronUpdate(
-      { id: "cron-1", patch: { failureAlert: null } },
-      createCronJob({
-        delivery: { mode: "announce", channel: "c0legacyinvalid", to: "123" },
-        failureAlert: { channel: "slack", mode: "announce" },
-      }),
-    );
-
-    expect(context.cron.update).not.toHaveBeenCalled();
-    expectResponseError(respond, {
-      code: "INVALID_REQUEST",
-      messageIncludes: "failureAlert.channel",
-    });
-  });
-
-  it("does not revalidate a no-op null reset on an inherited global alert", async () => {
-    setRuntimeConfig({
-      ...telegramSlackConfig(),
-      cron: { failureAlert: { enabled: true } },
-    } as OpenClawConfig);
-
-    const { context, respond } = await invokeCronUpdate(
-      { id: "cron-1", patch: { failureAlert: null } },
-      createCronJob({ delivery: { mode: "announce", channel: "c0legacyinvalid", to: "123" } }),
-    );
-
-    expect(context.cron.update).toHaveBeenCalled();
-    expectCronSuccess(respond);
-  });
-
-  it("does not revalidate a threshold-only reset on an inherited global alert", async () => {
-    setRuntimeConfig({
-      ...telegramSlackConfig(),
-      cron: { failureAlert: { enabled: true } },
-    } as OpenClawConfig);
-
-    const { context, respond } = await invokeCronUpdate(
-      { id: "cron-1", patch: { failureAlert: null } },
-      createCronJob({
-        delivery: { mode: "announce", channel: "c0legacyinvalid", to: "123" },
-        failureAlert: { after: 2 },
-      }),
-    );
-
-    expect(context.cron.update).toHaveBeenCalled();
-    expectCronSuccess(respond);
-  });
-
-  it("revalidates an inherited failureAlert when a delivery-only patch changes the channel", async () => {
-    // The alert has no own channel, so it inherits delivery. Switching delivery
-    // from slack to telegram makes its slack-prefixed target route wrong, so the
-    // delivery-only edit must re-check the alert even though the patch omits it.
-    setRuntimeConfig(telegramSlackConfig());
-
-    const { context, respond } = await invokeCronUpdate(
-      { id: "cron-1", patch: { delivery: { channel: "telegram", to: "telegram:9" } } },
-      createCronJob({
-        delivery: { mode: "announce", channel: "slack", to: "slack:C1" },
-        failureAlert: { to: "slack:C123" },
-      }),
-    );
-
-    expect(context.cron.update).not.toHaveBeenCalled();
-    expectResponseError(respond, {
-      code: "INVALID_REQUEST",
-      messageIncludes: "failureAlert.channel",
-    });
-  });
-
-  it("does not block a non-routing delivery edit on a job with a stale explicit alert channel", async () => {
-    // Editing delivery.bestEffort must not revalidate an alert that has its own
-    // (stale) channel, since it does not inherit the changed delivery field.
-    setRuntimeConfig(telegramSlackConfig());
-
-    const { context, respond } = await invokeCronUpdate(
-      { id: "cron-1", patch: { delivery: { bestEffort: true } } },
-      createCronJob({
-        delivery: { mode: "announce", channel: "slack", to: "slack:C1" },
-        failureAlert: { channel: "c0example01", mode: "announce" },
-      }),
-    );
-
-    expect(context.cron.update).toHaveBeenCalled();
-    expectCronSuccess(respond);
-  });
-
-  it("does not block a delivery-only patch when the alert has no own routing (pure inheritance)", async () => {
-    // The alert only sets a threshold and inherits delivery, so a delivery edit
-    // that stays valid must not be blocked by the failureAlert revalidation.
-    setRuntimeConfig(telegramSlackConfig());
-
-    const { context, respond } = await invokeCronUpdate(
-      { id: "cron-1", patch: { delivery: { channel: "telegram", to: "telegram:9" } } },
-      createCronJob({
-        delivery: { mode: "announce", channel: "slack", to: "slack:C1" },
-        failureAlert: { after: 2 },
-      }),
-    );
-
-    expect(context.cron.update).toHaveBeenCalled();
-    expectCronSuccess(respond);
-  });
-
-  it("rejects an unknown failureAlert channel on cron.add before the mutation (#103864)", async () => {
-    // Single configured channel so the default announce delivery passes and
-    // validation reaches the failureAlert channel.
-    setRuntimeConfig(slackConfig());
-
-    const { context, respond } = await invokeCronAdd(
-      agentTurnCronParams({
-        name: "unknown failure-alert channel",
-        failureAlert: { channel: "C0EXAMPLE01" },
-      }),
-    );
-
-    expect(context.cron.add).not.toHaveBeenCalled();
-    expectResponseError(respond, {
-      code: "INVALID_REQUEST",
-      messageIncludes: "failureAlert.channel",
-    });
-  });
+  // Single configured channel so the default announce delivery passes and
+  // validation reaches the failureAlert channel.
+  failureAlertAddRejected(
+    "rejects an unknown failureAlert channel on cron.add before the mutation (#103864)",
+    agentTurnCronParams({
+      name: "unknown failure-alert channel",
+      failureAlert: { channel: "C0EXAMPLE01" },
+    }),
+    slackConfig(),
+  );
 
   it("rejects announce targets prefixed for a different explicit delivery channel", async () => {
     setRuntimeConfig(telegramSlackConfig());
@@ -3227,13 +3248,14 @@ describe("cron method validation", () => {
     expectResponseError(respond, { messageIncludes: "belongs to synology-chat, not slack" });
   });
 
-  it("rejects ambiguous announce delivery on update when multiple channels are configured", async () => {
+  it("forwards implicit announce delivery updates to the service-owned ambiguity validation", async () => {
     setRuntimeConfig(telegramSlackConfig({ includeMainSession: true }));
 
-    const { context, respond } = await invokeCronUpdateDelivery({ mode: "announce" });
+    // Same ownership as the add path: the service validates the merged job, so an
+    // implicit announce patch must reach it instead of dying at the method layer.
+    const { context } = await invokeCronUpdateDelivery({ mode: "announce" });
 
-    expect(context.cron.update).not.toHaveBeenCalled();
-    expectResponseError(respond, { messageIncludes: "delivery.channel is required" });
+    expect(context.cron.update).toHaveBeenCalled();
   });
 
   it("loads the cron job before validating update delivery patches", async () => {
@@ -3269,7 +3291,7 @@ describe("cron method validation", () => {
       params: {
         id: "cron-1",
         patch: {
-          delivery: { mode: "announce" },
+          delivery: { mode: "announce", channel: "whatsapp" },
         },
       } as never,
       respond: respond as never,
@@ -3281,7 +3303,7 @@ describe("cron method validation", () => {
     expect(context.cron.readJob).toHaveBeenCalledWith("cron-1");
     expect(context.cron.getJob).not.toHaveBeenCalled();
     expect(context.cron.update).not.toHaveBeenCalled();
-    expectResponseError(respond, { messageIncludes: "delivery.channel is required" });
+    expectResponseError(respond, { messageIncludes: "must be one of" });
   });
 
   it("does not revalidate stale delivery config for unrelated updates", async () => {

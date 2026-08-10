@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import { describeRootFileOpenFailure, openRootFileSync } from "../infra/boundary-file-read.js";
+import { isBundleCapabilitySupported } from "./bundle-capability-support.js";
 import { inspectBundleMcpRuntimeSupport } from "./bundle-mcp.js";
 import {
   resolveEffectiveEnableState,
@@ -259,10 +260,7 @@ export function loadRuntimePluginCandidate(params: {
     manifestRecord,
     cfg: context.cfg,
     env: context.env,
-    preferSetupRuntimeForChannelPlugins: context.forceFullRuntimeForChannelPlugins
-      ? false
-      : context.preferSetupRuntimeForChannelPlugins,
-    forceFullRuntimeForChannelPlugins: context.forceFullRuntimeForChannelPlugins,
+    channelPluginLoadIntent: context.channelPluginLoadIntent,
     toolDiscovery: params.options.toolDiscovery === true,
   });
   if (!registrationPlan) {
@@ -436,8 +434,6 @@ export function loadRuntimePluginCandidate(params: {
       registryBuilder: params.registryBuilder,
       cfg: context.cfg,
       entry,
-      env: context.env,
-      preferSetupRuntimeForChannelPlugins: context.preferSetupRuntimeForChannelPlugins,
       seenIds: state.seenIds,
       candidateOrigin: candidate.origin,
       logger: params.logger,
@@ -582,20 +578,8 @@ function recordBundleDiagnostics(params: {
 }): void {
   const unsupportedCapabilities = (params.record.bundleCapabilities ?? []).filter(
     (capability) =>
-      capability !== "skills" &&
-      capability !== "mcpServers" &&
-      capability !== "settings" &&
-      !(
-        (capability === "commands" ||
-          capability === "agents" ||
-          capability === "outputStyles" ||
-          capability === "lspServers") &&
-        (params.record.bundleFormat === "claude" || params.record.bundleFormat === "cursor")
-      ) &&
-      !(
-        capability === "hooks" &&
-        (params.record.bundleFormat === "codex" || params.record.bundleFormat === "claude")
-      ),
+      !params.record.bundleFormat ||
+      !isBundleCapabilitySupported(params.record.bundleFormat, capability),
   );
   for (const capability of unsupportedCapabilities) {
     params.registry.diagnostics.push({
@@ -631,7 +615,7 @@ function recordBundleDiagnostics(params: {
         source: params.record.source,
         message:
           "bundle MCP servers use unsupported transports or incomplete configs " +
-          `(stdio only today): ${runtimeSupport.unsupportedServerNames.join(", ")}`,
+          `(${runtimeSupport.unsupportedServerNames.join(", ")})`,
       });
     }
   }

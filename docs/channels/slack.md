@@ -23,17 +23,17 @@ Slack support covers DMs and channels via Slack app integrations. Default transp
 
 Socket Mode and HTTP Request URLs reach feature parity for messaging, slash commands, App Home, and interactivity. Pick by deployment shape, not features.
 
-| Concern                      | Socket Mode (default)                                                                                                                                | HTTP Request URLs                                                                                              |
-| ---------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------- |
-| Public Gateway URL           | Not required                                                                                                                                         | Required (DNS, TLS, reverse proxy or tunnel)                                                                   |
-| Outbound network             | Outbound WSS to `wss-primary.slack.com` must be reachable                                                                                            | No outbound WS; inbound HTTPS only                                                                             |
-| Tokens needed                | Bot identity: bot token + App-Level Token with `connections:write`; user identity: user token + App-Level Token                                      | Bot identity: bot token + Signing Secret; user identity: user token + Signing Secret                           |
-| Dev laptop / behind firewall | Works as-is                                                                                                                                          | Needs a public tunnel (ngrok, Cloudflare Tunnel, Tailscale Funnel) or staging Gateway                          |
-| Horizontal scaling           | One Socket Mode session per app per host; multiple Gateways need separate Slack apps                                                                 | Stateless POST handler; multiple Gateway replicas can share one app behind a load balancer                     |
-| Multi-account on one Gateway | Supported; each account opens its own WS                                                                                                             | Supported; each account needs a unique `webhookPath` (default `/slack/events`) so registrations do not collide |
-| Slash command transport      | Delivered over the WS connection; `slash_commands[].url` is ignored                                                                                  | Slack POSTs to `slash_commands[].url`; field is required for the command to dispatch                           |
-| Request signing              | Not used (auth is the App-Level Token)                                                                                                               | Slack signs every request; OpenClaw verifies with `signingSecret`                                              |
-| Recovery on connection drop  | Slack SDK auto-reconnect is enabled; OpenClaw also restarts failed Socket Mode sessions with bounded backoff. Pong-timeout transport tuning applies. | No persistent connection to drop; retries are per-request from Slack                                           |
+| Concern                      | Socket Mode (default)                                                                                                                                  | HTTP Request URLs                                                                                              |
+| ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------- |
+| Public Gateway URL           | Not required                                                                                                                                           | Required (DNS, TLS, reverse proxy or tunnel)                                                                   |
+| Outbound network             | Outbound WSS to `wss-primary.slack.com` must be reachable                                                                                              | No outbound WS; inbound HTTPS only                                                                             |
+| Tokens needed                | Bot identity: bot token + App-Level Token with `connections:write`; user identity: user token + App-Level Token                                        | Bot identity: bot token + Signing Secret; user identity: user token + Signing Secret                           |
+| Dev laptop / behind firewall | Works as-is                                                                                                                                            | Needs a public tunnel (ngrok, Cloudflare Tunnel, Tailscale Funnel) or staging Gateway                          |
+| Horizontal scaling           | One Socket Mode session per app per host; multiple Gateways need separate Slack apps                                                                   | Stateless POST handler; multiple Gateway replicas can share one app behind a load balancer                     |
+| Multi-account on one Gateway | Supported; each account opens its own WS                                                                                                               | Supported; each account needs a unique `webhookPath` (default `/slack/events`) so registrations do not collide |
+| Slash command transport      | Delivered over the WS connection; `slash_commands[].url` is ignored                                                                                    | Slack POSTs to `slash_commands[].url`; field is required for the command to dispatch                           |
+| Request signing              | Not used (auth is the App-Level Token)                                                                                                                 | Slack signs every request; OpenClaw verifies with `signingSecret`                                              |
+| Recovery on connection drop  | Slack SDK auto-reconnect is enabled; OpenClaw also restarts failed Socket Mode sessions with bounded backoff. A fixed 15s client pong timeout applies. | No persistent connection to drop; retries are per-request from Slack                                           |
 
 <Note>
   **Pick Socket Mode** for single-Gateway hosts, dev laptops, and on-prem networks that can reach `*.slack.com` outbound but cannot accept inbound HTTPS.
@@ -72,8 +72,9 @@ The relay URL must use `wss://` unless it targets localhost. Treat the bearer to
 One Slack account can receive messages from every workspace covered by an
 Enterprise Grid org-wide installation. Choose direct Socket Mode or HTTP
 Request URLs; relay mode is not supported for enterprise accounts. Both
-least-privilege manifests below enable only the V1 `message` and `app_mention`
-event path, immediate replies, and listener-owned status reactions.
+least-privilege manifests below enable the V1 message, mention, membership,
+reaction, and pin event paths, immediate replies, and listener-owned status
+reactions.
 
 #### Socket Mode
 
@@ -101,6 +102,8 @@ event path, immediate replies, and listener-owned status reactions.
         "im:read",
         "mpim:history",
         "mpim:read",
+        "pins:read",
+        "reactions:read",
         "reactions:write",
         "users:read"
       ]
@@ -115,7 +118,13 @@ event path, immediate replies, and listener-owned status reactions.
         "message.channels",
         "message.groups",
         "message.im",
-        "message.mpim"
+        "message.mpim",
+        "member_joined_channel",
+        "member_left_channel",
+        "pin_added",
+        "pin_removed",
+        "reaction_added",
+        "reaction_removed"
       ]
     }
   }
@@ -179,6 +188,8 @@ Socket Mode connection. Replace the example URL with the Gateway's public
         "im:read",
         "mpim:history",
         "mpim:read",
+        "pins:read",
+        "reactions:read",
         "reactions:write",
         "users:read"
       ]
@@ -193,7 +204,13 @@ Socket Mode connection. Replace the example URL with the Gateway's public
         "message.channels",
         "message.groups",
         "message.im",
-        "message.mpim"
+        "message.mpim",
+        "member_joined_channel",
+        "member_left_channel",
+        "pin_added",
+        "pin_removed",
+        "reaction_added",
+        "reaction_removed"
       ]
     }
   }
@@ -240,14 +257,23 @@ bot-authored `message` and `app_mention` events before dispatch, regardless of
 `allowBots`, because org installs do not provide a stable workspace-qualified
 bot identity for loop prevention.
 
-Enterprise support is intentionally limited to direct Socket Mode or HTTP
-`message` and `app_mention` events and their immediate replies. Relay mode,
-slash commands, interactions, App Home, reaction event listeners, pins, Slack
-action tools, Slack-native approvals, bindings, queued or scheduled delivery,
-and proactive sends are unavailable for an enterprise account. Outbound
-acknowledgment, typing, and status reactions are supported through the
-listener-owned Slack client and require `reactions:write`; inbound reaction
-notifications and reaction action tools remain unavailable.
+Enterprise support accepts direct Socket Mode or HTTP message, mention,
+membership, reaction, and pin events plus workspace-qualified outbound
+messages. Relay mode, slash commands, channel lifecycle events, interactions,
+App Home, Agent and Assistant lifecycle events, Slack-native approvals, and
+bindings remain unavailable for an enterprise account. Slack action tools
+remain unavailable except for file uploads and adding or removing emoji
+reactions. Inbound membership, reaction, and pin notifications use the
+listener-owned, workspace-scoped Slack client. Outbound acknowledgment, typing,
+and status reactions are also supported through that client and require
+`reactions:write`.
+
+OpenClaw records Enterprise Grid destinations as
+`team:<team-id>:channel:<channel-id>` or `team:<team-id>:user:<user-id>`.
+Current-conversation sends, uploads, and reactions inherit that destination.
+Detached or proactive calls must provide the workspace-qualified target;
+bare channel and user IDs fail closed because those IDs can be reused by
+different workspaces.
 
 Immediate replies reuse the standard Slack delivery behavior for chunks,
 media, metadata, identity fallback, unfurls, and receipts, but only while the
@@ -806,30 +832,12 @@ OpenClaw automatically drops user-scope message events authored by the resolved 
 
 ## Socket Mode transport tuning
 
-OpenClaw sets the Slack SDK client pong timeout to 15 seconds by default for Socket Mode. Override the transport settings only when you need workspace- or host-specific tuning:
-
-```json5
-{
-  channels: {
-    slack: {
-      mode: "socket",
-      socketMode: {
-        clientPingTimeout: 20000,
-        serverPingTimeout: 30000,
-        pingPongLoggingEnabled: false,
-      },
-    },
-  },
-}
-```
-
-Use this only for Socket Mode workspaces that log Slack websocket pong/server-ping timeouts or run on hosts with known event-loop starvation. `clientPingTimeout` is the pong wait after the SDK sends a client ping; `serverPingTimeout` is the wait for Slack server pings. App messages and events remain application state, not transport liveness signals.
+OpenClaw sets the Slack SDK client pong timeout to 15 seconds for Socket Mode. This is a fixed internal default and is not operator-configurable.
 
 Notes:
 
-- `socketMode` is ignored in HTTP Request URL mode.
-- Base `channels.slack.socketMode` settings apply to all Slack accounts unless overridden. Per-account overrides use `channels.slack.accounts.<accountId>.socketMode`; because this is an object override, include every socket tuning field you want for that account.
-- Only `clientPingTimeout` has an OpenClaw default (`15000`). `serverPingTimeout` and `pingPongLoggingEnabled` are passed to the Slack SDK only when configured.
+- The `channels.slack.socketMode` object, including `clientPingTimeout`, `serverPingTimeout`, and `pingPongLoggingEnabled`, is retired and is no longer read at runtime. `openclaw doctor` flags retired layout tuning knobs with a general notice rather than a per-key path. `openclaw doctor --fix` removes those three fields wherever they appear, at the channel root and under `accounts.<accountId>`, and drops the `socketMode` object once it is empty. Any other key you added inside it is left alone, so delete it by hand.
+- App messages and events remain application state, not transport liveness signals.
 - Socket Mode restart backoff starts around 2 seconds and caps around 30 seconds. Recoverable start, start-wait, and disconnect failures retry until the channel stops. Permanent account and credential errors such as invalid auth, revoked tokens, or missing scopes fail fast instead of retrying forever.
 
 ## Manifest and scope checklist

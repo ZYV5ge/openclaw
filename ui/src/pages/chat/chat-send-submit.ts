@@ -1,16 +1,21 @@
 import { shouldForwardModelCommandToServer } from "../../../../src/auto-reply/commands-registry.shared.js";
 import { normalizeChatFollowUpModeOverride, setLastActiveSessionKey } from "../../app/settings.ts";
+import { t } from "../../i18n/index.ts";
 import type { ChatAttachment, ChatQueueSkillWorkshopRevision } from "../../lib/chat/chat-types.ts";
 import { parseSlashCommand } from "../../lib/chat/commands.ts";
 import { extractCompanionCommandQuestion } from "../../lib/chat/companion-question.ts";
 import { resolveCurrentUserIdentity } from "../../lib/chat/current-user-identity.ts";
-import { visibleSessionMatches } from "../../lib/sessions/index.ts";
-import { generateUUID } from "../../lib/uuid.ts";
+import { scopedAgentIdForSession, visibleSessionMatches } from "../../lib/sessions/index.ts";
 import {
   getChatAttachmentDataUrl,
   releaseChatAttachmentPayloads,
 } from "./attachment-payload-store.ts";
-import { dispatchChatSlashCommand, shouldQueueLocalSlashCommand } from "./chat-commands.ts";
+import { composeBrowserAnnotationContext } from "./browser-annotation-context.ts";
+import {
+  dispatchChatSlashCommand,
+  requireChatSessionAction,
+  shouldQueueLocalSlashCommand,
+} from "./chat-commands.ts";
 import type { ChatState } from "./chat-history.ts";
 import {
   admitQueuedMessageForSession,
@@ -36,14 +41,15 @@ import { chatOutboxDrainDependencies, deliverChatQueueItem } from "./chat-send-d
 import {
   canSendVolatileQueueItem,
   enqueuePendingSendMessage,
+  isSkillWorkshopRevisionConnectionCurrent,
   reconnectSafeQueuedSendState,
   setChatError,
   waitForPendingChatSettings,
 } from "./chat-send-queue-state.ts";
-import { resolveDisplayedTranscriptRevision } from "./chat-send-request.ts";
+import { resolveDisplayedLeafEntryId } from "./chat-send-request.ts";
 import { recordChatSendTiming } from "./chat-send-timing.ts";
 import { getPendingChatPickerPatch } from "./chat-session.ts";
-import { withChatSubmissionGuard, withChatSubmitGuard } from "./chat-submit-guard.ts";
+import { withChatSubmitGuard } from "./chat-submit-guard.ts";
 import { resolveStoredChatOutboxScope } from "./composer-persistence.ts";
 import {
   recordNonTranscriptInputHistory,
@@ -63,13 +69,10 @@ import {
 } from "./steer-lifecycle.ts";
 
 type ChatSendOptions = {
-  confirmReset?: boolean;
   restoreDraft?: boolean;
   skillWorkshopRevision?: ChatQueueSkillWorkshopRevision;
   /** Lets request-scoped UI actions recover from rejected local commands. */
   onLocalCommandSendRejected?: () => void;
-  /** Stable identity for one logical user submission across handler re-entry. */
-  submissionId?: string;
 };
 
 function isChatResetCommand(text: string) {
@@ -98,7 +101,6 @@ function chatSubmitKey(
   message: string,
   attachments: ChatAttachment[],
   skillWorkshopRevision?: ChatQueueSkillWorkshopRevision,
-  laneSubmissionId?: string,
 ): string {
   return JSON.stringify([
     kind,
@@ -107,7 +109,6 @@ function chatSubmitKey(
     skillWorkshopRevision?.proposalId ?? "",
     skillWorkshopRevision?.agentId ?? "",
     attachments.map(attachmentSubmitSignature),
-    laneSubmissionId ?? "",
   ]);
 }
 
@@ -168,12 +169,17 @@ async function sendDetachedCommandMessage(
       runId: opts.runId,
     },
   );
-  const ok = ack?.status === "ok" || ack?.status === "started" || ack?.status === "in_flight";
+  const sendAck = ack && !("kind" in ack) ? ack : null;
+  const ok =
+    sendAck?.status === "ok" || sendAck?.status === "started" || sendAck?.status === "in_flight";
   if (!ok && !restoreFailedCommandComposer(host, opts.recovery)) {
     releaseChatAttachmentPayloads(excludeComposerAttachments(host, opts.attachments));
   }
-  if (isTerminalFailureChatSendAck(ack) && submittedCommandScopeIsVisible(host, opts.recovery)) {
-    setChatError(host, formatTerminalChatSendAckError(ack, "detached"));
+  if (
+    isTerminalFailureChatSendAck(sendAck) &&
+    submittedCommandScopeIsVisible(host, opts.recovery)
+  ) {
+    setChatError(host, formatTerminalChatSendAckError(sendAck, "detached"));
   }
   if (ok) {
     const submittedScopeIsVisible = submittedCommandScopeIsVisible(host, opts.recovery);
@@ -192,58 +198,27 @@ async function sendDetachedCommandMessage(
   }
 }
 
-export function handleSendChat(host: ChatHost, messageOverride?: string, opts?: ChatSendOptions) {
-  const submissionId = opts?.submissionId?.trim() || generateUUID();
-  return withChatSubmissionGuard(host, submissionId, () =>
-    handleSendChatSubmission(host, submissionId, messageOverride, opts),
-  );
-}
-
-async function handleSendChatSubmission(
+export async function handleSendChat(
   host: ChatHost,
-  submissionId: string,
   messageOverride?: string,
   opts?: ChatSendOptions,
 ) {
   const previousDraft = host.chatMessage;
-  const message = (messageOverride ?? host.chatMessage).trim();
+  const userMessage = (messageOverride ?? host.chatMessage).trim();
   const submittedAtMs = controlUiNowMs();
   const submittedSessionKey = host.sessionKey;
-  const skillWorkshopRevision = opts?.skillWorkshopRevision;
-  const chatState = host as unknown as ChatState;
-  const submitTranscriptRevision = !skillWorkshopRevision
-    ? resolveDisplayedTranscriptRevision(chatState)
-    : undefined;
-  const submitTranscriptRevisionRefresh =
-    !skillWorkshopRevision && chatState.chatLoading
-      ? {
-          client: host.client,
-          connectionEpoch: host.connectionEpoch,
-          host,
-          scope: resolveStoredChatOutboxScope(host, submittedSessionKey),
-        }
-      : undefined;
+  const expectedLeafEntryId = resolveDisplayedLeafEntryId(host as unknown as ChatState);
   const attachmentsToSend =
     messageOverride == null ? snapshotChatAttachments(host.chatAttachments) : [];
   const hasAttachments = attachmentsToSend.length > 0;
-  const runGuardedSubmission = <T>(key: string, run: () => Promise<T>) =>
-    withChatSubmitGuard(host, key, run);
+  const skillWorkshopRevision = opts?.skillWorkshopRevision;
+  // Materialize hidden annotation context before command classification and queue admission.
+  // Delivery and retry consume this snapshot; they must not re-read or recompose attachments.
+  const message = composeBrowserAnnotationContext(userMessage, attachmentsToSend);
 
   if (!message && !hasAttachments) {
     return;
   }
-
-  if (
-    messageOverride != null &&
-    opts?.confirmReset &&
-    isChatResetCommand(message) &&
-    (typeof globalThis.confirm !== "function" ||
-      !globalThis.confirm("Start a new thread? This will reset the current chat."))
-  ) {
-    return;
-  }
-
-  host.chatRunError = null;
 
   if (!skillWorkshopRevision) {
     // Natural stop aliases require a run; explicit /stop is always available.
@@ -251,13 +226,18 @@ async function handleSendChatSubmission(
       isChatStopCommand(message) &&
       (message.trim().startsWith("/") || hasAbortableSessionRun(host))
     ) {
+      if (host.connected && !requireChatSessionAction(host, "abort")) {
+        return;
+      }
+      host.chatRunError = null;
       if (messageOverride == null) {
-        recordNonTranscriptInputHistory(host, message);
+        recordNonTranscriptInputHistory(host, userMessage);
       }
       await handleAbortChat(host);
       return;
     }
 
+    host.chatRunError = null;
     const parsed = parseSlashCommand(message);
     if (/^\/(?:btw|side)(?::|\s|$)/i.test(message)) {
       const question = extractCompanionCommandQuestion(message);
@@ -265,9 +245,9 @@ async function handleSendChatSubmission(
         return;
       }
       const submitKey = chatSubmitKey(host, "local", message, []);
-      await runGuardedSubmission(submitKey, async () => {
+      await withChatSubmitGuard(host, submitKey, async () => {
         if (messageOverride == null) {
-          recordNonTranscriptInputHistory(host, message);
+          recordNonTranscriptInputHistory(host, userMessage);
           if (host.chatMessage === previousDraft) {
             host.chatMessage = "";
             resetChatInputHistoryNavigation(host);
@@ -280,7 +260,7 @@ async function handleSendChatSubmission(
     // /approve bypasses the run whose approval it resolves.
     if (parsed?.command.key === "approve" && isChatBusy(host)) {
       const submitKey = chatSubmitKey(host, "detached", message, attachmentsToSend);
-      await runGuardedSubmission(submitKey, async () => {
+      await withChatSubmitGuard(host, submitKey, async () => {
         if (!(await waitForSubmittedRoute(host, submittedSessionKey))) {
           return;
         }
@@ -289,12 +269,11 @@ async function handleSendChatSubmission(
             ? clearSubmittedComposerState(host, previousDraft, attachmentsToSend)
             : {};
         if (messageOverride == null) {
-          recordNonTranscriptInputHistory(host, message);
+          recordNonTranscriptInputHistory(host, userMessage);
         }
         const recoveryScope = resolveStoredChatOutboxScope(host, submittedSessionKey);
         await sendDetachedCommandMessage(host, message, {
           attachments: hasAttachments ? attachmentsToSend : undefined,
-          runId: submissionId,
           recovery: captureChatCommandComposerRecovery(
             host,
             recoveryScope,
@@ -314,17 +293,10 @@ async function handleSendChatSubmission(
       parsed?.command.key === "model" && shouldForwardModelCommandToServer(parsed.args);
     if (parsed?.command.executeLocal && !forwardModel) {
       if (shouldQueueLocalSlashCommand(parsed.command.key)) {
-        const submitKey = chatSubmitKey(
-          host,
-          "local",
-          message,
-          attachmentsToSend,
-          undefined,
-          submissionId,
-        );
-        await runGuardedSubmission(submitKey, async () => {
+        const submitKey = chatSubmitKey(host, "local", message, attachmentsToSend);
+        await withChatSubmitGuard(host, submitKey, async () => {
           if (messageOverride == null) {
-            recordNonTranscriptInputHistory(host, message);
+            recordNonTranscriptInputHistory(host, userMessage);
             host.chatMessage = "";
             resetChatInputHistoryNavigation(host);
           }
@@ -365,7 +337,7 @@ async function handleSendChatSubmission(
         let recoveryComposer: { draft: string; attachments: ChatAttachment[] } | undefined;
         const recoveryScope = resolveStoredChatOutboxScope(host, submittedSessionKey);
         if (messageOverride == null) {
-          recordNonTranscriptInputHistory(host, message);
+          recordNonTranscriptInputHistory(host, userMessage);
           if (waitsForPicker) {
             const cleared = clearSubmittedComposerState(host, previousDraft, attachmentsToSend);
             prevDraft = cleared.previousDraft;
@@ -424,7 +396,7 @@ async function handleSendChatSubmission(
       };
       if (waitsForPicker) {
         const submitKey = chatSubmitKey(host, "local", message, attachmentsToSend);
-        await runGuardedSubmission(submitKey, dispatchLocalCommand);
+        await withChatSubmitGuard(host, submitKey, dispatchLocalCommand);
       } else {
         await dispatchLocalCommand();
       }
@@ -445,10 +417,14 @@ async function handleSendChatSubmission(
     effectiveMessage,
     attachmentsToSend,
     skillWorkshopRevision,
-    submissionId,
   );
-  await runGuardedSubmission(submitKey, async () => {
+  await withChatSubmitGuard(host, submitKey, async () => {
     if (host.sessionKey !== submittedSessionKey) {
+      return;
+    }
+    const submittedAgentId = scopedAgentIdForSession(host, submittedSessionKey);
+    if (!visibleSessionMatches(host, submittedSessionKey, submittedAgentId)) {
+      setChatError(host, t("mcpServers.sessionUnavailable"));
       return;
     }
     const cleared =
@@ -456,7 +432,7 @@ async function handleSendChatSubmission(
         ? clearSubmittedComposerState(host, previousDraft, attachmentsToSend)
         : {};
     if (messageOverride == null) {
-      recordNonTranscriptInputHistory(host, message);
+      recordNonTranscriptInputHistory(host, userMessage);
     }
 
     const pendingSettings = getPendingChatPickerPatch(host, submittedSessionKey);
@@ -468,11 +444,8 @@ async function handleSendChatSubmission(
       refreshSessions,
       submittedAtMs,
       waitingForSettings ? "waiting-model" : reconnectSafeQueuedSendState(host),
-      {
-        ...(skillWorkshopRevision ? { skillWorkshopRevision } : {}),
-        ...(replyToId ? { replyToId } : {}),
-        ...(submitTranscriptRevision ? { transcriptRevision: submitTranscriptRevision } : {}),
-      },
+      skillWorkshopRevision,
+      replyToId,
     );
     if (!queued) {
       return;
@@ -480,8 +453,9 @@ async function handleSendChatSubmission(
     const admittedDurably = admitQueuedMessageForSession(host, submittedSessionKey, queued);
     const canSendFromMemory =
       !admittedDurably &&
-      !waitingForSettings &&
-      canSendVolatileQueueItem(host, queued, submittedSessionKey);
+      (skillWorkshopRevision
+        ? isSkillWorkshopRevisionConnectionCurrent(host, queued)
+        : !waitingForSettings && canSendVolatileQueueItem(host, queued, submittedSessionKey));
     if (!admittedDurably && !canSendFromMemory) {
       cancelChatDelivery(host, queued, {
         previousDraft: cleared.previousDraft,
@@ -493,11 +467,7 @@ async function handleSendChatSubmission(
     const sendResult = await deliverChatQueueItem(host, queued, {
       previousDraft: cleared.previousDraft,
       previousAttachments: cleared.previousAttachments,
-      ...(submitTranscriptRevisionRefresh
-        ? {
-            refreshDisplayedTranscriptRevisionAfterHistory: submitTranscriptRevisionRefresh,
-          }
-        : {}),
+      ...(expectedLeafEntryId !== undefined ? { expectedLeafEntryId } : {}),
       ...(pendingSettings ? { pendingSettings } : {}),
       restoreAttachments: Boolean(messageOverride && opts?.restoreDraft),
       restoreDraft: Boolean(messageOverride && opts?.restoreDraft),

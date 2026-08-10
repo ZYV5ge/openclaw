@@ -21,9 +21,22 @@ import type {
   ChatComposerPlusMenuView,
 } from "./chat-composer-plus-menu.ts";
 
+export type CapabilityMenuProps = Omit<
+  ChatComposerPlusMenuProps,
+  | "attachments"
+  | "disabled"
+  | "open"
+  | "view"
+  | "toolOverrides"
+  | "onOpenChange"
+  | "onViewChange"
+  | "showCapabilities"
+>;
+
 type ChatComposerDisabledBannerContent = {
   text: string;
   actionLabel: string;
+  disabledReason?: string;
   onAction: () => void;
 };
 
@@ -55,17 +68,7 @@ export type ChatComposerProps = {
   draft: string;
   sessions: SessionsListResult | null;
   toolOverrides?: SessionToolOverrides;
-  capabilityMenu?: Omit<
-    ChatComposerPlusMenuProps,
-    | "attachments"
-    | "disabled"
-    | "open"
-    | "view"
-    | "toolOverrides"
-    | "onOpenChange"
-    | "onViewChange"
-    | "showCapabilities"
-  >;
+  capabilityMenu?: CapabilityMenuProps;
   providerUsage?: ProviderUsageDisplayProps;
   assistantName: string;
   sendShortcut?: ChatSendShortcut;
@@ -117,6 +120,7 @@ export type ChatComposerProps = {
   onNewSession: () => void;
   onClearReply?: () => void;
   onAttachmentsChange?: (attachments: ChatAttachment[]) => void;
+  onRemoveAttachment?: (attachment: ChatAttachment) => void;
   onGoalCommand?: (command: string) => void;
   onGatewayQuestionChange?: () => void;
   onGatewayQuestionSubmit?: (id: string, answers: Record<string, string[]>) => void | Promise<void>;

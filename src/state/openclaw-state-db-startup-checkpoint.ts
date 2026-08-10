@@ -1,4 +1,3 @@
-import { existsSync } from "node:fs";
 import type { DatabaseSync } from "node:sqlite";
 import { openNodeSqliteDatabase } from "../infra/node-sqlite.js";
 import { assertSqliteIntegrity } from "../infra/sqlite-integrity.js";
@@ -14,11 +13,17 @@ import {
 } from "./openclaw-state-db-maintenance.js";
 import { ensureOpenClawStatePermissions } from "./openclaw-state-db-permissions.js";
 import { ensureColumn } from "./openclaw-state-db-schema-helpers.js";
+import { assertOpenClawStateWriteAllowed } from "./openclaw-state-ownership.js";
 
-function ensureStartupMigrationCheckpointSchema(db: DatabaseSync, pathname: string): void {
+function ensureStartupMigrationCheckpointSchema(
+  db: DatabaseSync,
+  pathname: string,
+  env: NodeJS.ProcessEnv,
+): void {
   runSqliteImmediateTransactionSync(
     db,
     () => {
+      assertOpenClawStateWriteAllowed({ database: db, databasePath: pathname, env });
       assertSupportedSchemaVersion(db, pathname);
       db.exec(`
         CREATE TABLE IF NOT EXISTS schema_meta (
@@ -57,44 +62,21 @@ function ensureStartupMigrationCheckpointSchema(db: DatabaseSync, pathname: stri
   );
 }
 
-export type OpenClawStateStartupMigrationCheckpointDatabasePurpose =
-  | "bootstrap"
-  | "verified-existing"
-  | "lease-metadata";
-
 export function withOpenClawStateStartupMigrationCheckpointDatabase<T>(
   callback: (db: DatabaseSync) => T,
-  options: OpenClawStateDatabaseOptions & {
-    purpose?: OpenClawStateStartupMigrationCheckpointDatabasePurpose;
-  } = {},
+  options: OpenClawStateDatabaseOptions = {},
 ): T {
   const env = options.env ?? process.env;
   const pathname = resolveDatabasePath(options);
-  const purpose = options.purpose ?? "bootstrap";
-  if (purpose !== "bootstrap" && !existsSync(pathname)) {
-    throw new Error(
-      "OpenClaw state database disappeared before startup migration " + purpose + ": " + pathname,
-    );
-  }
+  assertOpenClawStateWriteAllowed({ databasePath: pathname, env });
   ensureOpenClawStatePermissions(pathname, env);
   const db = openNodeSqliteDatabase(pathname);
   try {
-    if (purpose === "bootstrap") {
-      configureSqlitePreSchemaPragmas(db, {
-        busyTimeoutMs: OPENCLAW_SQLITE_BUSY_TIMEOUT_MS,
-      });
-    } else {
-      db.exec("PRAGMA busy_timeout = " + OPENCLAW_SQLITE_BUSY_TIMEOUT_MS + ";");
-    }
-    db.exec("PRAGMA trusted_schema = OFF;");
-    // Gate future schemas before any full integrity check or schema write.
-    assertSupportedSchemaVersion(db, pathname);
-    if (purpose !== "lease-metadata") {
-      assertSqliteIntegrity(db, pathname);
-    }
-    if (purpose === "bootstrap") {
-      ensureStartupMigrationCheckpointSchema(db, pathname);
-    }
+    configureSqlitePreSchemaPragmas(db, {
+      busyTimeoutMs: OPENCLAW_SQLITE_BUSY_TIMEOUT_MS,
+    });
+    assertSqliteIntegrity(db, pathname);
+    ensureStartupMigrationCheckpointSchema(db, pathname, env);
     return callback(db);
   } finally {
     db.close();

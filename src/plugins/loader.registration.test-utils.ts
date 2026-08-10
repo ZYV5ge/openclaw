@@ -72,11 +72,8 @@ import {
   getActivePluginRegistryKey,
   getActivePluginRegistryWorkspaceDir,
   getActivePluginRuntimeSubagentMode,
-  pinActivePluginChannelRegistry,
-  releasePinnedPluginChannelRegistry,
   setActivePluginRegistry,
 } from "./runtime.js";
-import { ensurePluginRegistryLoaded } from "./runtime/runtime-registry-loader.js";
 
 afterEach(globalAfterEach0);
 afterAll(globalAfterAll1);
@@ -117,6 +114,89 @@ describe("loadOpenClawPlugins", () => {
         message: "hook already registered: shared-name (duplicate-legacy-hook)",
       }),
     );
+  });
+
+  it("warns when registerHook is used with a typed hook event name", () => {
+    useNoBundledPlugins();
+    const plugin = writePlugin({
+      id: "typed-name-legacy-register",
+      filename: "typed-name-legacy-register.cjs",
+      body: `module.exports = {
+          id: "typed-name-legacy-register",
+          register(api) {
+            api.registerHook(["before_tool_call", "message_received"], () => {}, {
+              name: "typed-name-legacy-register",
+            });
+          },
+        };`,
+    });
+
+    const registry = loadOpenClawPlugins({
+      cache: false,
+      workspaceDir: plugin.dir,
+      config: {
+        plugins: {
+          load: { paths: [plugin.file] },
+          allow: ["typed-name-legacy-register"],
+        },
+      },
+      onlyPluginIds: ["typed-name-legacy-register"],
+    });
+
+    expect(registry.legacyInternalHooks.map((entry) => entry.event)).toEqual([
+      "before_tool_call",
+      "message_received",
+    ]);
+    expect(
+      registry.diagnostics
+        .filter(
+          (diagnostic) =>
+            diagnostic.pluginId === "typed-name-legacy-register" &&
+            diagnostic.level === "warn" &&
+            diagnostic.message.includes("dispatched by the typed hook runner only"),
+        )
+        .map((diagnostic) => diagnostic.message),
+    ).toEqual([
+      expect.stringContaining('Use api.on("before_tool_call", ...)'),
+      expect.stringContaining('Use api.on("message_received", ...)'),
+    ]);
+  });
+
+  it("keeps legacy type:action events diagnostic-free in registerHook", () => {
+    useNoBundledPlugins();
+    const plugin = writePlugin({
+      id: "legacy-type-action-register",
+      filename: "legacy-type-action-register.cjs",
+      body: `module.exports = {
+          id: "legacy-type-action-register",
+          register(api) {
+            api.registerHook("gateway:startup", () => {}, { name: "legacy-startup" });
+            api.registerHook("command:new", () => {}, { name: "legacy-command" });
+          },
+        };`,
+    });
+
+    const registry = loadOpenClawPlugins({
+      cache: false,
+      workspaceDir: plugin.dir,
+      config: {
+        plugins: {
+          load: { paths: [plugin.file] },
+          allow: ["legacy-type-action-register"],
+        },
+      },
+      onlyPluginIds: ["legacy-type-action-register"],
+    });
+
+    expect(registry.legacyInternalHooks.map((entry) => entry.event)).toEqual([
+      "gateway:startup",
+      "command:new",
+    ]);
+    expect(
+      registry.diagnostics.some((diagnostic) =>
+        diagnostic.message.includes("dispatched by the typed hook runner only"),
+      ),
+    ).toBe(false);
   });
 
   it("runs consecutive plugin hook handlers with shared mutable context but isolated plugin config", async () => {
@@ -674,7 +754,7 @@ describe("loadOpenClawPlugins", () => {
                   return { manager: null, error: "snapshot" };
                 },
                 resolveMemoryBackendConfig() {
-                  return { backend: "qmd", qmd: {} };
+                  return { backend: "builtin" };
                 },
               },
             });
@@ -1593,85 +1673,6 @@ describe("loadOpenClawPlugins", () => {
     delete (globalThis as Record<string, unknown>)[marker];
   });
 
-  it("does not re-register non-bundled plugins after gateway-bindable boot loads", () => {
-    useNoBundledPlugins();
-    const marker = "__openclawGatewayBootRegisterCount";
-    const plugin = writePlugin({
-      id: "costclaw-boot-cache",
-      filename: "costclaw-boot-cache.cjs",
-      body: `module.exports = {
-          id: "costclaw-boot-cache",
-          register() {
-            globalThis.${marker} = (globalThis.${marker} || 0) + 1;
-          },
-        };`,
-    });
-    const config = {
-      plugins: {
-        load: { paths: [plugin.file] },
-        allow: ["costclaw-boot-cache"],
-        entries: {
-          "costclaw-boot-cache": { enabled: true },
-        },
-      },
-    };
-
-    loadOpenClawPlugins({
-      workspaceDir: plugin.dir,
-      config,
-      runtimeOptions: {
-        allowGatewaySubagentBinding: true,
-      },
-    });
-    ensurePluginRegistryLoaded({
-      scope: "all",
-      workspaceDir: plugin.dir,
-      config,
-    });
-
-    expect((globalThis as Record<string, unknown>)[marker]).toBe(1);
-    delete (globalThis as Record<string, unknown>)[marker];
-  });
-
-  it("reuses a gateway-bindable cache entry for later default-mode loads", () => {
-    useNoBundledPlugins();
-    const marker = "__openclawGatewayBindableCacheRegisterCount";
-    const plugin = writePlugin({
-      id: "gateway-bindable-cache",
-      filename: "gateway-bindable-cache.cjs",
-      body: `module.exports = {
-          id: "gateway-bindable-cache",
-          register() {
-            globalThis.${marker} = (globalThis.${marker} || 0) + 1;
-          },
-        };`,
-    });
-    const options = {
-      workspaceDir: plugin.dir,
-      config: {
-        plugins: {
-          load: { paths: [plugin.file] },
-          allow: ["gateway-bindable-cache"],
-          entries: {
-            "gateway-bindable-cache": { enabled: true },
-          },
-        },
-      },
-    };
-
-    const gatewayBindable = loadOpenClawPlugins({
-      ...options,
-      runtimeOptions: {
-        allowGatewaySubagentBinding: true,
-      },
-    });
-    const defaultMode = loadOpenClawPlugins(options);
-
-    expect(defaultMode).toBe(gatewayBindable);
-    expect((globalThis as Record<string, unknown>)[marker]).toBe(1);
-    delete (globalThis as Record<string, unknown>)[marker];
-  });
-
   it("re-initializes global hook runner when serving registry from cache", () => {
     useNoBundledPlugins();
     const plugin = writePlugin({
@@ -1701,76 +1702,6 @@ describe("loadOpenClawPlugins", () => {
     expectGlobalHookRunner(getGlobalHookRunner());
 
     resetGlobalHookRunner();
-  });
-
-  it("keeps pinned gateway hooks and later default-mode hooks dispatchable together", () => {
-    useNoBundledPlugins();
-    const gatewayPlugin = writePlugin({
-      id: "gateway-hook-surface",
-      filename: "gateway-hook-surface.cjs",
-      body: `module.exports = { id: "gateway-hook-surface", register(api) {
-          api.on("subagent_ended", () => undefined);
-        } };`,
-    });
-    const defaultPlugin = writePlugin({
-      id: "default-hook-surface",
-      filename: "default-hook-surface.cjs",
-      body: `module.exports = { id: "default-hook-surface", register(api) {
-          api.on("message_sent", () => undefined);
-        } };`,
-    });
-
-    const gatewayRegistry = loadOpenClawPlugins({
-      workspaceDir: gatewayPlugin.dir,
-      config: {
-        plugins: {
-          load: { paths: [gatewayPlugin.file] },
-          allow: ["gateway-hook-surface"],
-          entries: {
-            "gateway-hook-surface": {
-              enabled: true,
-              hooks: { allowConversationAccess: true },
-            },
-          },
-        },
-      },
-      runtimeOptions: {
-        allowGatewaySubagentBinding: true,
-      },
-    });
-    // The gateway pins its boot registry to the channel/http surfaces; the
-    // pin is what keeps gateway lifecycle hooks live across later swaps.
-    pinActivePluginChannelRegistry(gatewayRegistry);
-    try {
-      expect(getGlobalPluginRegistry()).toBe(gatewayRegistry);
-      expect(expectGlobalHookRunner(getGlobalHookRunner()).hasHooks("subagent_ended")).toBe(true);
-
-      const defaultRegistry = loadOpenClawPlugins({
-        workspaceDir: defaultPlugin.dir,
-        config: {
-          plugins: {
-            load: { paths: [defaultPlugin.file] },
-            allow: ["default-hook-surface"],
-            entries: {
-              "default-hook-surface": {
-                enabled: true,
-                hooks: { allowConversationAccess: true },
-              },
-            },
-          },
-        },
-      });
-
-      expect(getActivePluginRegistry()).toBe(defaultRegistry);
-      expect(getGlobalPluginRegistry()).toBe(defaultRegistry);
-      // Regression guard for #91918: the runner must see the union of live
-      // registries, not just whichever registry initialized it last.
-      const globalHookRunner = expectGlobalHookRunner(getGlobalHookRunner());
-      expect(globalHookRunner.hasHooks("subagent_ended")).toBe(true);
-      expect(globalHookRunner.hasHooks("message_sent")).toBe(true);
-    } finally {
-      releasePinnedPluginChannelRegistry(gatewayRegistry);
-    }
   });
 
   it("drops hooks of replaced unpinned registries from the global runner", () => {

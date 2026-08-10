@@ -312,11 +312,12 @@ export function renderSettingsSegmented<T extends string>(props: {
 export function renderSettingsStatus(props: {
   kind: SettingsStatusKind;
   label: unknown;
+  dot?: boolean;
 }): TemplateResult {
   const modifier = props.kind === "muted" ? "" : ` settings-status--${props.kind}`;
   return html`
     <span class="settings-status${modifier}">
-      <span class="settings-status__dot"></span>
+      ${props.dot === false ? nothing : html`<span class="settings-status__dot"></span>`}
       ${props.label}
     </span>
   `;
@@ -337,6 +338,7 @@ export function renderSettingsEmpty(message: unknown): TemplateResult {
 /** Secret text input with an inset reveal toggle — one field, no trailing
  * button, so secret rows line up with plain input rows in the same group. */
 export function renderSettingsSecretInput(props: {
+  ariaLabel: string;
   value: string;
   placeholder?: string;
   visible: boolean;
@@ -351,6 +353,7 @@ export function renderSettingsSecretInput(props: {
       <input
         class="settings-input"
         type=${props.visible ? "text" : "password"}
+        aria-label=${props.ariaLabel}
         autocomplete="off"
         spellcheck="false"
         .value=${props.value}

@@ -9,9 +9,11 @@ import type {
 import type { ControlUiSessionPullRequest } from "../../../../src/gateway/control-ui-contract.js";
 import type { GatewaySessionRow } from "../../api/types.ts";
 import { selectApplicationSession } from "../../app/agent-selection.ts";
+import { hasOperatorAdminAccess } from "../../app/operator-access.ts";
 import { clampText } from "../../lib/format.ts";
 import { isGatewayMethodAdvertised } from "../../lib/gateway-methods.ts";
 import { resolveSessionDisplayName } from "../../lib/session-display.ts";
+import { readSessionMethodAccess } from "../../lib/session-method-access.ts";
 import {
   scopedSessionPullRequestKey,
   SESSION_PULL_REQUESTS_SUBSCRIBE_METHOD,
@@ -25,6 +27,11 @@ import {
 } from "../../lib/sessions/catalog-key.ts";
 import { resolveSessionKey, scopedAgentParamsForSession } from "../../lib/sessions/index.ts";
 import { parseAgentSessionKey } from "../../lib/sessions/session-key.ts";
+import {
+  taskSuggestionAcceptParams,
+  type TaskSuggestionAcceptMode,
+} from "../../lib/task-suggestion-acceptance.ts";
+import { discoverCloudProfiles } from "../new-session/cloud-profile-discovery.ts";
 import { catalogMessageId } from "./catalog-message-id.ts";
 import { refreshChatAvatar } from "./chat-avatar.ts";
 import {
@@ -67,6 +74,35 @@ import {
 import { scheduleChatScroll } from "./scroll.ts";
 
 export abstract class ChatPaneSession extends ChatPaneSharing {
+  protected async ensureTaskSuggestionCloudProfiles(): Promise<void> {
+    const scope = this.captureConnectionScope();
+    if (
+      !scope ||
+      this.taskSuggestions.length === 0 ||
+      this.taskSuggestionCloudProfileGeneration === scope.generation ||
+      !hasOperatorAdminAccess(scope.context.gateway.snapshot.hello?.auth ?? null) ||
+      isGatewayMethodAdvertised(scope.context.gateway.snapshot, "taskSuggestions.accept") !== true
+    ) {
+      return;
+    }
+    // Profile metadata is connection-stable. Mark the generation before the
+    // request so repeated renders cannot turn this optional affordance into polling.
+    this.taskSuggestionCloudProfileGeneration = scope.generation;
+    if (isGatewayMethodAdvertised(scope.context.gateway.snapshot, "environments.list") !== true) {
+      return;
+    }
+    try {
+      const profiles = await discoverCloudProfiles(scope.client, true);
+      if (!this.isConnectionScopeCurrent(scope)) {
+        return;
+      }
+      this.taskSuggestionCloudProfiles = profiles.map((profile) => ({ id: profile.id }));
+      this.requestUpdate();
+    } catch {
+      // Cloud is optional; a failed one-shot discovery leaves the disabled hint.
+    }
+  }
+
   protected async refreshTaskSuggestions(): Promise<void> {
     const requestVersion = ++this.taskSuggestionsRequestVersion;
     const scope = this.captureConnectionScope();
@@ -207,8 +243,11 @@ export abstract class ChatPaneSession extends ChatPaneSharing {
     void this.refreshTaskSuggestions();
   }
 
-  protected readonly acceptTaskSuggestion = (suggestion: TaskSuggestion): Promise<void> =>
-    this.resolveTaskSuggestion(suggestion, "accept");
+  protected readonly acceptTaskSuggestion = (
+    suggestion: TaskSuggestion,
+    mode: TaskSuggestionAcceptMode,
+    cloudProfileId?: string,
+  ): Promise<void> => this.resolveTaskSuggestion(suggestion, "accept", mode, cloudProfileId);
 
   protected readonly dismissTaskSuggestion = (suggestion: TaskSuggestion): Promise<void> =>
     this.resolveTaskSuggestion(suggestion, "dismiss");
@@ -216,6 +255,8 @@ export abstract class ChatPaneSession extends ChatPaneSharing {
   protected async resolveTaskSuggestion(
     suggestion: TaskSuggestion,
     action: "accept" | "dismiss",
+    mode: TaskSuggestionAcceptMode = "worktree",
+    cloudProfileId?: string,
   ): Promise<void> {
     const scope = this.captureConnectionScope();
     if (
@@ -235,16 +276,22 @@ export abstract class ChatPaneSession extends ChatPaneSharing {
     this.taskSuggestionBusyIds.add(suggestion.id);
     this.requestUpdate();
     try {
-      const result = await scope.client.request<TaskSuggestionsAcceptResult>(
-        action === "accept" ? "taskSuggestions.accept" : "taskSuggestions.dismiss",
-        { taskId: suggestion.id },
-      );
+      let acceptedKey: string | undefined;
+      if (action === "accept") {
+        const result = await scope.client.request<TaskSuggestionsAcceptResult>(
+          "taskSuggestions.accept",
+          taskSuggestionAcceptParams(suggestion.id, mode, cloudProfileId),
+        );
+        acceptedKey = result.key;
+      } else {
+        await scope.client.request("taskSuggestions.dismiss", { taskId: suggestion.id });
+      }
       if (!isCurrent()) {
         return;
       }
       this.taskSuggestions = this.taskSuggestions.filter((item) => item.id !== suggestion.id);
-      if (action === "accept") {
-        this.onPaneSessionChange?.(this.paneId, result.key);
+      if (acceptedKey && mode !== "session") {
+        this.onPaneSessionChange?.(this.paneId, acceptedKey);
       }
     } catch (error) {
       if (!isCurrent()) {
@@ -310,15 +357,21 @@ export abstract class ChatPaneSession extends ChatPaneSharing {
       (row.status === "failed" || row.status === "timeout") &&
       (row.lastReadAt == null || failureAt > row.lastReadAt);
     const agentStatusActive = Boolean(row.agentStatus && row.agentStatus.expiresAt > Date.now());
-    if (
-      !this.unreadPatchGuard.shouldPatch(
-        state.sessionKey,
-        row.unread === true || unreadFailure || agentStatusActive,
-      )
-    ) {
+    const unread = row.unread === true || unreadFailure || agentStatusActive;
+    if (!unread) {
+      this.unreadPatchGuard.shouldPatch(state.sessionKey, false);
       return;
     }
     const agentId = parseAgentSessionKey(row.key)?.agentId ?? resolveChatAgentId(state);
+    const access = readSessionMethodAccess(this.context.gateway.snapshot, {
+      method: "sessions.patch",
+      params: { key: row.key, unread: false, agentId },
+    });
+    // Read-only navigation must remain silent: absence of mutation access is
+    // not an operation failure and should not latch the unread retry guard.
+    if (!access.allowed || !this.unreadPatchGuard.shouldPatch(state.sessionKey, true)) {
+      return;
+    }
     const guardKey = state.sessionKey;
     void this.context.sessions.patch(row.key, { unread: false }, { agentId }).catch(() => {
       // Unlatch so later unread snapshots retry; the session capability
@@ -330,6 +383,16 @@ export abstract class ChatPaneSession extends ChatPaneSharing {
   protected async restoreArchivedSession(sessionKey: string) {
     const scope = this.captureConnectionScope();
     if (!scope || scope.state.sessionKey !== sessionKey) {
+      return;
+    }
+    const access = readSessionMethodAccess(scope.context.gateway.snapshot, {
+      method: "sessions.patch",
+      params: { key: sessionKey, archived: false },
+    });
+    if (!access.allowed) {
+      scope.state.lastError = access.reason;
+      scope.state.chatError = access.reason;
+      scope.state.requestUpdate?.();
       return;
     }
     const agentId = parseAgentSessionKey(sessionKey)?.agentId ?? resolveChatAgentId(scope.state);

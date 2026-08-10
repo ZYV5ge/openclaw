@@ -15,6 +15,8 @@ import type {
 } from "../../channels/plugins/types.adapters.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
+import type { PluginRegistry } from "../../plugins/registry-types.js";
+import { withPluginRuntimeRegistryScope } from "../../plugins/runtime/gateway-request-scope.js";
 import { createLazyRuntimeModule } from "../../shared/lazy-runtime.js";
 import { formatErrorMessage } from "../errors.js";
 import { resolveOutboundChannelMessageAdapter } from "./channel-resolution.js";
@@ -31,7 +33,6 @@ import {
   type OutboundDeliveryCommitHook,
 } from "./delivery-commit-hooks.js";
 import type { OutboundMessageSendOverrides } from "./message-plan.js";
-import type { OutboundChannel } from "./targets.js";
 
 const log = createSubsystemLogger("outbound/deliver");
 
@@ -40,38 +41,66 @@ const loadChannelBootstrapRuntime = createLazyRuntimeModule(
 );
 export async function resolveChannelOutboundDirectiveOptions(params: {
   cfg: OpenClawConfig;
-  channel: Exclude<OutboundChannel, "none">;
+  channel: string;
 }): Promise<{ extractMarkdownImages?: boolean }> {
-  const outbound = await loadBootstrappedOutboundAdapter(params);
+  const { outbound } = await loadBootstrappedOutboundAdapter(params);
   return {
     extractMarkdownImages: outbound?.extractMarkdownImages === true ? true : undefined,
   };
 }
 
 export async function createChannelHandler(params: ChannelHandlerParams): Promise<ChannelHandler> {
-  const outbound = await loadBootstrappedOutboundAdapter(params);
-  const message = resolveOutboundChannelMessageAdapter(params);
-  const handler = createPluginHandler({ ...params, outbound, message });
+  const { outbound, pluginRegistry } = await loadBootstrappedOutboundAdapter(params);
+  const handler = withPluginRuntimeRegistryScope(pluginRegistry, () => {
+    const message = resolveOutboundChannelMessageAdapter(params);
+    return createPluginHandler({ ...params, outbound, message });
+  });
   if (!handler) {
     throw new Error(`Outbound not configured for channel: ${params.channel}`);
   }
-  return handler;
+  return scopeChannelHandler(handler, pluginRegistry);
 }
 
 async function loadBootstrappedOutboundAdapter(params: {
   cfg: OpenClawConfig;
-  channel: Exclude<OutboundChannel, "none">;
-}): Promise<ChannelOutboundAdapter | undefined> {
+  channel: string;
+}): Promise<{ outbound?: ChannelOutboundAdapter; pluginRegistry?: PluginRegistry }> {
   let outbound = await loadChannelOutboundAdapter(params.channel);
-  if (!outbound) {
-    const { bootstrapOutboundChannelPlugin } = await loadChannelBootstrapRuntime();
-    bootstrapOutboundChannelPlugin({
-      channel: params.channel,
-      cfg: params.cfg,
-    });
-    outbound = await loadChannelOutboundAdapter(params.channel);
+  if (outbound) {
+    return { outbound };
   }
-  return outbound;
+  const { bootstrapOutboundChannelPlugin } = await loadChannelBootstrapRuntime();
+  const pluginRegistry = bootstrapOutboundChannelPlugin({
+    channel: params.channel,
+    cfg: params.cfg,
+  });
+  outbound = pluginRegistry?.channels.find((entry) => entry.plugin.id === params.channel)?.plugin
+    .outbound;
+  return {
+    ...(outbound ? { outbound } : {}),
+    ...(pluginRegistry ? { pluginRegistry } : {}),
+  };
+}
+
+function scopeChannelHandler(
+  handler: ChannelHandler,
+  registry: PluginRegistry | undefined,
+): ChannelHandler {
+  if (!registry) {
+    return handler;
+  }
+  return Object.fromEntries(
+    Object.entries(handler).map(([key, value]) => {
+      if (typeof value !== "function") {
+        return [key, value];
+      }
+      const call = value as (...args: unknown[]) => unknown;
+      return [
+        key,
+        (...args: unknown[]) => withPluginRuntimeRegistryScope(registry, () => call(...args)),
+      ];
+    }),
+  ) as ChannelHandler;
 }
 
 async function runChannelMessageSendWithLifecycle<
@@ -128,11 +157,13 @@ async function runChannelMessageSendWithLifecycle<
 
 export async function resolveOutboundDurableFinalDeliverySupport(params: {
   cfg: OpenClawConfig;
-  channel: Exclude<OutboundChannel, "none">;
+  channel: string;
   requirements?: DurableFinalDeliveryRequirements;
 }): Promise<OutboundDurableDeliverySupport> {
-  const outbound = await loadBootstrappedOutboundAdapter(params);
-  const message = resolveOutboundChannelMessageAdapter(params);
+  const { outbound, pluginRegistry } = await loadBootstrappedOutboundAdapter(params);
+  const message = withPluginRuntimeRegistryScope(pluginRegistry, () =>
+    resolveOutboundChannelMessageAdapter(params),
+  );
   if (!message?.send?.text && !outbound?.sendText) {
     return { ok: false, reason: "missing_outbound_handler" };
   }
@@ -297,7 +328,13 @@ function createPluginHandler(
         }
       : undefined,
     sendTextOnlyErrorPayloads: outbound?.sendTextOnlyErrorPayloads === true,
-    presentationCapabilities: outbound?.presentationCapabilities,
+    presentationCapabilities: outbound?.resolvePresentationCapabilities
+      ? outbound.resolvePresentationCapabilities({
+          cfg: params.cfg,
+          accountId: params.accountId,
+          formatting: params.formatting,
+        })
+      : outbound?.presentationCapabilities,
     renderPresentation: outbound?.renderPresentation
       ? async (payload) => {
           // The delivery owner already normalized/adapted this; cloning drops fallback fragments.
@@ -464,7 +501,7 @@ function createPluginHandler(
 }
 
 function normalizeChannelMessageSendResult(
-  channel: Exclude<OutboundChannel, "none">,
+  channel: string,
   result: ChannelMessageSendResult,
 ): OutboundDeliveryResult {
   const source = result as ChannelMessageSendResult & Partial<OutboundDeliveryResult>;

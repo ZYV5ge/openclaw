@@ -12,6 +12,7 @@ import { clearPluginOwnedSessionState } from "./plugin-host-cleanup.js";
 import {
   countSqliteSessionEntryRowsReadOnly as countSessionEntryRowsReadOnly,
   copySqliteSessionOwnedStateForCanonicalRepair as copySessionOwnedStateForCanonicalRepair,
+  ensureSqliteSessionEntrySync as ensureSessionEntrySyncRaw,
   hasSqliteSessionEntriesByStatusReadOnly as hasSessionEntriesByStatusReadOnly,
   listSqliteSessionGenerationIdsForCanonicalRepair as listSessionGenerationIdsForCanonicalRepair,
   listSqliteSessionChildEntriesReadOnly as listSessionChildEntriesReadOnly,
@@ -53,12 +54,16 @@ import { canonicalSessionKeyMigrationRequiredError } from "./session-canonical-k
 import { resolveSessionStorePathForScope } from "./session-store-path.js";
 import { normalizeStoreSessionKey, resolveSessionStoreEntry } from "./store-entry.js";
 import { resolveAllAgentSessionStoreTargetsSync, type SessionStoreTarget } from "./targets.js";
+import {
+  SessionTranscriptWriterClaimReboundError,
+  withOwnedSessionTranscriptWriterFence,
+} from "./transcript-write-context.js";
 import type { SessionEntry } from "./types.js";
 
 export { clearPluginOwnedSessionState };
 
 // SQLite is the only runtime session store. Re-export its canonical entry
-// operations directly instead of maintaining a second pass-through layer.
+// operations directly except the sync initializer fenced below.
 export {
   countSessionEntryRowsReadOnly,
   copySessionOwnedStateForCanonicalRepair,
@@ -80,6 +85,15 @@ export {
   replaceSessionEntry,
   replaceSessionEntrySync,
   upsertSessionEntry,
+};
+
+export const ensureSessionEntrySync: typeof ensureSessionEntrySyncRaw = (scope, entry) => {
+  const fencedScope = withOwnedSessionTranscriptWriterFence(scope);
+  const ensured = ensureSessionEntrySyncRaw(fencedScope, entry);
+  if (fencedScope.expectedWriterRunId !== undefined && !ensured) {
+    throw new SessionTranscriptWriterClaimReboundError(scope.sessionKey);
+  }
+  return ensured;
 };
 
 /** Keeps legacy store-key alias resolution behind the entry owner boundary. */

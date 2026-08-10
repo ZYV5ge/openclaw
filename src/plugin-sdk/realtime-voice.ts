@@ -9,6 +9,7 @@ export type {
   RealtimeVoiceBridgeEvent,
   RealtimeVoiceBrowserSession,
   RealtimeVoiceBrowserSessionCreateRequest,
+  RealtimeVoiceGatewayControl,
   RealtimeVoiceBridgeCreateRequest,
   RealtimeVoiceProviderCapabilities,
   RealtimeVoiceCloseReason,
@@ -175,6 +176,12 @@ export {
   createRealtimeVoiceSessionHarness,
   type RealtimeVoiceSessionHarness,
 } from "../talk/realtime-session-harness.js";
+export {
+  createRealtimeVoiceAudioQueue,
+  RealtimeVoiceSessionLifecycle,
+  type RealtimeVoiceAudioQueue,
+  type RealtimeVoiceSessionConnection,
+} from "../talk/realtime-session-lifecycle.js";
 export {
   extendRealtimeVoiceOutputEchoSuppression,
   getRealtimeVoiceBridgeEventHealth,

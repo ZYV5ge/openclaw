@@ -1,5 +1,6 @@
 // @vitest-environment node
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { createDeferred } from "../../../../test/helpers/promise.js";
 import type { RealtimeTalkTransportContext } from "./realtime-talk-shared.ts";
 
 const transportMock = vi.hoisted(() => ({
@@ -52,16 +53,6 @@ type TranscriptContext = RealtimeTalkTransportContext & {
   };
   flushTranscriptWrites?: () => Promise<void>;
 };
-
-function createDeferred<T>() {
-  let resolve!: (value: T) => void;
-  let reject!: (error: unknown) => void;
-  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
-    resolve = resolvePromise;
-    reject = rejectPromise;
-  });
-  return { promise, reject, resolve };
-}
 
 function transcriptContext(contexts: RealtimeTalkTransportContext[], index = 0): TranscriptContext {
   const context = contexts[index];
@@ -422,7 +413,7 @@ describe("RealtimeTalkSession lifecycle", () => {
   it("stops a pending replacement when transcript overflow closes the active call", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     const replacementStart = createDeferred<"ready">();
-    const firstTranscript = createDeferred<void>();
+    const firstTranscript = createDeferred();
     const request = vi.fn(async (method: string, params?: { entryId?: string }) => {
       if (method === "talk.client.create") {
         return {
@@ -720,7 +711,7 @@ describe("RealtimeTalkSession lifecycle", () => {
         };
       }
       if (method === "talk.client.close") {
-        const close = createDeferred<void>();
+        const close = createDeferred();
         closes.push(close);
         await close.promise;
       }
@@ -753,6 +744,72 @@ describe("RealtimeTalkSession lifecycle", () => {
     await vi.waitFor(() => expect(closes).toHaveLength(3));
     closes[1]?.resolve();
     closes[2]?.resolve();
+  });
+
+  it("bounds stalled detached owners across browser session keys", async () => {
+    vi.useFakeTimers();
+    try {
+      let createCount = 0;
+      const closeSignals: AbortSignal[] = [];
+      const request = vi.fn(
+        async (method: string, _params?: unknown, options?: { signal?: AbortSignal }) => {
+          if (method === "talk.client.create") {
+            createCount += 1;
+            return {
+              provider: "openai",
+              transport: "webrtc",
+              voiceSessionId: `voice-${createCount}`,
+              clientSecret: "secret",
+            };
+          }
+          if (method === "talk.client.close") {
+            const signal = options?.signal;
+            if (!signal) {
+              throw new Error("expected close abort signal");
+            }
+            closeSignals.push(signal);
+            await new Promise<void>((_resolve, reject) => {
+              signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+            });
+          }
+          return { ok: true };
+        },
+      );
+      const client = { request } as never;
+      const draining = Array.from(
+        { length: 16 },
+        (_, index) => new RealtimeTalkSession(client, `agent:main:session-${index}`),
+      );
+
+      for (const session of draining) {
+        await session.start();
+        session.stop();
+        await Promise.resolve();
+      }
+      expect(closeSignals).toHaveLength(16);
+
+      const recovered = new RealtimeTalkSession(client, "agent:main:session-recovered");
+      await expect(recovered.start()).rejects.toThrow(
+        "Too many active or closing realtime Talk voice sessions",
+      );
+      expect(createCount).toBe(16);
+
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(closeSignals.every((signal) => !signal.aborted)).toBe(true);
+      await expect(recovered.start()).rejects.toThrow(
+        "Too many active or closing realtime Talk voice sessions",
+      );
+
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(closeSignals.every((signal) => signal.aborted)).toBe(true);
+
+      await recovered.start();
+      expect(createCount).toBe(17);
+      recovered.stop();
+      await vi.advanceTimersByTimeAsync(60_000);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("releases bounded startup owners after request deadlines", async () => {

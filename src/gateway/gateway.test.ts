@@ -18,7 +18,6 @@ import { resetAgentEventsForTest } from "../infra/agent-events.js";
 import { loadDeviceAuthToken } from "../infra/device-auth-store.js";
 import { loadOrCreateDeviceIdentity } from "../infra/device-identity.js";
 import { getPairedDevice } from "../infra/device-pairing.js";
-import { clearGatewaySubagentRuntime } from "../plugins/runtime/gateway-bindings.test-fixtures.js";
 import { captureEnv, deleteTestEnvValue, setTestEnvValue } from "../test-utils/env.js";
 import { callGateway } from "./call.js";
 import { startGatewayServer } from "./server.js";
@@ -29,6 +28,7 @@ import {
   getFreeGatewayPort,
   startGatewayWithClient,
 } from "./test-helpers.e2e.js";
+import { GATEWAY_STARTUP_MUTATED_ENV_KEYS } from "./test-helpers.env.js";
 import { installOpenAiResponsesMock } from "./test-helpers.openai-mock.js";
 import { buildMockOpenAiResponsesProvider } from "./test-openai-responses-model.js";
 
@@ -37,6 +37,7 @@ const GATEWAY_E2E_TIMEOUT_MS = 90_000;
 let gatewayTestSeq = 0;
 const GATEWAY_TEST_ENV_KEYS = [
   "HOME",
+  ...GATEWAY_STARTUP_MUTATED_ENV_KEYS,
   "OPENCLAW_STATE_DIR",
   "OPENCLAW_CONFIG_PATH",
   "OPENCLAW_GATEWAY_TOKEN",
@@ -177,7 +178,6 @@ function resetGatewayTestState(): void {
   clearConfigCache();
   clearSessionStoreCacheForTest();
   resetAgentEventsForTest({ preserveListeners: true });
-  clearGatewaySubagentRuntime();
 }
 
 describe("gateway e2e", () => {
@@ -988,17 +988,7 @@ module.exports = {
     { timeout: GATEWAY_E2E_TIMEOUT_MS },
     async () => {
       const envSnapshot = captureEnv([
-        "HOME",
-        "OPENCLAW_STATE_DIR",
-        "OPENCLAW_CONFIG_PATH",
-        "OPENCLAW_GATEWAY_TOKEN",
-        "OPENCLAW_SKIP_CHANNELS",
-        "OPENCLAW_SKIP_GMAIL_WATCHER",
-        "OPENCLAW_SKIP_CRON",
-        "OPENCLAW_SKIP_CANVAS_HOST",
-        "OPENCLAW_SKIP_BROWSER_CONTROL_SERVER",
-        "OPENCLAW_SKIP_PROVIDERS",
-        "OPENCLAW_BUNDLED_PLUGINS_DIR",
+        ...GATEWAY_TEST_ENV_KEYS,
         "OPENCLAW_TEST_MINIMAL_GATEWAY",
         "DISCORD_BOT_TOKEN",
       ]);

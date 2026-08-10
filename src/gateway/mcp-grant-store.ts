@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import type { AuthProfileStore } from "../agents/auth-profiles/types.js";
 import type { ExecElevatedDefaults } from "../agents/bash-tools.exec-types.js";
 import type { ExecPolicyOverrides, ExecSessionDefaults } from "../agents/exec-defaults.js";
 import type { ScheduledToolPolicyContext } from "../agents/scheduled-tool-policy.js";
@@ -8,6 +9,7 @@ import type {
 } from "../auto-reply/get-reply-options.types.js";
 import type { InboundEventKind } from "../channels/inbound-event/kind.js";
 import type { PluginHookChannelContext } from "../plugins/hook-types.js";
+import { resolveGlobalMap } from "../shared/global-singleton.js";
 
 export type McpLoopbackRequestContext = {
   sessionKey: string;
@@ -65,6 +67,8 @@ interface McpAttachGrant {
   readonly token: string;
   /** The openclaw session this grant is bound to; tool scope is resolved for this key. */
   readonly sessionKey: string;
+  /** Explicit agent owner for canonical global sessions, whose key cannot encode one. */
+  readonly agentId?: string;
   /** Absolute expiry (ms epoch). */
   readonly expiresAtMs: number;
   /** Absolute mint time (ms epoch). */
@@ -78,16 +82,35 @@ interface McpLoopbackClientGrant {
   readonly context: McpLoopbackRequestContext;
 }
 
+type McpLoopbackToolAuth = {
+  agentDir?: string;
+  store: AuthProfileStore;
+};
+
 type StoredMcpLoopbackClientGrant = McpLoopbackClientGrant & {
   runtimeOwnerToken: string;
   activeCaptureKey?: string;
+  toolAuth?: McpLoopbackToolAuth;
 };
+
+type McpLoopbackClientGrantRevocation = {
+  token: string;
+  runtimeOwnerToken: string;
+};
+
+const clientGrantRevocationListeners = new Set<(event: McpLoopbackClientGrantRevocation) => void>();
 
 const DEFAULT_TTL_MS = 60 * 60 * 1000; // 1h
 const MAX_TTL_MS = 12 * 60 * 60 * 1000;
 
-const grantsByToken = new Map<string, McpAttachGrant>();
-const clientGrantsByToken = new Map<string, StoredMcpLoopbackClientGrant>();
+const grantsByToken = resolveGlobalMap<string, McpAttachGrant>(
+  Symbol.for("openclaw.mcpAttachGrants"),
+  "close-and-restart",
+);
+const clientGrantsByToken = resolveGlobalMap<string, StoredMcpLoopbackClientGrant>(
+  Symbol.for("openclaw.mcpLoopbackClientGrants"),
+  "close-and-restart",
+);
 
 function clampTtlMs(ttlMs: number | undefined): number {
   if (!Number.isFinite(ttlMs) || (ttlMs as number) <= 0) {
@@ -98,6 +121,7 @@ function clampTtlMs(ttlMs: number | undefined): number {
 
 export function mintAttachGrant(params: {
   sessionKey: string;
+  agentId?: string;
   ttlMs?: number;
   nowMs?: number;
 }): McpAttachGrant {
@@ -105,12 +129,14 @@ export function mintAttachGrant(params: {
   if (!sessionKey) {
     throw new Error("mintAttachGrant: sessionKey is required");
   }
+  const agentId = sessionKey === "global" ? params.agentId?.trim() || undefined : undefined;
   const nowMs = params.nowMs ?? Date.now();
   // Mint sweeps stale entries so abandoned grants do not accumulate.
   sweepExpiredAttachGrants(nowMs);
   const grant: McpAttachGrant = {
     token: crypto.randomBytes(32).toString("hex"),
     sessionKey,
+    ...(agentId ? { agentId } : {}),
     issuedAtMs: nowMs,
     expiresAtMs: nowMs + clampTtlMs(params.ttlMs),
   };
@@ -164,6 +190,7 @@ function sweepExpiredAttachGrants(nowMs: number = Date.now()): number {
 export function mintMcpLoopbackClientGrant(params: {
   context: McpLoopbackRequestContext;
   runtimeOwnerToken: string;
+  toolAuth?: McpLoopbackToolAuth;
 }): McpLoopbackClientGrant {
   const sessionKey = params.context.sessionKey.trim();
   if (!sessionKey) {
@@ -177,6 +204,7 @@ export function mintMcpLoopbackClientGrant(params: {
     token: crypto.randomBytes(32).toString("hex"),
     context: structuredClone({ ...params.context, sessionKey }),
     runtimeOwnerToken,
+    ...(params.toolAuth ? { toolAuth: structuredClone(params.toolAuth) } : {}),
   };
   clientGrantsByToken.set(grant.token, grant);
   return structuredClone({
@@ -226,7 +254,13 @@ export function resolveMcpLoopbackClientGrant(params: {
   token: string;
   runtimeOwnerToken: string;
   captureKey: string;
-}): { context: McpLoopbackRequestContext; captureKey: string } | undefined {
+}):
+  | {
+      context: McpLoopbackRequestContext;
+      captureKey: string;
+      toolAuth?: McpLoopbackToolAuth;
+    }
+  | undefined {
   const grant = clientGrantsByToken.get(params.token);
   if (
     !grant ||
@@ -236,19 +270,41 @@ export function resolveMcpLoopbackClientGrant(params: {
   ) {
     return undefined;
   }
-  return structuredClone({ context: grant.context, captureKey: grant.activeCaptureKey });
+  // Cached tools and OAuth refreshes must share the prepared store for this
+  // grant; cloning on each request would discard refreshed credentials.
+  return {
+    context: structuredClone(grant.context),
+    captureKey: grant.activeCaptureKey,
+    ...(grant.toolAuth ? { toolAuth: grant.toolAuth } : {}),
+  };
+}
+
+/** Registers cleanup tied to the exact lifetime of loopback client grants. */
+export function registerMcpLoopbackClientGrantRevocationListener(
+  listener: (event: McpLoopbackClientGrantRevocation) => void,
+): () => void {
+  clientGrantRevocationListeners.add(listener);
+  return () => clientGrantRevocationListeners.delete(listener);
 }
 
 export function revokeMcpLoopbackClientGrant(token: string): boolean {
-  return clientGrantsByToken.delete(token);
+  const grant = clientGrantsByToken.get(token);
+  if (!grant || !clientGrantsByToken.delete(token)) {
+    return false;
+  }
+  // Revocation must also release server-owned projections whose closures retain
+  // this grant's prepared credentials.
+  for (const listener of clientGrantRevocationListeners) {
+    listener({ token, runtimeOwnerToken: grant.runtimeOwnerToken });
+  }
+  return true;
 }
 
 export function revokeMcpLoopbackClientGrantsForRuntime(runtimeOwnerToken: string): number {
   let removed = 0;
   for (const [token, grant] of clientGrantsByToken) {
     if (grant.runtimeOwnerToken === runtimeOwnerToken) {
-      clientGrantsByToken.delete(token);
-      removed += 1;
+      removed += revokeMcpLoopbackClientGrant(token) ? 1 : 0;
     }
   }
   return removed;

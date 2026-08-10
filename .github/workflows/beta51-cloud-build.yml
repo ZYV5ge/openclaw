@@ -1,6 +1,9 @@
-name: OpenClaw 2026.7.2-beta.7.1 cloud validation
+name: OpenClaw 2026.8.1-beta.1 cloud validation
 
 on:
+  push:
+    branches:
+      - agent/openclaw-beta-5-1
   workflow_dispatch:
     inputs:
       source_sha:
@@ -14,22 +17,24 @@ on:
         type: choice
         options:
           - gemini-schema
-          - beta7-sqlite
-          - beta7-updater
-          - beta7-telegram
-          - beta7-restart-handoff
-          - beta7-terminal-recovery-residue
-          - beta7-session-search
-          - beta7-mac-ui
-          - beta7-control-ui-send
-          - beta7-memory-wiki-search
-          - beta7-postcutoff-inference
-          - beta7-postcutoff-gateway-lifecycle
-          - beta7-postcutoff-media-policy
-          - beta7-postcutoff-file-mutations
-          - beta7-postcutoff-service-ca
-          - beta7-i18n
-          - beta7-macos-package
+          - personal-preflight
+          - personal-sqlite
+          - personal-updater
+          - personal-telegram
+          - personal-restart-handoff
+          - personal-terminal-recovery-residue
+          - personal-session-search
+          - personal-mac-ui
+          - personal-control-ui-send
+          - personal-gateway-hot-path
+          - personal-memory-wiki-search
+          - personal-postcutoff-inference
+          - personal-postcutoff-gateway-lifecycle
+          - personal-postcutoff-media-policy
+          - personal-postcutoff-file-mutations
+          - personal-postcutoff-service-ca
+          - personal-i18n
+          - personal-macos-package
       phase:
         description: TDD evidence phase; does not alter the test command
         required: true
@@ -42,32 +47,32 @@ on:
 permissions:
   contents: read
 
-run-name: OpenClaw 2026.7.2-beta.7.1 ${{ inputs.suite }} ${{ inputs.phase }} ${{ inputs.source_sha }}
+run-name: OpenClaw 2026.8.1-beta.1 ${{ inputs.suite || 'personal-preflight' }} ${{ inputs.phase || (contains(github.event.head_commit.message, '[green]') && 'green' || 'red') }} ${{ inputs.source_sha || github.sha }}
 
 concurrency:
-  group: personal-beta-7-1-${{ inputs.source_sha }}-${{ inputs.suite }}-${{ inputs.phase }}
+  group: personal-2026-8-1-beta-1-${{ inputs.source_sha || github.sha }}-${{ inputs.suite || 'personal-preflight' }}-${{ inputs.phase || (contains(github.event.head_commit.message, '[green]') && 'green' || 'red') }}
   cancel-in-progress: false
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
   NODE_VERSION: "24.15.0"
-  PERSONAL_VERSION: "2026.7.2-beta.7.1"
-  PERSONAL_APP_BUILD: "2607000207"
+  PERSONAL_VERSION: "2026.8.1-beta.1"
+  PERSONAL_APP_BUILD: "2608000101"
   OFFICIAL_BETA_VERSION: "2026.7.2-beta.7"
-  FROZEN_UPSTREAM_SHA: "d328b02ab8b14663698a05cdc3a41bc3b5c98809"
+  FROZEN_UPSTREAM_SHA: "f9eae0c2762dbd646afc6cbc41a34354af3ef1ac"
   FROZEN_BETA7_SHA: "dabe1915362e20c25704af91612a32a8f4c96e83"
   PERSONAL_RELEASE_REPOSITORY: "ZYV5ge/openclaw"
 
 jobs:
   focused_validation:
-    if: ${{ inputs.suite != 'beta7-mac-ui' && inputs.suite != 'beta7-macos-package' }}
-    name: ${{ inputs.suite }} (${{ inputs.phase }})
+    if: ${{ github.event_name == 'push' || (inputs.suite != 'personal-mac-ui' && inputs.suite != 'personal-macos-package') }}
+    name: ${{ inputs.suite || 'personal-preflight' }} (${{ inputs.phase || (contains(github.event.head_commit.message, '[green]') && 'green' || 'red') }})
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
       - name: Validate immutable public-repository dispatch
         env:
-          SOURCE_SHA: ${{ inputs.source_sha }}
+          SOURCE_SHA: ${{ inputs.source_sha || github.sha }}
           EVENT_SHA: ${{ github.sha }}
           CURRENT_REPOSITORY: ${{ github.repository }}
           REPOSITORY_IS_PRIVATE: ${{ github.event.repository.private }}
@@ -98,13 +103,13 @@ jobs:
       - name: Checkout exact source SHA
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
-          ref: ${{ inputs.source_sha }}
+          ref: ${{ inputs.source_sha || github.sha }}
           fetch-depth: 200
           persist-credentials: false
 
       - name: Verify frozen official ancestry
         env:
-          SOURCE_SHA: ${{ inputs.source_sha }}
+          SOURCE_SHA: ${{ inputs.source_sha || github.sha }}
         run: |
           set -euo pipefail
           if [[ "$(git rev-parse HEAD)" != "$SOURCE_SHA" ]]; then
@@ -136,7 +141,7 @@ jobs:
 
       - name: Check workflow and focused formatting
         env:
-          TDD_PHASE: ${{ inputs.phase }}
+          TDD_PHASE: ${{ inputs.phase || (contains(github.event.head_commit.message, '[green]') && 'green' || 'red') }}
         run: |
           set -euo pipefail
           node scripts/check-workflows.mjs
@@ -374,7 +379,8 @@ jobs:
 
       - name: Run fixed focused suite
         env:
-          SUITE: ${{ inputs.suite }}
+          SUITE: ${{ inputs.suite || 'personal-preflight' }}
+          TDD_PHASE: ${{ inputs.phase || (contains(github.event.head_commit.message, '[green]') && 'green' || 'red') }}
           OPENCLAW_VITEST_MAX_WORKERS: "2"
         run: |
           set -euo pipefail
@@ -382,7 +388,7 @@ jobs:
             gemini-schema)
               node scripts/run-vitest.mjs run                 --config test/vitest/vitest.extension-providers.config.ts                 google/web-search-provider.test.ts
               ;;
-            beta7-sqlite)
+            personal-sqlite)
               sqlite_test_status=0
               OPENCLAW_VITEST_MAX_WORKERS=1 node scripts/run-vitest.mjs run \
                 --config test/vitest/vitest.unit-src.config.ts \
@@ -409,13 +415,13 @@ jobs:
                 exit 1
               fi
               ;;
-            beta7-updater)
+            personal-updater)
               node scripts/run-vitest.mjs run --config test/vitest/vitest.cli.config.ts src/cli/update-cli/update-command.test.ts
               ;;
-            beta7-telegram)
+            personal-telegram)
               node scripts/run-vitest.mjs run --config test/vitest/vitest.extension-telegram.config.ts telegram/src/bot-message-context.body.test.ts
               ;;
-            beta7-restart-handoff)
+            personal-restart-handoff)
               unit_status=0
               node scripts/run-vitest.mjs run \
                 --config test/vitest/vitest.auto-reply-reply.config.ts \
@@ -431,7 +437,7 @@ jobs:
                 exit 1
               fi
               ;;
-            beta7-terminal-recovery-residue)
+            personal-terminal-recovery-residue)
               node scripts/run-vitest.mjs run \
                 --config test/vitest/vitest.agents-core.config.ts \
                 src/agents/main-session-recovery-store.test.ts
@@ -440,10 +446,10 @@ jobs:
               node scripts/run-vitest.mjs run \
                 src/agents/main-session-recovery-run-ownership.test.ts
               ;;
-            beta7-session-search)
+            personal-session-search)
               node scripts/run-vitest.mjs run src/gateway/session-utils.test.ts
               ;;
-            beta7-memory-wiki-search)
+            personal-memory-wiki-search)
               memory_test_status=0
               node scripts/run-vitest.mjs run \
                 --config test/vitest/vitest.extension-memory.config.ts \
@@ -468,7 +474,7 @@ jobs:
                 exit 1
               fi
               ;;
-            beta7-postcutoff-inference)
+            personal-postcutoff-inference)
               codex_status=0
               OPENCLAW_VITEST_MAX_WORKERS=1 node scripts/run-vitest.mjs run \
                 --config test/vitest/vitest.extension-codex.config.ts \
@@ -503,7 +509,7 @@ jobs:
               fi
               ;;
 
-            beta7-postcutoff-gateway-lifecycle)
+            personal-postcutoff-gateway-lifecycle)
               gateway_core_status=0
               OPENCLAW_VITEST_MAX_WORKERS=1 node scripts/run-vitest.mjs run \
                 --config test/vitest/vitest.gateway-core.config.ts \
@@ -534,7 +540,7 @@ jobs:
               fi
               ;;
 
-            beta7-postcutoff-media-policy)
+            personal-postcutoff-media-policy)
               telegram_status=0
               OPENCLAW_VITEST_MAX_WORKERS=1 node scripts/run-vitest.mjs run \
                 --config test/vitest/vitest.extension-telegram.config.ts \
@@ -551,7 +557,7 @@ jobs:
                 exit 1
               fi
               ;;
-            beta7-postcutoff-file-mutations)
+            personal-postcutoff-file-mutations)
               adapter_status=0
               node scripts/run-vitest.mjs run \
                 --config test/vitest/vitest.agents-core.config.ts \
@@ -571,7 +577,7 @@ jobs:
                 exit 1
               fi
               ;;
-            beta7-postcutoff-service-ca)
+            personal-postcutoff-service-ca)
               service_status=0
               node scripts/run-vitest.mjs run \
                 src/cli/daemon-cli/install.test.ts \
@@ -586,7 +592,7 @@ jobs:
               fi
               ;;
 
-            beta7-i18n)
+            personal-i18n)
               ui_verify_status=0
               pnpm ui:i18n:verify || ui_verify_status=$?
               native_verify_status=0
@@ -602,7 +608,7 @@ jobs:
                 exit 1
               fi
               ;;
-            beta7-control-ui-send)
+            personal-control-ui-send)
               protocol_status=0
               node scripts/run-vitest.mjs run \
                 --config test/vitest/vitest.gateway-client.config.ts \
@@ -652,6 +658,58 @@ jobs:
                 exit 1
               fi
               ;;
+            personal-gateway-hot-path)
+              OPENCLAW_VITEST_MAX_WORKERS=1 node scripts/run-vitest.mjs run \
+                --config test/vitest/vitest.gateway-server.config.ts \
+                src/gateway/server.chat.gateway-server-chat-b.test.ts \
+                -t "chat.history uses the prepared catalog|chat.history returns the full primary response|concurrent chat.history calls|gateway challenge and cached health"
+              ;;
+            personal-preflight)
+              gateway_status=0
+              OPENCLAW_VITEST_MAX_WORKERS=1 node scripts/run-vitest.mjs run \
+                --config test/vitest/vitest.gateway-server.config.ts \
+                src/gateway/server.chat.gateway-server-chat-b.test.ts \
+                -t "chat.history uses the prepared catalog|chat.history returns the full primary response|concurrent chat.history calls" || gateway_status=$?
+              startup_status=0
+              OPENCLAW_VITEST_MAX_WORKERS=1 node scripts/run-vitest.mjs run \
+                --config test/vitest/vitest.gateway-server.config.ts \
+                src/gateway/server-startup-plugins.test.ts \
+                -t "publishes an empty registry without loading plugin runtimes before bind" || startup_status=$?
+              session_status=0
+              OPENCLAW_VITEST_MAX_WORKERS=1 node scripts/run-vitest.mjs run \
+                src/gateway/session-utils.plugin-runtime.test.ts \
+                src/gateway/session-utils.perf.test.ts || session_status=$?
+              refresh_status=0
+              OPENCLAW_VITEST_MAX_WORKERS=1 node scripts/run-vitest.mjs run \
+                --config test/vitest/vitest.gateway-core.config.ts \
+                src/gateway/config-reload.test.ts \
+                -t "reloads explicitly signaled plugin metadata|coalesces equivalent plugin metadata refreshes" || refresh_status=$?
+              plugin_rpc_status=0
+              OPENCLAW_VITEST_MAX_WORKERS=1 node scripts/run-vitest.mjs run \
+                --config test/vitest/vitest.gateway-methods.config.ts \
+                src/gateway/server-methods/plugins.test.ts \
+                -t "signals the config reloader" || plugin_rpc_status=$?
+              version_status=0
+              node --input-type=module <<'NODE' || version_status=$?
+              import assert from "node:assert/strict";
+              import fs from "node:fs";
+              const root = JSON.parse(fs.readFileSync("package.json", "utf8"));
+              const codex = JSON.parse(fs.readFileSync("extensions/codex/package.json", "utf8"));
+              assert.equal(root.version, process.env.PERSONAL_VERSION);
+              assert.equal(codex.version, root.version);
+              assert.equal(codex.openclaw?.build?.openclawVersion, root.version);
+              NODE
+              core_type_status=0
+              extension_type_status=0
+              if [[ "$TDD_PHASE" == "green" ]]; then
+                pnpm tsgo:core || core_type_status=$?
+                pnpm tsgo:extensions || extension_type_status=$?
+              fi
+              if (( gateway_status != 0 || startup_status != 0 || session_status != 0 || refresh_status != 0 || plugin_rpc_status != 0 || version_status != 0 || core_type_status != 0 || extension_type_status != 0 )); then
+                echo "::error::preflight status gateway=$gateway_status startup=$startup_status sessions=$session_status refresh=$refresh_status plugin-rpc=$plugin_rpc_status version=$version_status core-types=$core_type_status extension-types=$extension_type_status"
+                exit 1
+              fi
+              ;;
             *)
               echo "::error::Unsupported fixed suite: $SUITE"
               exit 1
@@ -659,14 +717,14 @@ jobs:
           esac
 
   macos_ui_validation:
-    if: ${{ inputs.suite == 'beta7-mac-ui' }}
-    name: ${{ inputs.suite }} (${{ inputs.phase }})
+    if: ${{ github.event_name == 'push' || inputs.suite == 'personal-mac-ui' }}
+    name: ${{ inputs.suite || 'personal-preflight' }} (${{ inputs.phase || (contains(github.event.head_commit.message, '[green]') && 'green' || 'red') }})
     runs-on: macos-26-intel
     timeout-minutes: 90
     steps:
       - name: Validate immutable public-repository dispatch
         env:
-          SOURCE_SHA: ${{ inputs.source_sha }}
+          SOURCE_SHA: ${{ inputs.source_sha || github.sha }}
           EVENT_SHA: ${{ github.sha }}
           CURRENT_REPOSITORY: ${{ github.repository }}
           REPOSITORY_IS_PRIVATE: ${{ github.event.repository.private }}
@@ -697,13 +755,13 @@ jobs:
       - name: Checkout exact source SHA
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
-          ref: ${{ inputs.source_sha }}
+          ref: ${{ inputs.source_sha || github.sha }}
           fetch-depth: 200
           persist-credentials: false
 
       - name: Verify frozen official ancestry and Xcode
         env:
-          SOURCE_SHA: ${{ inputs.source_sha }}
+          SOURCE_SHA: ${{ inputs.source_sha || github.sha }}
         run: |
           set -euo pipefail
           if [[ "$(git rev-parse HEAD)" != "$SOURCE_SHA" ]]; then
@@ -735,7 +793,7 @@ jobs:
         run: |
           set -euo pipefail
           macos_status=0
-          swift test             --package-path apps/macos             --filter 'DashboardWindowSmokeTests|WebChatSwiftUISmokeTests'             --no-parallel || macos_status=$?
+          swift test             --package-path apps/macos             --filter 'DashboardWindowSmokeTests|WebChatSwiftUISmokeTests|CLIInstallerTests|MacNodeModeCoordinatorTests'             --no-parallel || macos_status=$?
           shared_status=0
           swift test             --package-path apps/shared/OpenClawKit             --filter 'ChatSessionSidebarModelTests|ChatViewModelSessionDeletionTests'             --no-parallel || shared_status=$?
           if (( macos_status != 0 || shared_status != 0 )); then
@@ -744,10 +802,10 @@ jobs:
           fi
 
   macos_package:
-    if: ${{ inputs.suite == 'beta7-macos-package' }}
+    if: ${{ inputs.suite == 'personal-macos-package' }}
     permissions:
       contents: read
-    name: Build OpenClaw 2026.7.2-beta.7.1 universal App and Intel staging
+    name: Build OpenClaw 2026.8.1-beta.1 universal App and Intel staging
     runs-on: macos-26-intel
     timeout-minutes: 180
     outputs:
@@ -758,8 +816,8 @@ jobs:
     env:
       SOURCE_SHA: ${{ inputs.source_sha }}
       GIT_COMMIT: ${{ inputs.source_sha }}
-      APP_VERSION: "2026.7.2-beta.7.1"
-      APP_BUILD: "2607000207"
+      APP_VERSION: "2026.8.1-beta.1"
+      APP_BUILD: "2608000101"
       BUNDLE_ID: "ai.openclaw.mac"
       NODE_OPTIONS: "--max-old-space-size=6144"
       PNPM_CONFIG_CHILD_CONCURRENCY: "2"
@@ -845,8 +903,8 @@ jobs:
           import { resolvePackageChangelogVersions } from "./scripts/package-changelog.mjs";
 
           assert.deepEqual(
-            resolvePackageChangelogVersions("2026.7.2-beta.7.1"),
-            ["2026.7.2-beta.7.1", "2026.7.2", "Unreleased"],
+            resolvePackageChangelogVersions("2026.8.1-beta.1"),
+            ["2026.8.1-beta.1", "2026.8.1", "Unreleased"],
           );
           NODE
 
@@ -1276,18 +1334,18 @@ jobs:
           key: ${{ steps.release_meta.outputs.staging_cache_key }}
 
   macos_runtime_arm64:
-    if: ${{ inputs.suite == 'beta7-macos-package' && inputs.phase == 'green' }}
+    if: ${{ inputs.suite == 'personal-macos-package' && inputs.phase == 'green' }}
     needs: macos_package
     permissions:
       contents: read
-    name: Assemble and validate OpenClaw 2026.7.2-beta.7.1 darwin-arm64 runtime
+    name: Assemble and validate OpenClaw 2026.8.1-beta.1 darwin-arm64 runtime
     runs-on: macos-26
     timeout-minutes: 90
     env:
       SOURCE_SHA: ${{ inputs.source_sha }}
       GIT_COMMIT: ${{ inputs.source_sha }}
-      APP_VERSION: "2026.7.2-beta.7.1"
-      APP_BUILD: "2607000207"
+      APP_VERSION: "2026.8.1-beta.1"
+      APP_BUILD: "2608000101"
       BUNDLE_ID: "ai.openclaw.mac"
       OPENCLAW_BUILD_TIMESTAMP: ${{ needs.macos_package.outputs.build_timestamp }}
       RAW_PACKAGE_NAME: ${{ needs.macos_package.outputs.raw_package_name }}

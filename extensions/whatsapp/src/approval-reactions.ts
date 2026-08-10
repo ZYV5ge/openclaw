@@ -15,8 +15,10 @@ import {
 import type { ExecApprovalReplyDecision } from "openclaw/plugin-sdk/approval-reply-runtime";
 import type { OutboundDeliveryResult } from "openclaw/plugin-sdk/channel-send-result";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
+import { isApprovalNotFoundError } from "openclaw/plugin-sdk/error-runtime";
 import type { MessagePresentation } from "openclaw/plugin-sdk/interactive-runtime";
-import { createLazyRuntimeModule } from "openclaw/plugin-sdk/lazy-runtime";
+import { createLazyRuntimeSurface } from "openclaw/plugin-sdk/lazy-runtime";
+import { createPluginStateErrorReporter } from "openclaw/plugin-sdk/plugin-state-runtime";
 import type { ReplyPayload } from "openclaw/plugin-sdk/reply-runtime";
 import { resolveWhatsAppAccount } from "./accounts.js";
 import { getWhatsAppApprovalApprovers, whatsappApprovalAuth } from "./approval-auth.js";
@@ -54,7 +56,17 @@ type ResolvedWhatsAppApprovalReactionTarget = WhatsAppApprovalReactionResolution
   remoteJid: string;
 };
 
-const resolverRuntimeLoader = createLazyRuntimeModule(() => import("./approval-resolver.js"));
+const loadResolveApprovalOverGateway = createLazyRuntimeSurface(
+  () => import("openclaw/plugin-sdk/approval-gateway-runtime"),
+  (runtime) => runtime.resolveApprovalOverGateway,
+);
+
+const reportPersistentApprovalReactionError = createPluginStateErrorReporter(
+  getOptionalWhatsAppRuntime,
+  "whatsapp",
+  "approval-reaction-state",
+  "WhatsApp persistent approval reaction state failed",
+);
 
 const whatsappApprovalReactionTargets =
   createApprovalReactionTargetStore<WhatsAppApprovalReactionTarget>({
@@ -65,8 +77,6 @@ const whatsappApprovalReactionTargets =
     logPersistentError: reportPersistentApprovalReactionError,
     readPersistedTarget,
   });
-
-const loadApprovalResolver = resolverRuntimeLoader;
 
 function buildReactionTargetKey(params: {
   accountId: string;
@@ -86,16 +96,6 @@ function addCandidateRemoteJid(target: string[], value: string | null | undefine
   const remoteJid = value?.trim();
   if (remoteJid && !target.includes(remoteJid)) {
     target.push(remoteJid);
-  }
-}
-
-function reportPersistentApprovalReactionError(error: unknown): void {
-  try {
-    getOptionalWhatsAppRuntime()
-      ?.logging.getChildLogger({ plugin: "whatsapp", feature: "approval-reaction-state" })
-      .warn("WhatsApp persistent approval reaction state failed", { error: String(error) });
-  } catch {
-    // Best effort only: persistent state must never break WhatsApp reactions.
   }
 }
 
@@ -510,13 +510,14 @@ export async function maybeResolveWhatsAppApprovalReaction(params: {
     return true;
   }
 
-  const { isApprovalNotFoundError, resolveWhatsAppApproval } = await loadApprovalResolver();
+  const resolveApprovalOverGateway = await loadResolveApprovalOverGateway();
   try {
-    const result = await resolveWhatsAppApproval({
+    const result = await resolveApprovalOverGateway({
       cfg: params.cfg,
       approvalId: target.approvalId,
       approvalKind: target.approvalKind,
       decision: target.decision,
+      channel: "whatsapp",
       senderId: actorId,
       gatewayUrl: params.gatewayUrl,
     });
@@ -554,5 +555,5 @@ export async function maybeResolveWhatsAppApprovalReaction(params: {
 
 export function clearWhatsAppApprovalReactionTargetsForTest(): void {
   whatsappApprovalReactionTargets.clearForTest();
-  resolverRuntimeLoader.clear();
+  loadResolveApprovalOverGateway.clear();
 }
