@@ -12,7 +12,7 @@ struct CLIInstallerTests {
 
         let status = CLIInstaller.Status.ready(
             location: "/opt/homebrew/bin/openclaw",
-            version: "2026.8.1-beta.1")
+            version: "2026.8.1-selfbuild.1")
 
         #expect(CLIInstaller.rememberValidated(status, defaults: defaults) == 2)
         #expect(CLIInstaller.rememberValidated(status, defaults: defaults) == 0)
@@ -20,7 +20,7 @@ struct CLIInstallerTests {
         defaults.set("2026.7.2-beta.7.1", forKey: cliValidatedVersionKey)
         #expect(CLIInstaller.rememberValidated(status, defaults: defaults) == 1)
         #expect(defaults.string(forKey: cliValidatedExecutableKey) == "/opt/homebrew/bin/openclaw")
-        #expect(defaults.string(forKey: cliValidatedVersionKey) == "2026.8.1-beta.1")
+        #expect(defaults.string(forKey: cliValidatedVersionKey) == "2026.8.1-selfbuild.1")
     }
 
     @Test func `installed location finds executable`() throws {

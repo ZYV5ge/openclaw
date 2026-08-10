@@ -21,6 +21,8 @@ describe("canonicalSparkleBuildFromVersion", () => {
     expect(canonicalSparkleBuildFromVersion("2026.6.5-beta.2")).toBe(2606000502);
     expect(canonicalSparkleBuildFromVersion("2026.6.32-beta.1")).toBe(2606003201);
     expect(canonicalSparkleBuildFromVersion("2026.6.32")).toBe(2606003290);
+    expect(canonicalSparkleBuildFromVersion("2026.8.1-selfbuild.1")).toBe(2608000101);
+    expect(canonicalSparkleBuildFromVersion("2026.8.1")).toBe(2608000190);
   });
 
   it("rejects invalid numeric prerelease lanes", () => {

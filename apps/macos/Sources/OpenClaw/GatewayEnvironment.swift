@@ -151,9 +151,7 @@ enum GatewayEnvironment {
     }
 
     static func appVersionString() -> String? {
-        let bundleVersion = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String
-        let trimmed = bundleVersion?.trimmingCharacters(in: .whitespacesAndNewlines)
-        return (trimmed?.isEmpty == false) ? trimmed : nil
+        AppVersionInfo.productVersion()
     }
 
     static func expectedGatewayVersionString() -> String? {

@@ -1,4 +1,4 @@
-name: OpenClaw 2026.8.1-beta.1 cloud validation
+name: OpenClaw 2026.8.1 Self-Built Beta 1 cloud build
 
 on:
   push:
@@ -47,17 +47,19 @@ on:
 permissions:
   contents: read
 
-run-name: OpenClaw 2026.8.1-beta.1 ${{ inputs.suite || (contains(github.event.head_commit.message, '[assemble]') && 'personal-macos-assemble' || contains(github.event.head_commit.message, '[package]') && 'personal-macos-package' || 'personal-preflight') }} ${{ inputs.phase || ((contains(github.event.head_commit.message, '[green]') || contains(github.event.head_commit.message, '[package]') || contains(github.event.head_commit.message, '[assemble]')) && 'green' || 'red') }} ${{ inputs.source_sha || github.sha }}
+run-name: OpenClaw 2026.8.1 Self-Built Beta 1 ${{ inputs.suite || (contains(github.event.head_commit.message, '[package]') && 'personal-macos-package' || 'personal-preflight') }} ${{ inputs.phase || ((contains(github.event.head_commit.message, '[green]') || contains(github.event.head_commit.message, '[package]')) && 'green' || 'red') }} ${{ inputs.source_sha || github.sha }}
 
 concurrency:
-  group: personal-2026-8-1-beta-1-${{ inputs.source_sha || github.sha }}-${{ inputs.suite || (contains(github.event.head_commit.message, '[assemble]') && 'personal-macos-assemble' || contains(github.event.head_commit.message, '[package]') && 'personal-macos-package' || 'personal-preflight') }}-${{ inputs.phase || ((contains(github.event.head_commit.message, '[green]') || contains(github.event.head_commit.message, '[package]') || contains(github.event.head_commit.message, '[assemble]')) && 'green' || 'red') }}
+  group: personal-2026-8-1-selfbuild-1-${{ inputs.source_sha || github.sha }}-${{ inputs.suite || (contains(github.event.head_commit.message, '[package]') && 'personal-macos-package' || 'personal-preflight') }}-${{ inputs.phase || ((contains(github.event.head_commit.message, '[green]') || contains(github.event.head_commit.message, '[package]')) && 'green' || 'red') }}
   cancel-in-progress: false
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
   NODE_VERSION: "24.15.0"
-  PERSONAL_VERSION: "2026.8.1-beta.1"
-  PERSONAL_APP_BUILD: "2608000101"
+  PERSONAL_VERSION: "2026.8.1-selfbuild.1"
+  PERSONAL_DISPLAY_NAME: "OpenClaw 2026.8.1 Self-Built Beta 1"
+  PERSONAL_APP_BUNDLE_SHORT_VERSION: "2026.8.1"
+  PERSONAL_APP_BUILD: "2608000189"
   OFFICIAL_BETA_VERSION: "2026.7.2-beta.7"
   FROZEN_UPSTREAM_SHA: "f9eae0c2762dbd646afc6cbc41a34354af3ef1ac"
   FROZEN_BETA7_SHA: "dabe1915362e20c25704af91612a32a8f4c96e83"
@@ -65,8 +67,8 @@ env:
 
 jobs:
   focused_validation:
-    if: ${{ (github.event_name == 'push' && !contains(github.event.head_commit.message, '[package]') && !contains(github.event.head_commit.message, '[assemble]')) || (github.event_name == 'workflow_dispatch' && inputs.suite != 'personal-mac-ui' && inputs.suite != 'personal-macos-package') }}
-    name: ${{ inputs.suite || 'personal-preflight' }} (${{ inputs.phase || (contains(github.event.head_commit.message, '[green]') && 'green' || 'red') }})
+    if: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.suite != 'personal-mac-ui') }}
+    name: ${{ inputs.suite || 'personal-preflight' }} (${{ inputs.phase || ((contains(github.event.head_commit.message, '[green]') || contains(github.event.head_commit.message, '[package]')) && 'green' || 'red') }})
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
@@ -141,7 +143,7 @@ jobs:
 
       - name: Check workflow and focused formatting
         env:
-          TDD_PHASE: ${{ inputs.phase || (contains(github.event.head_commit.message, '[green]') && 'green' || 'red') }}
+          TDD_PHASE: ${{ inputs.phase || ((contains(github.event.head_commit.message, '[green]') || contains(github.event.head_commit.message, '[package]')) && 'green' || 'red') }}
         run: |
           set -euo pipefail
           pnpm check:workflows
@@ -379,8 +381,8 @@ jobs:
 
       - name: Run fixed focused suite
         env:
-          SUITE: ${{ inputs.suite || 'personal-preflight' }}
-          TDD_PHASE: ${{ inputs.phase || (contains(github.event.head_commit.message, '[green]') && 'green' || 'red') }}
+          SUITE: ${{ inputs.suite == 'personal-macos-package' && 'personal-preflight' || (inputs.suite || 'personal-preflight') }}
+          TDD_PHASE: ${{ inputs.phase || ((contains(github.event.head_commit.message, '[green]') || contains(github.event.head_commit.message, '[package]')) && 'green' || 'red') }}
           OPENCLAW_VITEST_MAX_WORKERS: "2"
         run: |
           set -euo pipefail
@@ -804,11 +806,12 @@ jobs:
 
   macos_package:
     if: ${{ inputs.suite == 'personal-macos-package' || (github.event_name == 'push' && contains(github.event.head_commit.message, '[package]')) }}
+    needs: focused_validation
     permissions:
       contents: read
-    name: Build OpenClaw 2026.8.1-beta.1 universal App and Intel staging
+    name: Build OpenClaw 2026.8.1 Self-Built Beta 1 universal App and Intel staging
     runs-on: macos-26-intel
-    timeout-minutes: 180
+    timeout-minutes: 240
     outputs:
       artifact_name: ${{ steps.release_meta.outputs.artifact_name }}
       build_timestamp: ${{ steps.release_meta.outputs.build_timestamp }}
@@ -818,8 +821,10 @@ jobs:
     env:
       SOURCE_SHA: ${{ inputs.source_sha || github.sha }}
       GIT_COMMIT: ${{ inputs.source_sha || github.sha }}
-      APP_VERSION: "2026.8.1-beta.1"
-      APP_BUILD: "2608000101"
+      APP_VERSION: "2026.8.1-selfbuild.1"
+      APP_DISPLAY_NAME: "OpenClaw 2026.8.1 Self-Built Beta 1"
+      APP_BUNDLE_SHORT_VERSION: "2026.8.1"
+      APP_BUILD: "2608000189"
       BUNDLE_ID: "ai.openclaw.mac"
       NODE_OPTIONS: "--max-old-space-size=6144"
       PNPM_CONFIG_CHILD_CONCURRENCY: "2"
@@ -902,11 +907,30 @@ jobs:
           set -euo pipefail
           node --input-type=module <<'NODE'
           import assert from "node:assert/strict";
+          import fs from "node:fs";
+          import { parseReleaseVersion } from "./scripts/lib/release-version.mjs";
           import { resolvePackageChangelogVersions } from "./scripts/package-changelog.mjs";
 
+          const root = JSON.parse(fs.readFileSync("package.json", "utf8"));
+          const codex = JSON.parse(fs.readFileSync("extensions/codex/package.json", "utf8"));
+          assert.equal(process.env.APP_VERSION, process.env.PERSONAL_VERSION);
+          assert.equal(process.env.APP_DISPLAY_NAME, process.env.PERSONAL_DISPLAY_NAME);
+          assert.equal(
+            process.env.APP_BUNDLE_SHORT_VERSION,
+            process.env.PERSONAL_APP_BUNDLE_SHORT_VERSION,
+          );
+          assert.equal(process.env.APP_BUILD, process.env.PERSONAL_APP_BUILD);
+          assert.equal(root.version, process.env.APP_VERSION);
+          assert.equal(codex.version, process.env.APP_VERSION);
+          assert.equal(codex.openclaw?.build?.openclawVersion, process.env.APP_VERSION);
+          assert.equal(codex.openclaw?.compat?.pluginApi, `>=${process.env.APP_VERSION}`);
+          assert.match(process.env.APP_VERSION, /^2026\.8\.1-selfbuild\.[1-9][0-9]*$/);
+          assert.match(process.env.APP_BUNDLE_SHORT_VERSION, /^\d+\.\d+\.\d+$/);
+          assert.match(process.env.APP_BUILD, /^[1-9][0-9]*$/);
+          assert.equal(parseReleaseVersion(process.env.APP_VERSION), null);
           assert.deepEqual(
-            resolvePackageChangelogVersions("2026.8.1-beta.1"),
-            ["2026.8.1-beta.1", "2026.8.1", "Unreleased"],
+            resolvePackageChangelogVersions("2026.8.1-selfbuild.1"),
+            ["2026.8.1-selfbuild.1", "2026.8.1", "Unreleased"],
           );
           NODE
 
@@ -956,8 +980,46 @@ jobs:
         run: |
           set -euo pipefail
           node scripts/run-vitest.mjs run \
+            test/appcast.test.ts \
             test/scripts/package-changelog.test.ts \
+            test/scripts/package-mac-app.test.ts \
+            test/scripts/package-mac-dist.test.ts \
             test/scripts/verify-control-ui-release-parity.test.ts
+          node --import tsx --input-type=module <<'NODE'
+          import assert from "node:assert/strict";
+          import { satisfies, valid } from "semver";
+          import { canonicalSparkleBuildFromVersion } from "./scripts/sparkle-build.ts";
+
+          assert.equal(valid(process.env.APP_VERSION), process.env.APP_VERSION);
+          assert.equal(satisfies(process.env.APP_VERSION, `>=${process.env.APP_VERSION}`), true);
+          const selfBuildFloor = canonicalSparkleBuildFromVersion(process.env.APP_VERSION);
+          const officialStableFloor = canonicalSparkleBuildFromVersion(
+            process.env.APP_BUNDLE_SHORT_VERSION,
+          );
+          const selectedBuild = Number(process.env.APP_BUILD);
+          assert.equal(selfBuildFloor, 2608000101);
+          assert.equal(officialStableFloor, 2608000190);
+          assert(selectedBuild > selfBuildFloor);
+          assert(selectedBuild < officialStableFloor);
+          NODE
+
+      - name: Run macOS identity and retained UI regression suites
+        run: |
+          set -euo pipefail
+          macos_status=0
+          swift test \
+            --package-path apps/macos \
+            --filter 'AppVersionInfoTests|DashboardWindowSmokeTests|WebChatSwiftUISmokeTests|CLIInstallerTests|MacNodeModeCoordinatorTests' \
+            --no-parallel || macos_status=$?
+          shared_status=0
+          swift test \
+            --package-path apps/shared/OpenClawKit \
+            --filter 'ChatSessionSidebarModelTests|ChatViewModelSessionDeletionTests' \
+            --no-parallel || shared_status=$?
+          if (( macos_status != 0 || shared_status != 0 )); then
+            echo "::error::macOS suite status=$macos_status shared UI suite status=$shared_status"
+            exit 1
+          fi
 
       - name: Freeze version and build provenance
         id: release_meta
@@ -992,8 +1054,9 @@ jobs:
             echo "Source SHA: $SOURCE_SHA"
             echo "Frozen official SHA: $FROZEN_UPSTREAM_SHA"
             echo "Frozen official beta.7 SHA: $FROZEN_BETA7_SHA"
+            echo "Distribution: $APP_DISPLAY_NAME"
             echo "Version: $APP_VERSION"
-            echo "Build: $APP_BUILD"
+            echo "Apple version mapping: CFBundleShortVersionString=$APP_BUNDLE_SHORT_VERSION CFBundleVersion=$APP_BUILD"
             echo "Build timestamp: $build_timestamp"
           } >> "$GITHUB_STEP_SUMMARY"
 
@@ -1131,9 +1194,12 @@ jobs:
           set -euo pipefail
           codex_pack_dir=".artifacts/personal-release/codex-plugin"
           mkdir -p "$codex_pack_dir" "$BUNDLE_DIR"
-          OPENCLAW_NPM_PUBLISH_PROVENANCE=0 \
-          OPENCLAW_PLUGIN_NPM_PACK_OUTPUT_DIR="$PWD/$codex_pack_dir" \
-            bash scripts/plugin-npm-publish.sh --pack extensions/codex
+          node scripts/lib/plugin-npm-runtime-build.mjs extensions/codex
+          node scripts/generate-npm-package-lock.mjs --package-dir extensions/codex
+          OPENCLAW_PLUGIN_NPM_BUNDLE_DEPENDENCIES=1 \
+            node scripts/lib/plugin-npm-package-manifest.mjs \
+              --run extensions/codex -- \
+              npm pack --json --ignore-scripts --pack-destination "$PWD/$codex_pack_dir"
           shopt -s nullglob
           codex_packages=("$codex_pack_dir"/*.tgz)
           shopt -u nullglob
@@ -1192,8 +1258,10 @@ jobs:
           verify_app_metadata() {
             local candidate="$1"
             [[ "$(plist_value "$candidate" CFBundleIdentifier)" == "$BUNDLE_ID" ]]
-            [[ "$(plist_value "$candidate" CFBundleShortVersionString)" == "$APP_VERSION" ]]
+            [[ "$(plist_value "$candidate" CFBundleShortVersionString)" == "$APP_BUNDLE_SHORT_VERSION" ]]
             [[ "$(plist_value "$candidate" CFBundleVersion)" == "$APP_BUILD" ]]
+            [[ "$(plist_value "$candidate" OpenClawProductVersion)" == "$APP_VERSION" ]]
+            [[ "$(plist_value "$candidate" OpenClawDistributionName)" == "$APP_DISPLAY_NAME" ]]
             [[ "$(plist_value "$candidate" OpenClawGitCommit)" == "$SOURCE_SHA" ]]
             [[ "$(plist_value "$candidate" OpenClawBuildTimestamp)" == "$OPENCLAW_BUILD_TIMESTAMP" ]]
             codesign --verify --deep --strict --verbose=4 "$candidate"
@@ -1344,8 +1412,11 @@ jobs:
             frozenOfficialSha: process.env.FROZEN_UPSTREAM_SHA,
             frozenOfficialBeta7Sha: process.env.FROZEN_BETA7_SHA,
             officialBetaVersion: process.env.OFFICIAL_BETA_VERSION,
+            distributionName: process.env.APP_DISPLAY_NAME,
             version: process.env.APP_VERSION,
+            appBundleShortVersion: process.env.APP_BUNDLE_SHORT_VERSION,
             appBuild: process.env.APP_BUILD,
+            unofficialSelfBuild: true,
             buildTimestamp: process.env.OPENCLAW_BUILD_TIMESTAMP,
             workflowRunId: process.env.GITHUB_RUN_ID,
             workflowRunAttempt: process.env.GITHUB_RUN_ATTEMPT,
@@ -1397,24 +1468,26 @@ jobs:
           key: ${{ steps.release_meta.outputs.staging_cache_key }}
 
   macos_runtime_arm64:
-    if: ${{ always() && ((inputs.suite == 'personal-macos-package' && inputs.phase == 'green') || (github.event_name == 'push' && (contains(github.event.head_commit.message, '[package]') || contains(github.event.head_commit.message, '[assemble]')))) }}
-    needs: macos_package
+    if: ${{ (inputs.suite == 'personal-macos-package' && inputs.phase == 'green') || (github.event_name == 'push' && contains(github.event.head_commit.message, '[package]')) }}
+    needs: [focused_validation, macos_package]
     permissions:
       contents: read
-    name: Assemble and validate OpenClaw 2026.8.1-beta.1 darwin-arm64 runtime
+    name: Assemble and validate OpenClaw 2026.8.1 Self-Built Beta 1 darwin-arm64 runtime
     runs-on: macos-26
     timeout-minutes: 180
     env:
-      SOURCE_SHA: ${{ contains(github.event.head_commit.message, '[assemble]') && '92c1f1a1bc8e02be1e7251882cfdac9eeaf719db' || (inputs.source_sha || github.sha) }}
-      GIT_COMMIT: ${{ contains(github.event.head_commit.message, '[assemble]') && '92c1f1a1bc8e02be1e7251882cfdac9eeaf719db' || (inputs.source_sha || github.sha) }}
-      APP_VERSION: "2026.8.1-beta.1"
-      APP_BUILD: "2608000101"
+      SOURCE_SHA: ${{ inputs.source_sha || github.sha }}
+      GIT_COMMIT: ${{ inputs.source_sha || github.sha }}
+      APP_VERSION: "2026.8.1-selfbuild.1"
+      APP_DISPLAY_NAME: "OpenClaw 2026.8.1 Self-Built Beta 1"
+      APP_BUNDLE_SHORT_VERSION: "2026.8.1"
+      APP_BUILD: "2608000189"
       BUNDLE_ID: "ai.openclaw.mac"
-      OPENCLAW_BUILD_TIMESTAMP: ${{ contains(github.event.head_commit.message, '[assemble]') && '2026-08-10T15:57:52.000Z' || needs.macos_package.outputs.build_timestamp }}
-      RAW_PACKAGE_NAME: ${{ contains(github.event.head_commit.message, '[assemble]') && 'openclaw-2026.8.1-beta.1-source-npm-92c1f1a1bc8e.tgz' || needs.macos_package.outputs.raw_package_name }}
-      CODEX_PACKAGE_NAME: ${{ contains(github.event.head_commit.message, '[assemble]') && 'openclaw-codex-2026.8.1-beta.1.tgz' || needs.macos_package.outputs.codex_package_name }}
-      FINAL_ARTIFACT_NAME: ${{ contains(github.event.head_commit.message, '[assemble]') && 'OpenClaw-2026.8.1-beta.1-macos-universal-92c1f1a1bc8e' || needs.macos_package.outputs.artifact_name }}
-      STAGING_CACHE_KEY: ${{ contains(github.event.head_commit.message, '[assemble]') && 'openclaw-macos-intel-stage-31407683407-1-92c1f1a1bc8e02be1e7251882cfdac9eeaf719db' || needs.macos_package.outputs.staging_cache_key }}
+      OPENCLAW_BUILD_TIMESTAMP: ${{ needs.macos_package.outputs.build_timestamp }}
+      RAW_PACKAGE_NAME: ${{ needs.macos_package.outputs.raw_package_name }}
+      CODEX_PACKAGE_NAME: ${{ needs.macos_package.outputs.codex_package_name }}
+      FINAL_ARTIFACT_NAME: ${{ needs.macos_package.outputs.artifact_name }}
+      STAGING_CACHE_KEY: ${{ needs.macos_package.outputs.staging_cache_key }}
       BUNDLE_DIR: ${{ github.workspace }}/.artifacts/personal-release/upload
       FINAL_DIR: ${{ github.workspace }}/.artifacts/personal-release/final-upload
       NODE_OPTIONS: "--max-old-space-size=4096"
@@ -1426,8 +1499,7 @@ jobs:
           CURRENT_REPOSITORY: ${{ github.repository }}
           REPOSITORY_IS_PRIVATE: ${{ github.event.repository.private }}
           CURRENT_REF: ${{ github.ref }}
-          ASSEMBLY_RECOVERY: ${{ github.event_name == 'push' && contains(github.event.head_commit.message, '[assemble]') }}
-          TDD_PHASE: ${{ inputs.phase || ((contains(github.event.head_commit.message, '[package]') || contains(github.event.head_commit.message, '[assemble]')) && 'green' || 'red') }}
+          TDD_PHASE: ${{ inputs.phase || (contains(github.event.head_commit.message, '[package]') && 'green' || 'red') }}
         run: |
           set -euo pipefail
           if [[ "$CURRENT_REPOSITORY" != "$PERSONAL_RELEASE_REPOSITORY" ]]; then
@@ -1450,16 +1522,7 @@ jobs:
             echo "::error::source_sha must be a full lowercase Git SHA."
             exit 1
           fi
-          if [[ "$ASSEMBLY_RECOVERY" == "true" ]]; then
-            if [[ "$SOURCE_SHA" != "92c1f1a1bc8e02be1e7251882cfdac9eeaf719db" ]]; then
-              echo "::error::Assembly recovery must reuse the frozen #166 source."
-              exit 1
-            fi
-            if [[ "$STAGING_CACHE_KEY" != "openclaw-macos-intel-stage-31407683407-1-92c1f1a1bc8e02be1e7251882cfdac9eeaf719db" ]]; then
-              echo "::error::Assembly recovery must reuse the immutable #166 Intel staging cache."
-              exit 1
-            fi
-          elif [[ "$EVENT_SHA" != "$SOURCE_SHA" ]]; then
+          if [[ "$EVENT_SHA" != "$SOURCE_SHA" ]]; then
             echo "::error::The dispatched ref resolved to $EVENT_SHA, expected $SOURCE_SHA."
             exit 1
           fi
@@ -1550,8 +1613,11 @@ jobs:
             frozenOfficialSha: process.env.FROZEN_UPSTREAM_SHA,
             frozenOfficialBeta7Sha: process.env.FROZEN_BETA7_SHA,
             officialBetaVersion: process.env.OFFICIAL_BETA_VERSION,
+            distributionName: process.env.APP_DISPLAY_NAME,
             version: process.env.APP_VERSION,
+            appBundleShortVersion: process.env.APP_BUNDLE_SHORT_VERSION,
             appBuild: process.env.APP_BUILD,
+            unofficialSelfBuild: true,
             buildTimestamp: process.env.OPENCLAW_BUILD_TIMESTAMP,
             runner: "macos-26-intel",
             runnerArch: "X64",
@@ -1918,6 +1984,9 @@ jobs:
             schemaVersion: 1,
             stateRoot: process.env.VALIDATION_LABEL,
             sourceSha: process.env.SOURCE_SHA,
+            distributionName: process.env.APP_DISPLAY_NAME,
+            version: process.env.APP_VERSION,
+            unofficialSelfBuild: true,
             codex: {
               version: codexManifest.version,
               archiveSha256: digest(process.env.CODEX_ARCHIVE),
@@ -1952,7 +2021,8 @@ jobs:
           const lines = [
             "# Codex plugin convergence",
             "",
-            `This artifact carries @openclaw/codex ${process.env.APP_VERSION} from source ${process.env.SOURCE_SHA}.`,
+            `${process.env.APP_DISPLAY_NAME} carries @openclaw/codex ${process.env.APP_VERSION} from source ${process.env.SOURCE_SHA}.`,
+            "This is an unofficial self-build based on the official main development snapshot plus local modifications, not an official OpenClaw Beta.",
             "It has not been installed on a user machine.",
             "",
             "After the old Gateway is stopped and the matching App/Core runtime is installed, run the",
@@ -2020,12 +2090,20 @@ jobs:
             const file = path.join(finalDir, name);
             return [name, { bytes: fs.statSync(file).size, sha256: digest(file) }];
           }));
-          for (const requiredFile of [process.env.RUNTIME_NAME, process.env.CODEX_PACKAGE_NAME]) {
+          const appZip = `OpenClaw-${process.env.APP_VERSION}.zip`;
+          const appDmg = `OpenClaw-${process.env.APP_VERSION}.dmg`;
+          for (const requiredFile of [appZip, appDmg, process.env.RUNTIME_NAME, process.env.CODEX_PACKAGE_NAME]) {
             if (!files[requiredFile]?.sha256) {
               throw new Error(`required component is absent from final artifact: ${requiredFile}`);
             }
           }
           if (
+            defaultCodex.version !== process.env.APP_VERSION ||
+            nodeHostCodex.version !== process.env.APP_VERSION ||
+            defaultCodex.distributionName !== process.env.APP_DISPLAY_NAME ||
+            nodeHostCodex.distributionName !== process.env.APP_DISPLAY_NAME ||
+            defaultCodex.unofficialSelfBuild !== true ||
+            nodeHostCodex.unofficialSelfBuild !== true ||
             defaultCodex.codex.version !== process.env.APP_VERSION ||
             nodeHostCodex.codex.version !== process.env.APP_VERSION ||
             defaultCodex.codex.archiveSha256 !== nodeHostCodex.codex.archiveSha256
@@ -2041,10 +2119,25 @@ jobs:
             throw new Error("Codex peer targets do not match the frozen Core");
           }
           const provenance = {
-            schemaVersion: 3,
+            schemaVersion: 4,
             product: "OpenClaw",
+            distributionName: process.env.APP_DISPLAY_NAME,
             version: process.env.APP_VERSION,
             appBuild: process.env.APP_BUILD,
+            identity: {
+              machineVersion: process.env.APP_VERSION,
+              humanName: process.env.APP_DISPLAY_NAME,
+              unofficialSelfBuild: true,
+              officialRelease: false,
+              officialBeta: false,
+              basis: "official-main-2026.8.1-development-snapshot-plus-local-modifications",
+              appleVersionMapping: {
+                CFBundleShortVersionString: process.env.APP_BUNDLE_SHORT_VERSION,
+                CFBundleVersion: process.env.APP_BUILD,
+                productVersionKey: "OpenClawProductVersion",
+                productVersion: process.env.APP_VERSION,
+              },
+            },
             source: {
               repository: process.env.GITHUB_REPOSITORY,
               branch: "agent/openclaw-beta-5-1",
@@ -2052,6 +2145,8 @@ jobs:
               frozenOfficialSha: process.env.FROZEN_UPSTREAM_SHA,
               frozenOfficialBeta7Sha: process.env.FROZEN_BETA7_SHA,
               officialBetaVersion: process.env.OFFICIAL_BETA_VERSION,
+              baseDescription: "official main 2026.8.1 development snapshot",
+              localModifications: true,
             },
             build: {
               builtAt: process.env.OPENCLAW_BUILD_TIMESTAMP,
@@ -2068,6 +2163,10 @@ jobs:
             },
             app: {
               bundleId: process.env.BUNDLE_ID,
+              bundleShortVersion: process.env.APP_BUNDLE_SHORT_VERSION,
+              bundleVersion: process.env.APP_BUILD,
+              productVersion: process.env.APP_VERSION,
+              distributionName: process.env.APP_DISPLAY_NAME,
               architectures: ["arm64", "x86_64"],
               signature: "ad-hoc",
               notarized: false,
@@ -2093,8 +2192,10 @@ jobs:
                 version: process.env.APP_VERSION,
                 sourceSha: process.env.SOURCE_SHA,
                 executableSha256: intelReceipt.appExecutableSha256,
-                zip: `OpenClaw-${process.env.APP_VERSION}.zip`,
-                dmg: `OpenClaw-${process.env.APP_VERSION}.dmg`,
+                zip: appZip,
+                zipSha256: files[appZip]?.sha256,
+                dmg: appDmg,
+                dmgSha256: files[appDmg]?.sha256,
               },
               core: {
                 version: process.env.APP_VERSION,
@@ -2127,6 +2228,19 @@ jobs:
           fs.writeFileSync(path.join(finalDir, "provenance.json"), JSON.stringify(provenance, null, 2) + "\n");
           NODE
           node --input-type=module <<'NODE'
+          import fs from "node:fs";
+          import path from "node:path";
+          const oldIdentity = "2026.8.1-beta.1";
+          const textExtensions = new Set([".json", ".md", ".txt"]);
+          for (const name of fs.readdirSync(process.env.FINAL_DIR)) {
+            if (!textExtensions.has(path.extname(name))) continue;
+            const contents = fs.readFileSync(path.join(process.env.FINAL_DIR, name), "utf8");
+            if (contents.includes(oldIdentity)) {
+              throw new Error(`stale product identity ${oldIdentity} remains in ${name}`);
+            }
+          }
+          NODE
+          node --input-type=module <<'NODE'
           import crypto from "node:crypto";
           import fs from "node:fs";
           import path from "node:path";
@@ -2149,12 +2263,16 @@ jobs:
           test -s "$FINAL_DIR/CODEX-PLUGIN-CONVERGENCE.md"
           test -s "$FINAL_DIR/provenance.json"
           test -s "$FINAL_DIR/SHA256SUMS"
+          cat "$FINAL_DIR/provenance.json"
+          cat "$FINAL_DIR/SHA256SUMS"
           {
             echo "## Complete macOS package ready"
             echo
             echo "- Artifact: $FINAL_ARTIFACT_NAME"
-            echo "- Version: $APP_VERSION"
-            echo "- Build: $APP_BUILD"
+            echo "- Distribution: $APP_DISPLAY_NAME"
+            echo "- Machine version: $APP_VERSION"
+            echo "- Apple mapping: CFBundleShortVersionString=$APP_BUNDLE_SHORT_VERSION, CFBundleVersion=$APP_BUILD"
+            echo "- Status: unofficial self-build from the frozen official main development snapshot plus local modifications; not an official Beta"
             echo "- Source: $SOURCE_SHA"
             echo "- App: universal arm64 + x86_64"
             echo "- Runtime: installed and validated darwin-arm64 dependency closure"

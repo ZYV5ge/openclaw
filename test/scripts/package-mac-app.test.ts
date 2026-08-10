@@ -543,6 +543,24 @@ describe("package-mac-app plist stamping", () => {
     expect(script).not.toContain("git rev-parse --short HEAD");
   });
 
+  it("maps a custom product identity onto Apple-compatible bundle versions", () => {
+    const script = readFileSync(scriptPath, "utf8");
+
+    expect(script).toContain(
+      'APP_BUNDLE_SHORT_VERSION="${APP_BUNDLE_SHORT_VERSION:-$APP_VERSION}"',
+    );
+    expect(script).toContain('APP_DISPLAY_NAME="${APP_DISPLAY_NAME:-OpenClaw $APP_VERSION}"');
+    expect(script).toContain(
+      'plist_set_string_required "$APP_ROOT/Contents/Info.plist" CFBundleShortVersionString "$APP_BUNDLE_SHORT_VERSION"',
+    );
+    expect(script).toContain(
+      'plist_set_or_add_string "$APP_ROOT/Contents/Info.plist" OpenClawProductVersion "$APP_VERSION"',
+    );
+    expect(script).toContain(
+      'plist_set_or_add_string "$APP_ROOT/Contents/Info.plist" OpenClawDistributionName "$APP_DISPLAY_NAME"',
+    );
+  });
+
   it("gates only release packaging on clean matching source and verifies the embedded commit", () => {
     const script = readFileSync(scriptPath, "utf8");
     const sourceCheck = script.indexOf('bash "$ROOT_DIR/scripts/apple-release-source-check.sh"');

@@ -190,7 +190,7 @@ struct MacNodeModeCoordinatorTests {
         let afterRelevantChange = coordinator.generationsForTesting()
         #expect(afterRelevantChange.endpointAttempt == before.endpointAttempt + 1)
 
-        defaults.set("2026.8.1-beta.1", forKey: cliValidatedVersionKey)
+        defaults.set("2026.8.1-selfbuild.1", forKey: cliValidatedVersionKey)
         notificationCenter.post(
             name: UserDefaults.didChangeNotification,
             object: defaults)

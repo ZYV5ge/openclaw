@@ -16,6 +16,7 @@ BUILD_ROOT="$ROOT_DIR/apps/macos/.build"
 PRODUCT="OpenClaw"
 BUILD_CONFIG="${BUILD_CONFIG:-release}"
 APP_VERSION_INPUT="${APP_VERSION:-}"
+APP_BUNDLE_SHORT_VERSION_INPUT="${APP_BUNDLE_SHORT_VERSION:-}"
 
 # Default to universal binary for distribution builds (supports both Apple Silicon and Intel Macs)
 export BUILD_ARCHS="${BUILD_ARCHS:-all}"
@@ -135,6 +136,10 @@ require_swift_toolchain
 if [[ -z "$APP_VERSION_INPUT" ]]; then
   APP_VERSION_INPUT="$(cd "$ROOT_DIR" && node -p "require('./package.json').version" 2>/dev/null || echo "0.0.0")"
 fi
+if [[ -z "$APP_BUNDLE_SHORT_VERSION_INPUT" ]]; then
+  APP_BUNDLE_SHORT_VERSION_INPUT="$APP_VERSION_INPUT"
+fi
+export APP_BUNDLE_SHORT_VERSION="$APP_BUNDLE_SHORT_VERSION_INPUT"
 
 if [[ -z "${APP_BUILD:-}" && "$BUILD_CONFIG" == "release" ]]; then
   CANONICAL_APP_BUILD="$(require_canonical_sparkle_build "$APP_VERSION_INPUT")"
@@ -151,13 +156,22 @@ if [[ ! -d "$APP" ]]; then
 fi
 
 VERSION="$(plist_print_required "$APP/Contents/Info.plist" CFBundleShortVersionString)"
+PRODUCT_VERSION="$(plist_print_required "$APP/Contents/Info.plist" OpenClawProductVersion)"
 BUNDLE_VERSION="$(plist_print_required "$APP/Contents/Info.plist" CFBundleVersion)"
 ACTUAL_BUNDLE_ID="$(plist_print_required "$APP/Contents/Info.plist" CFBundleIdentifier)"
 ACTUAL_FEED_URL="$(plist_print_required "$APP/Contents/Info.plist" SUFeedURL)"
-ZIP="$ROOT_DIR/dist/OpenClaw-$VERSION.zip"
-DMG="$ROOT_DIR/dist/OpenClaw-$VERSION.dmg"
-NOTARY_ZIP="$ROOT_DIR/dist/OpenClaw-$VERSION.notary.zip"
-DSYM_ZIP="$ROOT_DIR/dist/OpenClaw-$VERSION.dSYM.zip"
+if [[ "$PRODUCT_VERSION" != "$APP_VERSION_INPUT" ]]; then
+  echo "Error: packaged product version '$PRODUCT_VERSION' does not match '$APP_VERSION_INPUT'." >&2
+  exit 1
+fi
+if [[ "$VERSION" != "$APP_BUNDLE_SHORT_VERSION_INPUT" ]]; then
+  echo "Error: packaged Apple short version '$VERSION' does not match '$APP_BUNDLE_SHORT_VERSION_INPUT'." >&2
+  exit 1
+fi
+ZIP="$ROOT_DIR/dist/OpenClaw-$PRODUCT_VERSION.zip"
+DMG="$ROOT_DIR/dist/OpenClaw-$PRODUCT_VERSION.dmg"
+NOTARY_ZIP="$ROOT_DIR/dist/OpenClaw-$PRODUCT_VERSION.notary.zip"
+DSYM_ZIP="$ROOT_DIR/dist/OpenClaw-$PRODUCT_VERSION.dSYM.zip"
 SKIP_NOTARIZE="${SKIP_NOTARIZE:-0}"
 NOTARIZE=1
 SKIP_DSYM="${SKIP_DSYM:-0}"
@@ -196,13 +210,13 @@ if [[ "$BUILD_CONFIG" == "release" ]]; then
     exit 1
   fi
 
-  CANONICAL_APP_BUILD="$(require_canonical_sparkle_build "$VERSION")"
+  CANONICAL_APP_BUILD="$(require_canonical_sparkle_build "$PRODUCT_VERSION")"
   if [[ ! "$BUNDLE_VERSION" =~ ^[0-9]+$ ]]; then
     echo "Error: release packaging produced non-numeric CFBundleVersion '$BUNDLE_VERSION'." >&2
     exit 1
   fi
   if (( BUNDLE_VERSION < CANONICAL_APP_BUILD )); then
-    echo "Error: CFBundleVersion '$BUNDLE_VERSION' is below the canonical Sparkle floor '$CANONICAL_APP_BUILD' for '$VERSION'." >&2
+    echo "Error: CFBundleVersion '$BUNDLE_VERSION' is below the canonical Sparkle floor '$CANONICAL_APP_BUILD' for '$PRODUCT_VERSION'." >&2
     echo "Set APP_BUILD explicitly only when you need a higher correction build." >&2
     exit 1
   fi

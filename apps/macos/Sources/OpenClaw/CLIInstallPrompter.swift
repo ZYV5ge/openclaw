@@ -291,7 +291,7 @@ final class CLIInstallPrompter {
     }
 
     private static func appVersion() -> String? {
-        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String
+        AppVersionInfo.productVersion()
     }
 
     /// Shared gate for auto-repair and the dashboard's native update bridge.

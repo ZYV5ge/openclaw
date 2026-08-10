@@ -59,12 +59,15 @@ describe("package-mac-dist plist validation", () => {
     const script = readFileSync(scriptPath, "utf8");
     const readBlock = script.slice(
       script.indexOf("VERSION="),
-      script.indexOf('ZIP="$ROOT_DIR/dist/OpenClaw-$VERSION.zip"'),
+      script.indexOf('ZIP="$ROOT_DIR/dist/OpenClaw-$PRODUCT_VERSION.zip"'),
     );
 
     expect(script).toContain('source "$ROOT_DIR/scripts/lib/plistbuddy.sh"');
     expect(readBlock).toContain(
       'VERSION="$(plist_print_required "$APP/Contents/Info.plist" CFBundleShortVersionString)"',
+    );
+    expect(readBlock).toContain(
+      'PRODUCT_VERSION="$(plist_print_required "$APP/Contents/Info.plist" OpenClawProductVersion)"',
     );
     expect(readBlock).toContain(
       'BUNDLE_VERSION="$(plist_print_required "$APP/Contents/Info.plist" CFBundleVersion)"',
@@ -115,11 +118,25 @@ describe("package-mac-dist plist validation", () => {
     expect(script).toContain(
       'CANONICAL_APP_BUILD="$(require_canonical_sparkle_build "$APP_VERSION_INPUT")"',
     );
-    expect(script).toContain('CANONICAL_APP_BUILD="$(require_canonical_sparkle_build "$VERSION")"');
+    expect(script).toContain(
+      'CANONICAL_APP_BUILD="$(require_canonical_sparkle_build "$PRODUCT_VERSION")"',
+    );
     expect(script).not.toContain(
       'canonical_sparkle_build "$APP_VERSION_INPUT" 2>/dev/null || true',
     );
-    expect(script).not.toContain('canonical_sparkle_build "$VERSION" 2>/dev/null || true');
+    expect(script).not.toContain('canonical_sparkle_build "$PRODUCT_VERSION" 2>/dev/null || true');
+  });
+
+  it("uses product SemVer for archive identity while preserving the numeric Apple short version", () => {
+    const script = readFileSync(scriptPath, "utf8");
+
+    expect(script).toContain(
+      'PRODUCT_VERSION="$(plist_print_required "$APP/Contents/Info.plist" OpenClawProductVersion)"',
+    );
+    expect(script).toContain('if [[ "$PRODUCT_VERSION" != "$APP_VERSION_INPUT" ]]');
+    expect(script).toContain('if [[ "$VERSION" != "$APP_BUNDLE_SHORT_VERSION_INPUT" ]]');
+    expect(script).toContain('ZIP="$ROOT_DIR/dist/OpenClaw-$PRODUCT_VERSION.zip"');
+    expect(script).toContain('DMG="$ROOT_DIR/dist/OpenClaw-$PRODUCT_VERSION.dmg"');
   });
 
   it("checks Swift before Sparkle metadata or dependency bootstrap work", () => {

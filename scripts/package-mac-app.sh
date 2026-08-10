@@ -43,6 +43,8 @@ else
 fi
 GIT_BUILD_NUMBER=$(cd "$ROOT_DIR" && git rev-list --count HEAD 2>/dev/null || echo "0")
 APP_VERSION="${APP_VERSION:-$PKG_VERSION}"
+APP_BUNDLE_SHORT_VERSION="${APP_BUNDLE_SHORT_VERSION:-$APP_VERSION}"
+APP_DISPLAY_NAME="${APP_DISPLAY_NAME:-OpenClaw $APP_VERSION}"
 APP_BUILD="${APP_BUILD:-}"
 if [[ -n "${BUILD_ARCHS:-}" ]]; then
   BUILD_ARCHS_VALUE="${BUILD_ARCHS}"
@@ -421,10 +423,12 @@ if [[ ! "$PORT_GUARDIAN_STORAGE_VERSION" =~ ^[1-9][0-9]*$ ]]; then
   exit 1
 fi
 plist_set_string_required "$APP_ROOT/Contents/Info.plist" CFBundleIdentifier "$BUNDLE_ID"
-plist_set_string_required "$APP_ROOT/Contents/Info.plist" CFBundleShortVersionString "$APP_VERSION"
+plist_set_string_required "$APP_ROOT/Contents/Info.plist" CFBundleShortVersionString "$APP_BUNDLE_SHORT_VERSION"
 plist_set_string_required "$APP_ROOT/Contents/Info.plist" CFBundleVersion "$APP_BUILD"
 plist_set_string_required "$APP_ROOT/Contents/Info.plist" OpenClawBuildTimestamp "$BUILD_TS"
 plist_set_string_required "$APP_ROOT/Contents/Info.plist" OpenClawGitCommit "$BUILD_GIT_COMMIT"
+plist_set_or_add_string "$APP_ROOT/Contents/Info.plist" OpenClawProductVersion "$APP_VERSION"
+plist_set_or_add_string "$APP_ROOT/Contents/Info.plist" OpenClawDistributionName "$APP_DISPLAY_NAME"
 if [[ "$BUILD_CONFIG" == "release" ]]; then
   EMBEDDED_GIT_COMMIT="$(plist_print_required "$APP_ROOT/Contents/Info.plist" OpenClawGitCommit)"
   if [[ "$EMBEDDED_GIT_COMMIT" != "$BUILD_GIT_COMMIT" ]]; then
