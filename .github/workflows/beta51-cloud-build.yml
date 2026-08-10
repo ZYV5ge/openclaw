@@ -47,10 +47,10 @@ on:
 permissions:
   contents: read
 
-run-name: OpenClaw 2026.8.1-beta.1 ${{ inputs.suite || 'personal-preflight' }} ${{ inputs.phase || (contains(github.event.head_commit.message, '[green]') && 'green' || 'red') }} ${{ inputs.source_sha || github.sha }}
+run-name: OpenClaw 2026.8.1-beta.1 ${{ inputs.suite || (contains(github.event.head_commit.message, '[package]') && 'personal-macos-package' || 'personal-preflight') }} ${{ inputs.phase || ((contains(github.event.head_commit.message, '[green]') || contains(github.event.head_commit.message, '[package]')) && 'green' || 'red') }} ${{ inputs.source_sha || github.sha }}
 
 concurrency:
-  group: personal-2026-8-1-beta-1-${{ inputs.source_sha || github.sha }}-${{ inputs.suite || 'personal-preflight' }}-${{ inputs.phase || (contains(github.event.head_commit.message, '[green]') && 'green' || 'red') }}
+  group: personal-2026-8-1-beta-1-${{ inputs.source_sha || github.sha }}-${{ inputs.suite || (contains(github.event.head_commit.message, '[package]') && 'personal-macos-package' || 'personal-preflight') }}-${{ inputs.phase || ((contains(github.event.head_commit.message, '[green]') || contains(github.event.head_commit.message, '[package]')) && 'green' || 'red') }}
   cancel-in-progress: false
 
 env:
@@ -65,7 +65,7 @@ env:
 
 jobs:
   focused_validation:
-    if: ${{ github.event_name == 'push' || (inputs.suite != 'personal-mac-ui' && inputs.suite != 'personal-macos-package') }}
+    if: ${{ (github.event_name == 'push' && !contains(github.event.head_commit.message, '[package]')) || (github.event_name == 'workflow_dispatch' && inputs.suite != 'personal-mac-ui' && inputs.suite != 'personal-macos-package') }}
     name: ${{ inputs.suite || 'personal-preflight' }} (${{ inputs.phase || (contains(github.event.head_commit.message, '[green]') && 'green' || 'red') }})
     runs-on: ubuntu-24.04
     timeout-minutes: 45
@@ -803,7 +803,7 @@ jobs:
           fi
 
   macos_package:
-    if: ${{ inputs.suite == 'personal-macos-package' }}
+    if: ${{ inputs.suite == 'personal-macos-package' || (github.event_name == 'push' && contains(github.event.head_commit.message, '[package]')) }}
     permissions:
       contents: read
     name: Build OpenClaw 2026.8.1-beta.1 universal App and Intel staging
@@ -814,9 +814,10 @@ jobs:
       build_timestamp: ${{ steps.release_meta.outputs.build_timestamp }}
       staging_cache_key: ${{ steps.release_meta.outputs.staging_cache_key }}
       raw_package_name: ${{ steps.source_package.outputs.raw_package_name }}
+      codex_package_name: ${{ steps.codex_package.outputs.codex_package_name }}
     env:
-      SOURCE_SHA: ${{ inputs.source_sha }}
-      GIT_COMMIT: ${{ inputs.source_sha }}
+      SOURCE_SHA: ${{ inputs.source_sha || github.sha }}
+      GIT_COMMIT: ${{ inputs.source_sha || github.sha }}
       APP_VERSION: "2026.8.1-beta.1"
       APP_BUILD: "2608000101"
       BUNDLE_ID: "ai.openclaw.mac"
@@ -832,7 +833,7 @@ jobs:
           CURRENT_REPOSITORY: ${{ github.repository }}
           REPOSITORY_IS_PRIVATE: ${{ github.event.repository.private }}
           CURRENT_REF: ${{ github.ref }}
-          TDD_PHASE: ${{ inputs.phase }}
+          TDD_PHASE: ${{ inputs.phase || (contains(github.event.head_commit.message, '[package]') && 'green' || 'red') }}
         run: |
           set -euo pipefail
           if [[ "$CURRENT_REPOSITORY" != "$PERSONAL_RELEASE_REPOSITORY" ]]; then
@@ -863,7 +864,7 @@ jobs:
       - name: Checkout exact frozen source
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
-          ref: ${{ inputs.source_sha }}
+          ref: ${{ inputs.source_sha || github.sha }}
           fetch-depth: 200
           persist-credentials: false
 
@@ -1122,6 +1123,59 @@ jobs:
           echo "raw_package_path=$raw_package_path" >> "$GITHUB_OUTPUT"
           echo "raw_package_name=$raw_package_name" >> "$GITHUB_OUTPUT"
 
+      - name: Pack matching Codex plugin from the frozen source
+        id: codex_package
+        env:
+          BUNDLE_DIR: ${{ steps.release_meta.outputs.bundle_dir }}
+        run: |
+          set -euo pipefail
+          codex_pack_dir=".artifacts/personal-release/codex-plugin"
+          mkdir -p "$codex_pack_dir" "$BUNDLE_DIR"
+          OPENCLAW_NPM_PUBLISH_PROVENANCE=0 \
+          OPENCLAW_PLUGIN_NPM_PACK_OUTPUT_DIR="$PWD/$codex_pack_dir" \
+            bash scripts/plugin-npm-publish.sh --pack extensions/codex
+          shopt -s nullglob
+          codex_packages=("$codex_pack_dir"/*.tgz)
+          shopt -u nullglob
+          if (( ${#codex_packages[@]} != 1 )); then
+            echo "::error::Expected exactly one Codex plugin archive, found ${#codex_packages[@]}."
+            exit 1
+          fi
+          codex_package_path="${codex_packages[0]}"
+          codex_package_name="$(basename "$codex_package_path")"
+          codex_check="$RUNNER_TEMP/openclaw-codex-package-check"
+          mkdir -p "$codex_check"
+          tar -xzf "$codex_package_path" -C "$codex_check"
+          CODEX_PACKAGE_ROOT="$codex_check/package" node --input-type=module <<'NODE'
+          import fs from "node:fs";
+          import path from "node:path";
+          const manifest = JSON.parse(
+            fs.readFileSync(path.join(process.env.CODEX_PACKAGE_ROOT, "package.json"), "utf8"),
+          );
+          const expectedPeer = `>=${process.env.APP_VERSION}`;
+          if (manifest.name !== "@openclaw/codex") throw new Error("unexpected Codex package name");
+          if (manifest.version !== process.env.APP_VERSION) throw new Error("Codex version mismatch");
+          if (manifest.openclaw?.build?.openclawVersion !== process.env.APP_VERSION) {
+            throw new Error("Codex build host version mismatch");
+          }
+          if (manifest.openclaw?.compat?.pluginApi !== expectedPeer) {
+            throw new Error("Codex plugin API range mismatch");
+          }
+          if (manifest.peerDependencies?.openclaw !== expectedPeer) {
+            throw new Error("Codex OpenClaw peer range mismatch");
+          }
+          if (manifest.peerDependenciesMeta?.openclaw?.optional !== true) {
+            throw new Error("Codex OpenClaw peer must be optional for managed linking");
+          }
+          if (!Array.isArray(manifest.openclaw?.runtimeExtensions)) {
+            throw new Error("Codex runtime extension metadata is missing");
+          }
+          NODE
+          cp "$codex_package_path" "$BUNDLE_DIR/$codex_package_name"
+          (cd "$BUNDLE_DIR" && shasum -a 256 "$codex_package_name") \
+            | tee "$BUNDLE_DIR/codex-plugin.sha256"
+          echo "codex_package_name=$codex_package_name" >> "$GITHUB_OUTPUT"
+
       - name: Verify App and raw npm source package signing architectures and Control UI
         env:
           RAW_PACKAGE_TGZ: ${{ steps.source_package.outputs.raw_package_path }}
@@ -1269,6 +1323,7 @@ jobs:
         env:
           BUNDLE_DIR: ${{ steps.release_meta.outputs.bundle_dir }}
           RAW_PACKAGE_NAME: ${{ steps.source_package.outputs.raw_package_name }}
+          CODEX_PACKAGE_NAME: ${{ steps.codex_package.outputs.codex_package_name }}
         run: |
           set -euo pipefail
           node --input-type=module <<'NODE'
@@ -1277,7 +1332,11 @@ jobs:
           import path from "node:path";
           const bundleDir = process.env.BUNDLE_DIR;
           const rawPackage = path.join(bundleDir, process.env.RAW_PACKAGE_NAME);
+          const codexPackage = path.join(bundleDir, process.env.CODEX_PACKAGE_NAME);
+          const appExecutable = path.join("dist", "OpenClaw.app", "Contents", "MacOS", "OpenClaw");
           const rawSha256 = crypto.createHash("sha256").update(fs.readFileSync(rawPackage)).digest("hex");
+          const codexSha256 = crypto.createHash("sha256").update(fs.readFileSync(codexPackage)).digest("hex");
+          const appExecutableSha256 = crypto.createHash("sha256").update(fs.readFileSync(appExecutable)).digest("hex");
           const receipt = {
             schemaVersion: 1,
             purpose: "immutable Intel-built components for ARM64 runtime assembly",
@@ -1295,8 +1354,11 @@ jobs:
             xcode: process.env.OPENCLAW_XCODE_VERSION,
             appArchitectures: ["arm64", "x86_64"],
             appSignature: "ad-hoc",
+            appExecutableSha256,
             rawNpmArchive: process.env.RAW_PACKAGE_NAME,
             rawNpmSha256: rawSha256,
+            codexPluginArchive: process.env.CODEX_PACKAGE_NAME,
+            codexPluginSha256: codexSha256,
           };
           fs.writeFileSync(
             path.join(bundleDir, "intel-build-receipt.json"),
@@ -1335,21 +1397,22 @@ jobs:
           key: ${{ steps.release_meta.outputs.staging_cache_key }}
 
   macos_runtime_arm64:
-    if: ${{ inputs.suite == 'personal-macos-package' && inputs.phase == 'green' }}
+    if: ${{ (inputs.suite == 'personal-macos-package' && inputs.phase == 'green') || (github.event_name == 'push' && contains(github.event.head_commit.message, '[package]')) }}
     needs: macos_package
     permissions:
       contents: read
     name: Assemble and validate OpenClaw 2026.8.1-beta.1 darwin-arm64 runtime
     runs-on: macos-26
-    timeout-minutes: 90
+    timeout-minutes: 180
     env:
-      SOURCE_SHA: ${{ inputs.source_sha }}
-      GIT_COMMIT: ${{ inputs.source_sha }}
+      SOURCE_SHA: ${{ inputs.source_sha || github.sha }}
+      GIT_COMMIT: ${{ inputs.source_sha || github.sha }}
       APP_VERSION: "2026.8.1-beta.1"
       APP_BUILD: "2608000101"
       BUNDLE_ID: "ai.openclaw.mac"
       OPENCLAW_BUILD_TIMESTAMP: ${{ needs.macos_package.outputs.build_timestamp }}
       RAW_PACKAGE_NAME: ${{ needs.macos_package.outputs.raw_package_name }}
+      CODEX_PACKAGE_NAME: ${{ needs.macos_package.outputs.codex_package_name }}
       FINAL_ARTIFACT_NAME: ${{ needs.macos_package.outputs.artifact_name }}
       STAGING_CACHE_KEY: ${{ needs.macos_package.outputs.staging_cache_key }}
       BUNDLE_DIR: ${{ github.workspace }}/.artifacts/personal-release/upload
@@ -1363,7 +1426,7 @@ jobs:
           CURRENT_REPOSITORY: ${{ github.repository }}
           REPOSITORY_IS_PRIVATE: ${{ github.event.repository.private }}
           CURRENT_REF: ${{ github.ref }}
-          TDD_PHASE: ${{ inputs.phase }}
+          TDD_PHASE: ${{ inputs.phase || (contains(github.event.head_commit.message, '[package]') && 'green' || 'red') }}
         run: |
           set -euo pipefail
           if [[ "$CURRENT_REPOSITORY" != "$PERSONAL_RELEASE_REPOSITORY" ]]; then
@@ -1398,7 +1461,7 @@ jobs:
       - name: Checkout exact frozen source
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
-          ref: ${{ inputs.source_sha }}
+          ref: ${{ inputs.source_sha || github.sha }}
           fetch-depth: 200
           persist-credentials: false
 
@@ -1459,6 +1522,8 @@ jobs:
           set -euo pipefail
           test -s "$BUNDLE_DIR/INTEL-STAGING-SHA256SUMS"
           test -s "$BUNDLE_DIR/$RAW_PACKAGE_NAME"
+          test -n "$CODEX_PACKAGE_NAME"
+          test -s "$BUNDLE_DIR/$CODEX_PACKAGE_NAME"
           test -s "$BUNDLE_DIR/intel-build-receipt.json"
           (cd "$BUNDLE_DIR" && shasum -a 256 -c INTEL-STAGING-SHA256SUMS)
           node --input-type=module <<'NODE'
@@ -1467,7 +1532,9 @@ jobs:
           import path from "node:path";
           const receipt = JSON.parse(fs.readFileSync(process.env.BUNDLE_DIR + "/intel-build-receipt.json", "utf8"));
           const rawPackage = path.join(process.env.BUNDLE_DIR, process.env.RAW_PACKAGE_NAME);
+          const codexPackage = path.join(process.env.BUNDLE_DIR, process.env.CODEX_PACKAGE_NAME);
           const rawNpmSha256 = crypto.createHash("sha256").update(fs.readFileSync(rawPackage)).digest("hex");
+          const codexPluginSha256 = crypto.createHash("sha256").update(fs.readFileSync(codexPackage)).digest("hex");
           const expected = {
             sourceSha: process.env.SOURCE_SHA,
             frozenOfficialSha: process.env.FROZEN_UPSTREAM_SHA,
@@ -1480,6 +1547,8 @@ jobs:
             runnerArch: "X64",
             rawNpmArchive: process.env.RAW_PACKAGE_NAME,
             rawNpmSha256,
+            codexPluginArchive: process.env.CODEX_PACKAGE_NAME,
+            codexPluginSha256,
           };
           for (const [key, value] of Object.entries(expected)) {
             if (receipt[key] !== value) {
@@ -1743,6 +1812,157 @@ jobs:
           }
           NODE
 
+      - name: Validate Codex plugin convergence in default and node-host state roots
+        run: |
+          set -euo pipefail
+          runtime_package="$RUNNER_TEMP/openclaw-runtime-final-check/package"
+          codex_package="$BUNDLE_DIR/$CODEX_PACKAGE_NAME"
+          convergence_root="$RUNNER_TEMP/openclaw-codex-convergence"
+          shared_npm_cache="$RUNNER_TEMP/openclaw-codex-npm-cache"
+          test -s "$runtime_package/openclaw.mjs"
+          test -s "$codex_package"
+          if [[ -e "$convergence_root" ]]; then
+            echo "::error::Codex convergence root unexpectedly already exists."
+            exit 1
+          fi
+          mkdir -p "$convergence_root/home" "$shared_npm_cache"
+
+          validate_state_root() {
+            local label="$1"
+            local state_dir="$2"
+            local doctor_receipt="$BUNDLE_DIR/codex-doctor-$label.json"
+            local convergence_receipt="$BUNDLE_DIR/codex-convergence-$label.json"
+            mkdir -p "$state_dir"
+            env -u NODE_PATH \
+              HOME="$convergence_root/home" \
+              OPENCLAW_STATE_DIR="$state_dir" \
+              NPM_CONFIG_CACHE="$shared_npm_cache" \
+              node "$runtime_package/openclaw.mjs" \
+                plugins install "npm-pack:$codex_package" --force
+            doctor_status=0
+            env -u NODE_PATH \
+              HOME="$convergence_root/home" \
+              OPENCLAW_STATE_DIR="$state_dir" \
+              node "$runtime_package/openclaw.mjs" doctor --lint \
+                --only core/doctor/configured-plugin-installs \
+                --only core/doctor/plugin-registry \
+                --json > "$doctor_receipt" || doctor_status=$?
+            cat "$doctor_receipt"
+            if (( doctor_status != 0 )); then
+              echo "::error::Codex $label state doctor lint failed with status $doctor_status."
+              exit "$doctor_status"
+            fi
+            codex_manifest="$(
+              find "$state_dir" -type f \
+                -path '*/node_modules/@openclaw/codex/package.json' \
+                -print -quit
+            )"
+            if [[ -z "$codex_manifest" ]]; then
+              echo "::error::Codex package was not installed in the $label state root."
+              exit 1
+            fi
+            VALIDATION_LABEL="$label" \
+            RUNTIME_ROOT="$runtime_package" \
+            CODEX_ARCHIVE="$codex_package" \
+            CODEX_MANIFEST="$codex_manifest" \
+            DOCTOR_RECEIPT="$doctor_receipt" \
+            CONVERGENCE_RECEIPT="$convergence_receipt" \
+              node --input-type=module <<'NODE'
+            import crypto from "node:crypto";
+            import fs from "node:fs";
+            import { createRequire } from "node:module";
+            import path from "node:path";
+
+            const digest = (file) =>
+              crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex");
+            const runtimeRoot = fs.realpathSync(process.env.RUNTIME_ROOT);
+            const codexManifestPath = fs.realpathSync(process.env.CODEX_MANIFEST);
+            const codexRoot = path.dirname(codexManifestPath);
+            const codexManifest = JSON.parse(fs.readFileSync(codexManifestPath, "utf8"));
+            const runtimeManifestPath = path.join(runtimeRoot, "package.json");
+            const runtimeManifest = JSON.parse(fs.readFileSync(runtimeManifestPath, "utf8"));
+            const buildInfoPath = path.join(runtimeRoot, "dist/build-info.json");
+            const buildInfo = JSON.parse(fs.readFileSync(buildInfoPath, "utf8"));
+            const doctor = JSON.parse(fs.readFileSync(process.env.DOCTOR_RECEIPT, "utf8"));
+            if (doctor.ok !== true || !Array.isArray(doctor.findings) || doctor.findings.length !== 0) {
+              throw new Error("Codex doctor receipt is not clean");
+            }
+            if (codexManifest.name !== "@openclaw/codex") throw new Error("installed Codex name mismatch");
+            if (codexManifest.version !== process.env.APP_VERSION) throw new Error("installed Codex version mismatch");
+            if (codexManifest.openclaw?.build?.openclawVersion !== process.env.APP_VERSION) {
+              throw new Error("installed Codex build host mismatch");
+            }
+            const peerTarget = fs.realpathSync(path.join(codexRoot, "node_modules/openclaw"));
+            if (peerTarget !== runtimeRoot) {
+              throw new Error("Codex peer target does not point at the packaged runtime");
+            }
+            const codexRequire = createRequire(codexManifestPath);
+            const sdkEntry = fs.realpathSync(codexRequire.resolve("openclaw/plugin-sdk/core"));
+            const sdkRelative = path.relative(runtimeRoot, sdkEntry);
+            if (sdkRelative.startsWith(".." + path.sep) || path.isAbsolute(sdkRelative)) {
+              throw new Error("Codex plugin SDK resolved outside the packaged runtime");
+            }
+            if (runtimeManifest.version !== process.env.APP_VERSION) throw new Error("peer host version mismatch");
+            if (buildInfo.commit !== process.env.SOURCE_SHA) throw new Error("peer host source mismatch");
+            const receipt = {
+              schemaVersion: 1,
+              stateRoot: process.env.VALIDATION_LABEL,
+              sourceSha: process.env.SOURCE_SHA,
+              codex: {
+                version: codexManifest.version,
+                archiveSha256: digest(process.env.CODEX_ARCHIVE),
+                packageJsonSha256: digest(codexManifestPath),
+              },
+              peerTarget: {
+                identity: "packaged-runtime",
+                version: runtimeManifest.version,
+                sourceSha: buildInfo.commit,
+                packageJsonSha256: digest(runtimeManifestPath),
+                buildInfoSha256: digest(buildInfoPath),
+                containedPluginSdk: true,
+              },
+              doctor: {
+                checksRun: doctor.checksRun,
+                findings: doctor.findings.length,
+                ok: doctor.ok,
+              },
+            };
+            fs.writeFileSync(
+              process.env.CONVERGENCE_RECEIPT,
+              JSON.stringify(receipt, null, 2) + "\n",
+            );
+            NODE
+          }
+
+          validate_state_root default "$convergence_root/home/.openclaw"
+          validate_state_root node-host "$convergence_root/home/.openclaw-cli-state"
+          node --input-type=module <<'NODE'
+          import fs from "node:fs";
+          import path from "node:path";
+          const lines = [
+            "# Codex plugin convergence",
+            "",
+            `This artifact carries @openclaw/codex ${process.env.APP_VERSION} from source ${process.env.SOURCE_SHA}.`,
+            "It has not been installed on a user machine.",
+            "",
+            "After the old Gateway is stopped and the matching App/Core runtime is installed, run the",
+            "following separately for the default CLI state and the isolated node-host state:",
+            "",
+            "```sh",
+            `OPENCLAW_STATE_DIR="<state-root>" node "<runtime>/openclaw.mjs" plugins install "npm-pack:<artifact>/${process.env.CODEX_PACKAGE_NAME}" --force`,
+            'OPENCLAW_STATE_DIR="<state-root>" node "<runtime>/openclaw.mjs" doctor --lint --only core/doctor/configured-plugin-installs --only core/doctor/plugin-registry --json',
+            "```",
+            "",
+            "Do not point both identities at one state root. The artifact validation receipts prove both",
+            "isolated roots resolve their plugin-local OpenClaw peer to the matching packaged runtime.",
+            "",
+          ];
+          fs.writeFileSync(
+            path.join(process.env.BUNDLE_DIR, "CODEX-PLUGIN-CONVERGENCE.md"),
+            lines.join("\n"),
+          );
+          NODE
+
       - name: Write final provenance and SHA256SUMS
         env:
           RUNTIME_NAME: ${{ steps.arm_runtime.outputs.runtime_name }}
@@ -1776,6 +1996,12 @@ jobs:
           const finalDir = process.env.FINAL_DIR;
           const digest = (file) => crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex");
           const intelReceipt = JSON.parse(fs.readFileSync(path.join(finalDir, "intel-build-receipt.json"), "utf8"));
+          const defaultCodex = JSON.parse(
+            fs.readFileSync(path.join(finalDir, "codex-convergence-default.json"), "utf8"),
+          );
+          const nodeHostCodex = JSON.parse(
+            fs.readFileSync(path.join(finalDir, "codex-convergence-node-host.json"), "utf8"),
+          );
           const artifactFiles = fs
             .readdirSync(finalDir)
             .filter((name) => fs.statSync(path.join(finalDir, name)).isFile())
@@ -1784,8 +2010,28 @@ jobs:
             const file = path.join(finalDir, name);
             return [name, { bytes: fs.statSync(file).size, sha256: digest(file) }];
           }));
+          for (const requiredFile of [process.env.RUNTIME_NAME, process.env.CODEX_PACKAGE_NAME]) {
+            if (!files[requiredFile]?.sha256) {
+              throw new Error(`required component is absent from final artifact: ${requiredFile}`);
+            }
+          }
+          if (
+            defaultCodex.codex.version !== process.env.APP_VERSION ||
+            nodeHostCodex.codex.version !== process.env.APP_VERSION ||
+            defaultCodex.codex.archiveSha256 !== nodeHostCodex.codex.archiveSha256
+          ) {
+            throw new Error("default and node-host Codex convergence receipts disagree");
+          }
+          if (
+            defaultCodex.peerTarget.version !== process.env.APP_VERSION ||
+            nodeHostCodex.peerTarget.version !== process.env.APP_VERSION ||
+            defaultCodex.peerTarget.sourceSha !== process.env.SOURCE_SHA ||
+            nodeHostCodex.peerTarget.sourceSha !== process.env.SOURCE_SHA
+          ) {
+            throw new Error("Codex peer targets do not match the frozen Core");
+          }
           const provenance = {
-            schemaVersion: 2,
+            schemaVersion: 3,
             product: "OpenClaw",
             version: process.env.APP_VERSION,
             appBuild: process.env.APP_BUILD,
@@ -1832,6 +2078,40 @@ jobs:
               sqliteVecLoaded: true,
               controlUiParityValidated: true,
             },
+            components: {
+              app: {
+                version: process.env.APP_VERSION,
+                sourceSha: process.env.SOURCE_SHA,
+                executableSha256: intelReceipt.appExecutableSha256,
+                zip: `OpenClaw-${process.env.APP_VERSION}.zip`,
+                dmg: `OpenClaw-${process.env.APP_VERSION}.dmg`,
+              },
+              core: {
+                version: process.env.APP_VERSION,
+                sourceSha: process.env.SOURCE_SHA,
+                archive: process.env.RUNTIME_NAME,
+                archiveSha256: files[process.env.RUNTIME_NAME]?.sha256,
+              },
+              codexPlugin: {
+                version: defaultCodex.codex.version,
+                sourceSha: process.env.SOURCE_SHA,
+                archive: process.env.CODEX_PACKAGE_NAME,
+                archiveSha256: files[process.env.CODEX_PACKAGE_NAME]?.sha256,
+              },
+              peerTargets: {
+                default: defaultCodex.peerTarget,
+                nodeHost: nodeHostCodex.peerTarget,
+              },
+            },
+            pluginConvergence: {
+              stateRoots: ["default", "node-host"],
+              isolatedStatePreserved: true,
+              doctorChecks: [
+                "core/doctor/configured-plugin-installs",
+                "core/doctor/plugin-registry",
+              ],
+              clean: defaultCodex.doctor.ok === true && nodeHostCodex.doctor.ok === true,
+            },
             files,
           };
           fs.writeFileSync(path.join(finalDir, "provenance.json"), JSON.stringify(provenance, null, 2) + "\n");
@@ -1853,6 +2133,10 @@ jobs:
           test -s "$FINAL_DIR/OpenClaw-$APP_VERSION.zip"
           test -s "$FINAL_DIR/OpenClaw-$APP_VERSION.dmg"
           test -s "$FINAL_DIR/$RUNTIME_NAME"
+          test -s "$FINAL_DIR/$CODEX_PACKAGE_NAME"
+          test -s "$FINAL_DIR/codex-convergence-default.json"
+          test -s "$FINAL_DIR/codex-convergence-node-host.json"
+          test -s "$FINAL_DIR/CODEX-PLUGIN-CONVERGENCE.md"
           test -s "$FINAL_DIR/provenance.json"
           test -s "$FINAL_DIR/SHA256SUMS"
           {
@@ -1864,8 +2148,9 @@ jobs:
             echo "- Source: $SOURCE_SHA"
             echo "- App: universal arm64 + x86_64"
             echo "- Runtime: installed and validated darwin-arm64 dependency closure"
+            echo "- Codex: matching plugin archive validated in isolated default and node-host states"
             echo "- Signing: ad-hoc; not notarized"
-            echo "- Includes App ZIP, DMG, runnable runtime TGZ, provenance and validation receipts"
+            echo "- Includes App ZIP, DMG, runnable runtime TGZ, Codex plugin TGZ, provenance and validation receipts"
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload complete macOS package
