@@ -868,7 +868,6 @@ describe("gateway server chat", () => {
     }
   });
 
-
   test("chat.history returns the full primary response when no prepared catalog exists", async () => {
     openDirectChatSession();
     try {

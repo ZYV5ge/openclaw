@@ -709,7 +709,7 @@ jobs:
           esac
 
   macos_ui_validation:
-    if: ${{ inputs.suite == 'personal-mac-ui' || (github.event_name == 'push' && (contains(github.event.head_commit.message, '[mac]') || contains(github.event.head_commit.message, '[green]'))) }}
+    if: ${{ inputs.suite == 'personal-mac-ui' || (github.event_name == 'push' && contains(github.event.head_commit.message, '[mac]')) }}
     name: ${{ inputs.suite || 'personal-preflight' }} (${{ inputs.phase || (contains(github.event.head_commit.message, '[green]') && 'green' || 'red') }})
     runs-on: macos-26-intel
     timeout-minutes: 90
