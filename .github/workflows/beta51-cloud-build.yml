@@ -47,10 +47,10 @@ on:
 permissions:
   contents: read
 
-run-name: OpenClaw 2026.8.1-beta.1 ${{ inputs.suite || (contains(github.event.head_commit.message, '[package]') && 'personal-macos-package' || 'personal-preflight') }} ${{ inputs.phase || ((contains(github.event.head_commit.message, '[green]') || contains(github.event.head_commit.message, '[package]')) && 'green' || 'red') }} ${{ inputs.source_sha || github.sha }}
+run-name: OpenClaw 2026.8.1-beta.1 ${{ inputs.suite || (contains(github.event.head_commit.message, '[assemble]') && 'personal-macos-assemble' || contains(github.event.head_commit.message, '[package]') && 'personal-macos-package' || 'personal-preflight') }} ${{ inputs.phase || ((contains(github.event.head_commit.message, '[green]') || contains(github.event.head_commit.message, '[package]') || contains(github.event.head_commit.message, '[assemble]')) && 'green' || 'red') }} ${{ inputs.source_sha || github.sha }}
 
 concurrency:
-  group: personal-2026-8-1-beta-1-${{ inputs.source_sha || github.sha }}-${{ inputs.suite || (contains(github.event.head_commit.message, '[package]') && 'personal-macos-package' || 'personal-preflight') }}-${{ inputs.phase || ((contains(github.event.head_commit.message, '[green]') || contains(github.event.head_commit.message, '[package]')) && 'green' || 'red') }}
+  group: personal-2026-8-1-beta-1-${{ inputs.source_sha || github.sha }}-${{ inputs.suite || (contains(github.event.head_commit.message, '[assemble]') && 'personal-macos-assemble' || contains(github.event.head_commit.message, '[package]') && 'personal-macos-package' || 'personal-preflight') }}-${{ inputs.phase || ((contains(github.event.head_commit.message, '[green]') || contains(github.event.head_commit.message, '[package]') || contains(github.event.head_commit.message, '[assemble]')) && 'green' || 'red') }}
   cancel-in-progress: false
 
 env:
@@ -65,7 +65,7 @@ env:
 
 jobs:
   focused_validation:
-    if: ${{ (github.event_name == 'push' && !contains(github.event.head_commit.message, '[package]')) || (github.event_name == 'workflow_dispatch' && inputs.suite != 'personal-mac-ui' && inputs.suite != 'personal-macos-package') }}
+    if: ${{ (github.event_name == 'push' && !contains(github.event.head_commit.message, '[package]') && !contains(github.event.head_commit.message, '[assemble]')) || (github.event_name == 'workflow_dispatch' && inputs.suite != 'personal-mac-ui' && inputs.suite != 'personal-macos-package') }}
     name: ${{ inputs.suite || 'personal-preflight' }} (${{ inputs.phase || (contains(github.event.head_commit.message, '[green]') && 'green' || 'red') }})
     runs-on: ubuntu-24.04
     timeout-minutes: 45
@@ -864,7 +864,7 @@ jobs:
       - name: Checkout exact frozen source
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
-          ref: ${{ inputs.source_sha || github.sha }}
+          ref: ${{ env.SOURCE_SHA }}
           fetch-depth: 200
           persist-credentials: false
 
@@ -1397,7 +1397,7 @@ jobs:
           key: ${{ steps.release_meta.outputs.staging_cache_key }}
 
   macos_runtime_arm64:
-    if: ${{ (inputs.suite == 'personal-macos-package' && inputs.phase == 'green') || (github.event_name == 'push' && contains(github.event.head_commit.message, '[package]')) }}
+    if: ${{ always() && ((inputs.suite == 'personal-macos-package' && inputs.phase == 'green') || (github.event_name == 'push' && (contains(github.event.head_commit.message, '[package]') || contains(github.event.head_commit.message, '[assemble]')))) }}
     needs: macos_package
     permissions:
       contents: read
@@ -1405,16 +1405,16 @@ jobs:
     runs-on: macos-26
     timeout-minutes: 180
     env:
-      SOURCE_SHA: ${{ inputs.source_sha || github.sha }}
-      GIT_COMMIT: ${{ inputs.source_sha || github.sha }}
+      SOURCE_SHA: ${{ contains(github.event.head_commit.message, '[assemble]') && '92c1f1a1bc8e02be1e7251882cfdac9eeaf719db' || (inputs.source_sha || github.sha) }}
+      GIT_COMMIT: ${{ contains(github.event.head_commit.message, '[assemble]') && '92c1f1a1bc8e02be1e7251882cfdac9eeaf719db' || (inputs.source_sha || github.sha) }}
       APP_VERSION: "2026.8.1-beta.1"
       APP_BUILD: "2608000101"
       BUNDLE_ID: "ai.openclaw.mac"
-      OPENCLAW_BUILD_TIMESTAMP: ${{ needs.macos_package.outputs.build_timestamp }}
-      RAW_PACKAGE_NAME: ${{ needs.macos_package.outputs.raw_package_name }}
-      CODEX_PACKAGE_NAME: ${{ needs.macos_package.outputs.codex_package_name }}
-      FINAL_ARTIFACT_NAME: ${{ needs.macos_package.outputs.artifact_name }}
-      STAGING_CACHE_KEY: ${{ needs.macos_package.outputs.staging_cache_key }}
+      OPENCLAW_BUILD_TIMESTAMP: ${{ contains(github.event.head_commit.message, '[assemble]') && '2026-08-10T15:57:52.000Z' || needs.macos_package.outputs.build_timestamp }}
+      RAW_PACKAGE_NAME: ${{ contains(github.event.head_commit.message, '[assemble]') && 'openclaw-2026.8.1-beta.1-source-npm-92c1f1a1bc8e.tgz' || needs.macos_package.outputs.raw_package_name }}
+      CODEX_PACKAGE_NAME: ${{ contains(github.event.head_commit.message, '[assemble]') && 'openclaw-codex-2026.8.1-beta.1.tgz' || needs.macos_package.outputs.codex_package_name }}
+      FINAL_ARTIFACT_NAME: ${{ contains(github.event.head_commit.message, '[assemble]') && 'OpenClaw-2026.8.1-beta.1-macos-universal-92c1f1a1bc8e' || needs.macos_package.outputs.artifact_name }}
+      STAGING_CACHE_KEY: ${{ contains(github.event.head_commit.message, '[assemble]') && 'openclaw-macos-intel-stage-31407683407-1-92c1f1a1bc8e02be1e7251882cfdac9eeaf719db' || needs.macos_package.outputs.staging_cache_key }}
       BUNDLE_DIR: ${{ github.workspace }}/.artifacts/personal-release/upload
       FINAL_DIR: ${{ github.workspace }}/.artifacts/personal-release/final-upload
       NODE_OPTIONS: "--max-old-space-size=4096"
@@ -1426,7 +1426,8 @@ jobs:
           CURRENT_REPOSITORY: ${{ github.repository }}
           REPOSITORY_IS_PRIVATE: ${{ github.event.repository.private }}
           CURRENT_REF: ${{ github.ref }}
-          TDD_PHASE: ${{ inputs.phase || (contains(github.event.head_commit.message, '[package]') && 'green' || 'red') }}
+          ASSEMBLY_RECOVERY: ${{ github.event_name == 'push' && contains(github.event.head_commit.message, '[assemble]') }}
+          TDD_PHASE: ${{ inputs.phase || ((contains(github.event.head_commit.message, '[package]') || contains(github.event.head_commit.message, '[assemble]')) && 'green' || 'red') }}
         run: |
           set -euo pipefail
           if [[ "$CURRENT_REPOSITORY" != "$PERSONAL_RELEASE_REPOSITORY" ]]; then
@@ -1449,7 +1450,16 @@ jobs:
             echo "::error::source_sha must be a full lowercase Git SHA."
             exit 1
           fi
-          if [[ "$EVENT_SHA" != "$SOURCE_SHA" ]]; then
+          if [[ "$ASSEMBLY_RECOVERY" == "true" ]]; then
+            if [[ "$SOURCE_SHA" != "92c1f1a1bc8e02be1e7251882cfdac9eeaf719db" ]]; then
+              echo "::error::Assembly recovery must reuse the frozen #166 source."
+              exit 1
+            fi
+            if [[ "$STAGING_CACHE_KEY" != "openclaw-macos-intel-stage-31407683407-1-92c1f1a1bc8e02be1e7251882cfdac9eeaf719db" ]]; then
+              echo "::error::Assembly recovery must reuse the immutable #166 Intel staging cache."
+              exit 1
+            fi
+          elif [[ "$EVENT_SHA" != "$SOURCE_SHA" ]]; then
             echo "::error::The dispatched ref resolved to $EVENT_SHA, expected $SOURCE_SHA."
             exit 1
           fi
@@ -1461,7 +1471,7 @@ jobs:
       - name: Checkout exact frozen source
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
-          ref: ${{ inputs.source_sha || github.sha }}
+          ref: ${{ env.SOURCE_SHA }}
           fetch-depth: 200
           persist-credentials: false
 
@@ -1868,70 +1878,70 @@ jobs:
             DOCTOR_RECEIPT="$doctor_receipt" \
             CONVERGENCE_RECEIPT="$convergence_receipt" \
               node --input-type=module <<'NODE'
-            import crypto from "node:crypto";
-            import fs from "node:fs";
-            import { createRequire } from "node:module";
-            import path from "node:path";
+          import crypto from "node:crypto";
+          import fs from "node:fs";
+          import { createRequire } from "node:module";
+          import path from "node:path";
 
-            const digest = (file) =>
-              crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex");
-            const runtimeRoot = fs.realpathSync(process.env.RUNTIME_ROOT);
-            const codexManifestPath = fs.realpathSync(process.env.CODEX_MANIFEST);
-            const codexRoot = path.dirname(codexManifestPath);
-            const codexManifest = JSON.parse(fs.readFileSync(codexManifestPath, "utf8"));
-            const runtimeManifestPath = path.join(runtimeRoot, "package.json");
-            const runtimeManifest = JSON.parse(fs.readFileSync(runtimeManifestPath, "utf8"));
-            const buildInfoPath = path.join(runtimeRoot, "dist/build-info.json");
-            const buildInfo = JSON.parse(fs.readFileSync(buildInfoPath, "utf8"));
-            const doctor = JSON.parse(fs.readFileSync(process.env.DOCTOR_RECEIPT, "utf8"));
-            if (doctor.ok !== true || !Array.isArray(doctor.findings) || doctor.findings.length !== 0) {
-              throw new Error("Codex doctor receipt is not clean");
-            }
-            if (codexManifest.name !== "@openclaw/codex") throw new Error("installed Codex name mismatch");
-            if (codexManifest.version !== process.env.APP_VERSION) throw new Error("installed Codex version mismatch");
-            if (codexManifest.openclaw?.build?.openclawVersion !== process.env.APP_VERSION) {
-              throw new Error("installed Codex build host mismatch");
-            }
-            const peerTarget = fs.realpathSync(path.join(codexRoot, "node_modules/openclaw"));
-            if (peerTarget !== runtimeRoot) {
-              throw new Error("Codex peer target does not point at the packaged runtime");
-            }
-            const codexRequire = createRequire(codexManifestPath);
-            const sdkEntry = fs.realpathSync(codexRequire.resolve("openclaw/plugin-sdk/core"));
-            const sdkRelative = path.relative(runtimeRoot, sdkEntry);
-            if (sdkRelative.startsWith(".." + path.sep) || path.isAbsolute(sdkRelative)) {
-              throw new Error("Codex plugin SDK resolved outside the packaged runtime");
-            }
-            if (runtimeManifest.version !== process.env.APP_VERSION) throw new Error("peer host version mismatch");
-            if (buildInfo.commit !== process.env.SOURCE_SHA) throw new Error("peer host source mismatch");
-            const receipt = {
-              schemaVersion: 1,
-              stateRoot: process.env.VALIDATION_LABEL,
-              sourceSha: process.env.SOURCE_SHA,
-              codex: {
-                version: codexManifest.version,
-                archiveSha256: digest(process.env.CODEX_ARCHIVE),
-                packageJsonSha256: digest(codexManifestPath),
-              },
-              peerTarget: {
-                identity: "packaged-runtime",
-                version: runtimeManifest.version,
-                sourceSha: buildInfo.commit,
-                packageJsonSha256: digest(runtimeManifestPath),
-                buildInfoSha256: digest(buildInfoPath),
-                containedPluginSdk: true,
-              },
-              doctor: {
-                checksRun: doctor.checksRun,
-                findings: doctor.findings.length,
-                ok: doctor.ok,
-              },
-            };
-            fs.writeFileSync(
-              process.env.CONVERGENCE_RECEIPT,
-              JSON.stringify(receipt, null, 2) + "\n",
-            );
-            NODE
+          const digest = (file) =>
+            crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex");
+          const runtimeRoot = fs.realpathSync(process.env.RUNTIME_ROOT);
+          const codexManifestPath = fs.realpathSync(process.env.CODEX_MANIFEST);
+          const codexRoot = path.dirname(codexManifestPath);
+          const codexManifest = JSON.parse(fs.readFileSync(codexManifestPath, "utf8"));
+          const runtimeManifestPath = path.join(runtimeRoot, "package.json");
+          const runtimeManifest = JSON.parse(fs.readFileSync(runtimeManifestPath, "utf8"));
+          const buildInfoPath = path.join(runtimeRoot, "dist/build-info.json");
+          const buildInfo = JSON.parse(fs.readFileSync(buildInfoPath, "utf8"));
+          const doctor = JSON.parse(fs.readFileSync(process.env.DOCTOR_RECEIPT, "utf8"));
+          if (doctor.ok !== true || !Array.isArray(doctor.findings) || doctor.findings.length !== 0) {
+            throw new Error("Codex doctor receipt is not clean");
+          }
+          if (codexManifest.name !== "@openclaw/codex") throw new Error("installed Codex name mismatch");
+          if (codexManifest.version !== process.env.APP_VERSION) throw new Error("installed Codex version mismatch");
+          if (codexManifest.openclaw?.build?.openclawVersion !== process.env.APP_VERSION) {
+            throw new Error("installed Codex build host mismatch");
+          }
+          const peerTarget = fs.realpathSync(path.join(codexRoot, "node_modules/openclaw"));
+          if (peerTarget !== runtimeRoot) {
+            throw new Error("Codex peer target does not point at the packaged runtime");
+          }
+          const codexRequire = createRequire(codexManifestPath);
+          const sdkEntry = fs.realpathSync(codexRequire.resolve("openclaw/plugin-sdk/core"));
+          const sdkRelative = path.relative(runtimeRoot, sdkEntry);
+          if (sdkRelative.startsWith(".." + path.sep) || path.isAbsolute(sdkRelative)) {
+            throw new Error("Codex plugin SDK resolved outside the packaged runtime");
+          }
+          if (runtimeManifest.version !== process.env.APP_VERSION) throw new Error("peer host version mismatch");
+          if (buildInfo.commit !== process.env.SOURCE_SHA) throw new Error("peer host source mismatch");
+          const receipt = {
+            schemaVersion: 1,
+            stateRoot: process.env.VALIDATION_LABEL,
+            sourceSha: process.env.SOURCE_SHA,
+            codex: {
+              version: codexManifest.version,
+              archiveSha256: digest(process.env.CODEX_ARCHIVE),
+              packageJsonSha256: digest(codexManifestPath),
+            },
+            peerTarget: {
+              identity: "packaged-runtime",
+              version: runtimeManifest.version,
+              sourceSha: buildInfo.commit,
+              packageJsonSha256: digest(runtimeManifestPath),
+              buildInfoSha256: digest(buildInfoPath),
+              containedPluginSdk: true,
+            },
+            doctor: {
+              checksRun: doctor.checksRun,
+              findings: doctor.findings.length,
+              ok: doctor.ok,
+            },
+          };
+          fs.writeFileSync(
+            process.env.CONVERGENCE_RECEIPT,
+            JSON.stringify(receipt, null, 2) + "\n",
+          );
+          NODE
           }
 
           validate_state_root default "$convergence_root/home/.openclaw"
@@ -2157,7 +2167,7 @@ jobs:
         id: upload_final
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: ${{ needs.macos_package.outputs.artifact_name }}
+          name: ${{ env.FINAL_ARTIFACT_NAME }}
           path: ${{ env.FINAL_DIR }}
           if-no-files-found: error
           compression-level: 0
