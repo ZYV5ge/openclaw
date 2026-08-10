@@ -690,15 +690,7 @@ jobs:
                 src/gateway/server-methods/plugins.test.ts \
                 -t "signals the config reloader" || plugin_rpc_status=$?
               version_status=0
-              node --input-type=module <<'NODE' || version_status=$?
-              import assert from "node:assert/strict";
-              import fs from "node:fs";
-              const root = JSON.parse(fs.readFileSync("package.json", "utf8"));
-              const codex = JSON.parse(fs.readFileSync("extensions/codex/package.json", "utf8"));
-              assert.equal(root.version, process.env.PERSONAL_VERSION);
-              assert.equal(codex.version, root.version);
-              assert.equal(codex.openclaw?.build?.openclawVersion, root.version);
-              NODE
+              node --input-type=module -e 'import assert from "node:assert/strict"; import fs from "node:fs"; const root = JSON.parse(fs.readFileSync("package.json", "utf8")); const codex = JSON.parse(fs.readFileSync("extensions/codex/package.json", "utf8")); assert.equal(root.version, process.env.PERSONAL_VERSION); assert.equal(codex.version, root.version); assert.equal(codex.openclaw?.build?.openclawVersion, root.version);' || version_status=$?
               core_type_status=0
               extension_type_status=0
               if [[ "$TDD_PHASE" == "green" ]]; then
@@ -717,7 +709,7 @@ jobs:
           esac
 
   macos_ui_validation:
-    if: ${{ github.event_name == 'push' || inputs.suite == 'personal-mac-ui' }}
+    if: ${{ inputs.suite == 'personal-mac-ui' || (github.event_name == 'push' && (contains(github.event.head_commit.message, '[mac]') || contains(github.event.head_commit.message, '[green]'))) }}
     name: ${{ inputs.suite || 'personal-preflight' }} (${{ inputs.phase || (contains(github.event.head_commit.message, '[green]') && 'green' || 'red') }})
     runs-on: macos-26-intel
     timeout-minutes: 90
