@@ -689,6 +689,15 @@ jobs:
                 --config test/vitest/vitest.gateway-methods.config.ts \
                 src/gateway/server-methods/plugins.test.ts \
                 -t "signals the config reloader" || plugin_rpc_status=$?
+              restart_claim_status=0
+              OPENCLAW_VITEST_MAX_WORKERS=1 node scripts/run-vitest.mjs run \
+                --config test/vitest/vitest.auto-reply-reply.config.ts \
+                src/auto-reply/reply/restart-recovery-claim.test.ts \
+                src/auto-reply/reply/agent-runner-execution-terminal-failures.test.ts || restart_claim_status=$?
+              memory_partial_status=0
+              OPENCLAW_VITEST_MAX_WORKERS=1 node scripts/run-vitest.mjs run \
+                --config test/vitest/vitest.extension-memory.config.ts \
+                memory-core/src/tools.citations.test.ts || memory_partial_status=$?
               version_status=0
               node --input-type=module -e 'import assert from "node:assert/strict"; import fs from "node:fs"; const root = JSON.parse(fs.readFileSync("package.json", "utf8")); const codex = JSON.parse(fs.readFileSync("extensions/codex/package.json", "utf8")); assert.equal(root.version, process.env.PERSONAL_VERSION); assert.equal(codex.version, root.version); assert.equal(codex.openclaw?.build?.openclawVersion, root.version);' || version_status=$?
               core_type_status=0
@@ -697,8 +706,8 @@ jobs:
                 pnpm tsgo:core || core_type_status=$?
                 pnpm tsgo:extensions || extension_type_status=$?
               fi
-              if (( gateway_status != 0 || startup_status != 0 || session_status != 0 || refresh_status != 0 || plugin_rpc_status != 0 || version_status != 0 || core_type_status != 0 || extension_type_status != 0 )); then
-                echo "::error::preflight status gateway=$gateway_status startup=$startup_status sessions=$session_status refresh=$refresh_status plugin-rpc=$plugin_rpc_status version=$version_status core-types=$core_type_status extension-types=$extension_type_status"
+              if (( gateway_status != 0 || startup_status != 0 || session_status != 0 || refresh_status != 0 || plugin_rpc_status != 0 || restart_claim_status != 0 || memory_partial_status != 0 || version_status != 0 || core_type_status != 0 || extension_type_status != 0 )); then
+                echo "::error::preflight status gateway=$gateway_status startup=$startup_status sessions=$session_status refresh=$refresh_status plugin-rpc=$plugin_rpc_status restart-claim=$restart_claim_status memory-partial=$memory_partial_status version=$version_status core-types=$core_type_status extension-types=$extension_type_status"
                 exit 1
               fi
               ;;

@@ -340,6 +340,111 @@ describe("createReplyRestartRecoveryClaimController", () => {
     });
   });
 
+  it("confirms a cross-process restart claim after SQLite lease loss", async () => {
+    const root = tempDirs.make("openclaw-reply-restart-handoff-");
+    const storePath = path.join(root, "sessions.json");
+    const sessionKey = "agent:main:main";
+    const sessionId = "session";
+    let memoryEntry: SessionEntry = {
+      abortedLastRun: false,
+      restartRecoveryDeliveryRunId: "old-run",
+      restartRecoveryDeliverySourceRunId: "source-run",
+      sessionId,
+      status: "running",
+      updatedAt: Date.now(),
+    };
+    await replaceSessionEntry({ storePath, sessionKey }, memoryEntry);
+    const controller = createReplyRestartRecoveryClaimController({
+      admissionRunId: "old-run",
+      getEntry: () => memoryEntry,
+      getSessionId: () => sessionId,
+      isRestartAbort: () => false,
+      resolveDeliveryContext: () => undefined,
+      sessionKey,
+      setEntry: (entry) => {
+        memoryEntry = entry;
+      },
+      storePath,
+    });
+    await expect(controller.admitUserTurn()).resolves.toBe("admitted");
+    expect(memoryEntry.abortedLastRun).toBe(false);
+
+    await updateSessionEntry({ storePath, sessionKey }, () => ({
+      abortedLastRun: true,
+      status: "killed",
+      updatedAt: Date.now() + 1,
+    }));
+
+    await expect(controller.confirmRestartRecoveryArmedAfterLeaseLoss()).resolves.toBe(true);
+    expect(memoryEntry).toMatchObject({
+      abortedLastRun: true,
+      restartRecoveryDeliveryRunId: "old-run",
+      restartRecoveryDeliverySourceRunId: "source-run",
+      status: "killed",
+    });
+
+    await controller.clear();
+    expect(loadSessionEntry({ storePath, sessionKey, readConsistency: "latest" })).toMatchObject({
+      abortedLastRun: true,
+      restartRecoveryDeliveryRunId: "old-run",
+      restartRecoveryDeliverySourceRunId: "source-run",
+      status: "killed",
+    });
+  });
+
+  it("confirms a completed replacement handoff by its terminal source marker", async () => {
+    const root = tempDirs.make("openclaw-reply-completed-handoff-");
+    const storePath = path.join(root, "sessions.json");
+    const sessionKey = "agent:main:main";
+    const sessionId = "session";
+    let memoryEntry: SessionEntry = {
+      abortedLastRun: false,
+      restartRecoveryDeliveryRunId: "old-run",
+      restartRecoveryDeliverySourceRunId: "source-run",
+      sessionId,
+      status: "running",
+      updatedAt: Date.now(),
+    };
+    await replaceSessionEntry({ storePath, sessionKey }, memoryEntry);
+    const controller = createReplyRestartRecoveryClaimController({
+      admissionRunId: "old-run",
+      getEntry: () => memoryEntry,
+      getSessionId: () => sessionId,
+      isRestartAbort: () => false,
+      resolveDeliveryContext: () => undefined,
+      sessionKey,
+      setEntry: (entry) => {
+        memoryEntry = entry;
+      },
+      storePath,
+    });
+    await expect(controller.admitUserTurn()).resolves.toBe("admitted");
+
+    await updateSessionEntry({ storePath, sessionKey }, () => ({
+      abortedLastRun: false,
+      restartRecoveryDeliveryRunId: undefined,
+      restartRecoveryDeliverySourceRunId: undefined,
+      restartRecoveryTerminalRunIds: ["source-run"],
+      status: "done",
+      updatedAt: Date.now() + 1,
+    }));
+
+    await expect(controller.confirmRestartRecoveryArmedAfterLeaseLoss()).resolves.toBe(true);
+    expect(memoryEntry).toMatchObject({
+      abortedLastRun: false,
+      restartRecoveryTerminalRunIds: ["source-run"],
+      status: "done",
+    });
+    expect(memoryEntry.restartRecoveryDeliveryRunId).toBeUndefined();
+    expect(memoryEntry.restartRecoveryDeliverySourceRunId).toBeUndefined();
+
+    await controller.clear();
+    expect(
+      loadSessionEntry({ storePath, sessionKey, readConsistency: "latest" })
+        ?.restartRecoveryTerminalRunIds,
+    ).toEqual(["source-run"]);
+  });
+
   it("rejects durable admission when the captured recovery owner releases", async () => {
     const root = tempDirs.make("openclaw-reply-admission-owner-release-");
     const storePath = path.join(root, "sessions.json");

@@ -1,4 +1,4 @@
-import { withCurrentProjectionSnapshot } from "./session-accessor.sqlite-active-events.js";
+import { withCurrentProjectionSnapshot } from "./session-accessor.sqlite-active-projection.js";
 import type { SessionTranscriptReadScope } from "./session-accessor.sqlite-contract.js";
 import { isSessionTranscriptEventOnActivePath } from "./session-transcript-index.js";
 

@@ -97,10 +97,7 @@ export {
 } from "./openclaw-state-db-maintenance.js";
 export { ensureOpenClawStatePermissions } from "./openclaw-state-db-permissions.js";
 export { detectOpenClawStateDatabaseSchemaMigrations } from "./openclaw-state-db-schema-repair.js";
-export {
-  withOpenClawStateStartupMigrationCheckpointDatabase,
-  type OpenClawStateStartupMigrationCheckpointDatabasePurpose,
-} from "./openclaw-state-db-startup-checkpoint.js";
+export { withOpenClawStateStartupMigrationCheckpointDatabase } from "./openclaw-state-db-startup-checkpoint.js";
 
 /**
  * Shared OpenClaw SQLite state database lifecycle and metadata writers.
