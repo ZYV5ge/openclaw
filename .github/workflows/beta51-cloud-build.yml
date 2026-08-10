@@ -144,7 +144,7 @@ jobs:
           TDD_PHASE: ${{ inputs.phase || (contains(github.event.head_commit.message, '[green]') && 'green' || 'red') }}
         run: |
           set -euo pipefail
-          node scripts/check-workflows.mjs
+          pnpm check:workflows
           if [[ "$TDD_PHASE" == "red" ]]; then
             node_modules/.bin/oxfmt \
               extensions/memory-core/src/tools.shared.ts \
@@ -998,7 +998,7 @@ jobs:
       - name: Check workflow and available disk
         run: |
           set -euo pipefail
-          node scripts/check-workflows.mjs
+          pnpm check:workflows
           df -h .
           du -sh node_modules 2>/dev/null || true
 
