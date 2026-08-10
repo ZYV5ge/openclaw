@@ -172,7 +172,7 @@ export async function prepareGatewayPluginBootstrap(params: {
   const pluginRegistry = params.minimalTestGateway
     ? (getActivePluginRegistry() ?? emptyPluginRegistry)
     : emptyPluginRegistry;
-  setActivePluginRegistry(pluginRegistry);
+  setActivePluginRegistry(pluginRegistry, undefined, "default", defaultWorkspaceDir);
 
   return {
     gatewayPluginConfigAtStart: gatewayPluginConfig,

@@ -30,6 +30,7 @@ import type { ExecApprovalManager, ExecApprovalRecord } from "../exec-approval-m
 import type { HealthSummary } from "../health/types.js";
 import type { GatewayMethodRegistryView } from "../methods/descriptor.js";
 import type { NodeRegistry } from "../node-registry.js";
+import type { GatewayPluginMetadataRefresh } from "../plugin-metadata-refresh.js";
 import type { PluginNodeCapabilitySurface } from "../plugin-node-capability.js";
 import type { GatewayBroadcastFn, GatewayBroadcastToConnIdsFn } from "../server-broadcast-types.js";
 import type {
@@ -188,7 +189,7 @@ export type GatewayRequestContext = {
   >;
   sessionCompanion?: import("../session-companion.js").SessionCompanionService;
   sessionObserver?: SessionObserverService;
-  notifyPluginMetadataChanged: () => void;
+  notifyPluginMetadataChanged: GatewayPluginMetadataRefresh;
   getMcpAppSandboxPort?: () => number | undefined;
   ensureSandboxHostPort?: () => Promise<number>;
   resolveTerminalLaunchPolicy: (agentId?: string) => TerminalLaunchResolution;

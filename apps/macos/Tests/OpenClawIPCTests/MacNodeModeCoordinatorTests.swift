@@ -138,6 +138,8 @@ struct MacNodeModeCoordinatorTests {
         let savedPaused = defaults.object(forKey: pauseDefaultsKey)
         let savedComputerControl = defaults.object(forKey: computerControlEnabledKey)
         let savedCamera = defaults.object(forKey: cameraEnabledKey)
+        let savedValidatedExecutable = defaults.object(forKey: cliValidatedExecutableKey)
+        let savedValidatedVersion = defaults.object(forKey: cliValidatedVersionKey)
         defer {
             if let savedPaused { defaults.set(savedPaused, forKey: pauseDefaultsKey) }
             else { defaults.removeObject(forKey: pauseDefaultsKey) }
@@ -145,10 +147,22 @@ struct MacNodeModeCoordinatorTests {
             else { defaults.removeObject(forKey: computerControlEnabledKey) }
             if let savedCamera { defaults.set(savedCamera, forKey: cameraEnabledKey) }
             else { defaults.removeObject(forKey: cameraEnabledKey) }
+            if let savedValidatedExecutable {
+                defaults.set(savedValidatedExecutable, forKey: cliValidatedExecutableKey)
+            } else {
+                defaults.removeObject(forKey: cliValidatedExecutableKey)
+            }
+            if let savedValidatedVersion {
+                defaults.set(savedValidatedVersion, forKey: cliValidatedVersionKey)
+            } else {
+                defaults.removeObject(forKey: cliValidatedVersionKey)
+            }
         }
         defaults.set(false, forKey: pauseDefaultsKey)
         defaults.set(true, forKey: computerControlEnabledKey)
         defaults.set(false, forKey: cameraEnabledKey)
+        defaults.set("/opt/homebrew/bin/openclaw", forKey: cliValidatedExecutableKey)
+        defaults.set("2026.7.2-beta.7.1", forKey: cliValidatedVersionKey)
 
         let notificationCenter = NotificationCenter()
         let coordinator = MacNodeModeCoordinator(
@@ -175,6 +189,24 @@ struct MacNodeModeCoordinatorTests {
         try await Task.sleep(for: .milliseconds(20))
         let afterRelevantChange = coordinator.generationsForTesting()
         #expect(afterRelevantChange.endpointAttempt == before.endpointAttempt + 1)
+
+        defaults.set("2026.8.1-beta.1", forKey: cliValidatedVersionKey)
+        notificationCenter.post(
+            name: UserDefaults.didChangeNotification,
+            object: defaults)
+        try await Task.sleep(for: .milliseconds(20))
+        let afterCLIChange = coordinator.generationsForTesting()
+        #expect(afterCLIChange.endpointAttempt == afterRelevantChange.endpointAttempt + 1)
+        #expect(afterCLIChange.routeAuthority == afterRelevantChange.routeAuthority + 1)
+        #expect(afterCLIChange.nodeHostConfiguration == afterRelevantChange.nodeHostConfiguration + 1)
+
+        notificationCenter.post(
+            name: UserDefaults.didChangeNotification,
+            object: defaults)
+        try await Task.sleep(for: .milliseconds(20))
+        let afterRepeatedCLIState = coordinator.generationsForTesting()
+        #expect(afterRepeatedCLIState.endpointAttempt == afterCLIChange.endpointAttempt)
+        #expect(afterRepeatedCLIState.nodeHostConfiguration == afterCLIChange.nodeHostConfiguration)
     }
 
     private func waitUntil(

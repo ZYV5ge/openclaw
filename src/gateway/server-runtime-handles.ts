@@ -4,6 +4,7 @@ import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { HeartbeatRunner } from "../infra/heartbeat-runner.js";
 import type { ChannelHealthMonitor } from "./channel-health-monitor.js";
 import type { GatewayHotReloadStatus } from "./config-reload-status.types.js";
+import type { GatewayPluginMetadataRefresh } from "./plugin-metadata-refresh.js";
 import {
   MEDIA_CLEANUP_STOP_TIMEOUT_MS,
   type MediaCleanupStopResult,
@@ -19,7 +20,7 @@ import type { GatewayPostReadySidecarHandle } from "./server-startup-post-attach
 export type GatewayConfigReloaderHandle = {
   stop: () => Promise<void>;
   hotReloadStatus?: () => GatewayHotReloadStatus;
-  notifyPluginMetadataChanged: () => void;
+  notifyPluginMetadataChanged: GatewayPluginMetadataRefresh;
 };
 
 /** Mutable handles owned by a running gateway server process. */
@@ -83,7 +84,7 @@ export function createGatewayServerMutableState(): GatewayServerMutableState {
     mcpServer: undefined as { port: number; close: () => Promise<void> } | undefined,
     configReloader: {
       stop: async () => {},
-      notifyPluginMetadataChanged: () => {},
+      notifyPluginMetadataChanged: async () => ({ committed: true, generation: 0 }),
     } satisfies GatewayConfigReloaderHandle,
     agentUnsub: null as (() => Promise<void> | void) | null,
     heartbeatUnsub: null as (() => void) | null,

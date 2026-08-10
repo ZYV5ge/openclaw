@@ -43,6 +43,35 @@ struct MacNodeGatewayTLSSessionCache {
 
 @MainActor
 final class MacNodeModeCoordinator: NSObject {
+    private struct ObservedNodeDefaults: Equatable {
+        let isPaused: Bool
+        let computerControlEnabled: Bool
+        let cameraEnabled: Bool
+        let locationMode: String
+        let validatedCLIExecutable: String?
+        let validatedCLIVersion: String?
+
+        static func current(
+            defaults: UserDefaults = AppDefaults.standard,
+            isPausedOverride: Bool? = nil,
+            computerControlOverride: Bool? = nil) -> Self
+        {
+            Self(
+                isPaused: isPausedOverride ?? defaults.bool(forKey: pauseDefaultsKey),
+                computerControlEnabled: computerControlOverride ??
+                    isComputerControlEnabled(defaults: defaults),
+                cameraEnabled: defaults.object(forKey: cameraEnabledKey) as? Bool ?? false,
+                locationMode: defaults.string(forKey: locationModeKey) ?? "off",
+                validatedCLIExecutable: defaults.string(forKey: cliValidatedExecutableKey),
+                validatedCLIVersion: defaults.string(forKey: cliValidatedVersionKey))
+        }
+
+        func hasDifferentCLIValidation(from other: Self) -> Bool {
+            self.validatedCLIExecutable != other.validatedCLIExecutable ||
+                self.validatedCLIVersion != other.validatedCLIVersion
+        }
+    }
+
     private struct EffectiveEndpoint: Equatable {
         let mode: AppState.ConnectionMode
         let url: URL
@@ -107,6 +136,7 @@ final class MacNodeModeCoordinator: NSObject {
     private var activeNodeHostWorkerInput: MacNodeHostWorkerRetryPolicy.Input?
     private var lastObservedPaused: Bool
     private var lastObservedComputerControlEnabled: Bool
+    private var lastObservedNodeDefaults: ObservedNodeDefaults
     private let runtime: MacNodeRuntime
     private let session: GatewayNodeSession
     private let nodeHostWorker: (any MacNodeHostWorking)?
@@ -166,15 +196,20 @@ final class MacNodeModeCoordinator: NSObject {
         self.nodeHostWorkerRetryPolicy = nodeHostWorkerRetryPolicy
         self.refreshEvents = refreshEvents.stream
         self.refreshContinuation = refreshEvents.continuation
-        self.lastObservedPaused = initialPaused ?? AppDefaults.standard.bool(forKey: pauseDefaultsKey)
-        self.lastObservedComputerControlEnabled = initialComputerControlEnabled ??
+        let resolvedInitialPaused = initialPaused ?? AppDefaults.standard.bool(forKey: pauseDefaultsKey)
+        let resolvedInitialComputerControlEnabled = initialComputerControlEnabled ??
             isComputerControlEnabled()
+        self.lastObservedPaused = resolvedInitialPaused
+        self.lastObservedComputerControlEnabled = resolvedInitialComputerControlEnabled
+        self.lastObservedNodeDefaults = ObservedNodeDefaults.current(
+            isPausedOverride: resolvedInitialPaused,
+            computerControlOverride: resolvedInitialComputerControlEnabled)
         super.init()
 
         guard observeNotifications else { return }
         self.notificationCenter.addObserver(
             self,
-            selector: #selector(self.refreshNodeConfiguration),
+            selector: #selector(self.nodeDefaultsChanged),
             name: UserDefaults.didChangeNotification,
             object: AppDefaults.standard)
         self.notificationCenter.addObserver(
@@ -272,9 +307,9 @@ final class MacNodeModeCoordinator: NSObject {
     }
 
     func refresh() {
-        self.refresh(
-            isPaused: AppDefaults.standard.bool(forKey: pauseDefaultsKey),
-            computerControlEnabled: isComputerControlEnabled())
+        self.applyObservedNodeDefaults(
+            ObservedNodeDefaults.current(),
+            refreshEvenWhenUnchanged: true)
     }
 
     func currentCanvasPluginSurfaceRoute() async -> GatewayCanvasHostRoute? {
@@ -327,6 +362,26 @@ final class MacNodeModeCoordinator: NSObject {
             self.invalidateEndpointAttempt()
             self.refreshContinuation.yield()
         }
+    }
+
+    private func applyObservedNodeDefaults(
+        _ next: ObservedNodeDefaults,
+        refreshEvenWhenUnchanged: Bool)
+    {
+        let previous = self.lastObservedNodeDefaults
+        guard refreshEvenWhenUnchanged || next != previous else { return }
+        self.lastObservedNodeDefaults = next
+
+        if next.hasDifferentCLIValidation(from: previous) {
+            self.lastObservedPaused = next.isPaused
+            self.lastObservedComputerControlEnabled = next.computerControlEnabled
+            self.handleNodeHostConfigurationChange()
+            return
+        }
+
+        self.refresh(
+            isPaused: next.isPaused,
+            computerControlEnabled: next.computerControlEnabled)
     }
 
     private func invalidateEndpointAttempt() {
@@ -738,11 +793,17 @@ final class MacNodeModeCoordinator: NSObject {
         self.enqueueRouteInvalidation(yieldRefresh: false)
     }
 
-    func generationsForTesting() -> (endpointAttempt: UInt64, routeAuthority: UInt64, completedRouteAuthority: UInt64) {
+    func generationsForTesting() -> (
+        endpointAttempt: UInt64,
+        routeAuthority: UInt64,
+        completedRouteAuthority: UInt64,
+        nodeHostConfiguration: UInt64)
+    {
         (
             self.endpointAttemptGeneration,
             self.routeAuthorityGeneration,
-            self.completedRouteAuthorityGeneration)
+            self.completedRouteAuthorityGeneration,
+            self.nodeHostWorkerConfigurationGeneration)
     }
 
     func routeAuthorityAllowsInvokeForTesting(_ capturedGeneration: UInt64, isPaused: Bool) -> Bool {
@@ -785,6 +846,14 @@ final class MacNodeModeCoordinator: NSObject {
     @objc private nonisolated func refreshNodeConfiguration(_: Notification) {
         Task { @MainActor [weak self] in
             self?.refresh()
+        }
+    }
+
+    @objc private nonisolated func nodeDefaultsChanged(_: Notification) {
+        Task { @MainActor [weak self] in
+            self?.applyObservedNodeDefaults(
+                ObservedNodeDefaults.current(),
+                refreshEvenWhenUnchanged: false)
         }
     }
 

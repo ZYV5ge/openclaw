@@ -44,7 +44,10 @@ export function startManagedGatewayConfigReloader(
   params: ManagedGatewayConfigReloaderParams,
 ): ManagedGatewayConfigReloaderHandle {
   if (params.minimalTestGateway) {
-    return { stop: async () => {}, notifyPluginMetadataChanged: () => {} };
+    return {
+      stop: async () => {},
+      notifyPluginMetadataChanged: async () => ({ committed: true, generation: 0 }),
+    };
   }
 
   const prepareRuntimeCandidate = (

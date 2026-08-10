@@ -58,10 +58,7 @@ import type { ChatMetadataResult } from "./chat-metadata-runtime.js";
 import { resolveRequestedChatAgentId, validateChatSelectedAgent } from "./chat-origin-routing.js";
 import type { ChatStartupProjectionResult } from "./chat-startup-projection-contract.js";
 import { normalizeOptionalChatText as normalizeOptionalText } from "./chat-text-normalization.js";
-import {
-  loadOptionalServerMethodModelCatalogSnapshot,
-  startOptionalServerMethodModelCatalogSnapshotLoad,
-} from "./optional-model-catalog.js";
+import { readPreparedServerMethodModelCatalog } from "./optional-model-catalog.js";
 import { resolveVisibleActiveSessionRunState } from "./session-active-runs.js";
 import type { GatewayRequestHandlerOptions, GatewayRequestHandlers } from "./types.js";
 import { assertValidParams } from "./validation.js";
@@ -98,9 +95,6 @@ async function handleChatMetadataRequest({
   );
 }
 
-// The UI fills metadata gaps as soon as chat.startup returns, so history never waits
-// beyond this budget for a catalog snapshot that requires slower discovery.
-const CHAT_OPTIONAL_MODEL_CATALOG_TIMEOUT_MS = 25;
 function resolveChatHistoryNextOffset(params: {
   messages: unknown[];
   totalMessages: number;
@@ -248,29 +242,19 @@ async function handleChatHistoryRequest({
   }
   const modelCatalogPromise =
     method === "chat.history"
-      ? (() => {
-          const optionalModelCatalogLoad = startOptionalServerMethodModelCatalogSnapshotLoad(
-            context,
-            {
-              agentId: sessionAgentId,
-            },
+      ? measureDiagnosticsTimelineSpan(
+          `gateway.${method}.model_catalog`,
+          () => readPreparedServerMethodModelCatalog(context, { agentId: sessionAgentId }),
+          {
+            config: cfg,
+            phase: method,
+          },
+        ).catch((error: unknown) => {
+          context.logGateway.debug(
+            `${method} continuing without prepared model catalog: ${formatErrorMessage(error)}`,
           );
-          const load = measureDiagnosticsTimelineSpan(
-            `gateway.${method}.model_catalog`,
-            () =>
-              loadOptionalServerMethodModelCatalogSnapshot(context, method, {
-                logOnceKey: method,
-                startedLoad: optionalModelCatalogLoad,
-                timeoutMs: CHAT_OPTIONAL_MODEL_CATALOG_TIMEOUT_MS,
-              }),
-            {
-              config: cfg,
-              phase: method,
-            },
-          );
-          void load.catch(() => undefined);
-          return load;
-        })()
+          return undefined;
+        })
       : Promise.resolve(undefined);
   const sessionId = requestedSessionId ?? entry?.sessionId;
   const historyEntry =
@@ -373,11 +357,8 @@ async function handleChatHistoryRequest({
     maxHistoryBytes,
     logDebug: (message) => context.logGateway.debug(message),
   });
-  const modelCatalogSnapshot = await modelCatalogPromise;
-  const catalogOwnedBySessionAgent = modelCatalogSnapshot?.agentId === sessionAgentId;
-  const catalogConfig = catalogOwnedBySessionAgent ? modelCatalogSnapshot.config : cfg;
-  const modelCatalog = catalogOwnedBySessionAgent ? modelCatalogSnapshot.entries : undefined;
-  const defaultAgentId = resolveDefaultAgentId(catalogConfig);
+  const modelCatalog = await modelCatalogPromise;
+  const defaultAgentId = resolveDefaultAgentId(cfg);
   let startupProjection: ChatStartupProjectionResult | undefined;
   let startupMetadata: ChatMetadataResult | undefined;
   let startupAgentsList: ReturnType<typeof listAgentsForGateway> | undefined;

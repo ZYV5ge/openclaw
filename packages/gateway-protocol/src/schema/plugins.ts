@@ -191,9 +191,11 @@ export const PluginsInstallResultSchema = closedObject({
 /** Internal signal that persisted plugin metadata changed outside the Gateway process. */
 export const PluginsRefreshParamsSchema = closedObject({});
 
-/** Successful plugin metadata refresh admission. */
+/** Successful plugin metadata snapshot publication. */
 export const PluginsRefreshResultSchema = closedObject({
   ok: Type.Literal(true),
+  committed: Type.Literal(true),
+  generation: Type.Integer({ minimum: 0 }),
 });
 
 /** Request payload for removing one installed plugin and its managed files. */

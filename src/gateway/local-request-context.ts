@@ -116,7 +116,7 @@ function createLocalGatewayRequestContext(
     cron,
     cronStorePath: "",
     getRuntimeConfig: params.getRuntimeConfig,
-    notifyPluginMetadataChanged: () => {},
+    notifyPluginMetadataChanged: async () => ({ committed: true, generation: 0 }),
     resolveTerminalLaunchPolicy: () => ({ ok: false, block: { kind: "disabled" } }),
     isTerminalEnabled: () => false,
     loadGatewayModelCatalog: async (loadParams) =>

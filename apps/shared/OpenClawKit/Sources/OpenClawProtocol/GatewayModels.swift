@@ -17032,15 +17032,23 @@ public struct PluginsRefreshParams: Codable, Sendable {}
 
 public struct PluginsRefreshResult: Codable, Sendable {
     public let ok: Bool
+    public let committed: Bool
+    public let generation: Int
 
     public init(
-        ok: Bool)
+        ok: Bool,
+        committed: Bool,
+        generation: Int)
     {
         self.ok = ok
+        self.committed = committed
+        self.generation = generation
     }
 
     private enum CodingKeys: String, CodingKey {
         case ok
+        case committed
+        case generation
     }
 }
 

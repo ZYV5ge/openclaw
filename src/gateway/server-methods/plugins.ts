@@ -12,6 +12,7 @@ import {
   validatePluginsUninstallParams,
 } from "../../../packages/gateway-protocol/src/index.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
+import { formatErrorMessage } from "../../infra/errors.js";
 import { searchInstallablePluginPackages } from "../../plugins/catalog-search.js";
 import {
   formatManagedPluginLifecycleError,
@@ -41,8 +42,19 @@ export const pluginsHandlers: GatewayRequestHandlers = {
     if (!assertValidParams(params, validatePluginsRefreshParams, "plugins.refresh", respond)) {
       return;
     }
-    context.notifyPluginMetadataChanged();
-    respond(true, { ok: true }, undefined);
+    try {
+      const refresh = await context.notifyPluginMetadataChanged();
+      respond(true, { ok: true, ...refresh }, undefined);
+    } catch (error) {
+      respond(
+        false,
+        undefined,
+        errorShape(
+          ErrorCodes.UNAVAILABLE,
+          `Plugin metadata refresh failed: ${formatErrorMessage(error)}`,
+        ),
+      );
+    }
   },
   "plugins.list": async ({ params, respond, context }) => {
     if (!assertValidParams(params, validatePluginsListParams, "plugins.list", respond)) {

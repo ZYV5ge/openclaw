@@ -41,6 +41,10 @@ import {
 } from "./config-reload-plan.js";
 import { resolveGatewayReloadSettings } from "./config-reload-settings.js";
 import type { GatewayHotReloadStatus } from "./config-reload-status.types.js";
+import type {
+  GatewayPluginMetadataRefresh,
+  GatewayPluginMetadataRefreshResult,
+} from "./plugin-metadata-refresh.js";
 
 export type { GatewayReloadPlan } from "./config-reload-plan.js";
 const MISSING_CONFIG_RETRY_DELAY_MS = 150;
@@ -91,7 +95,13 @@ function firstSkillsChangedPath(changedPaths: string[]): string | undefined {
 type GatewayConfigReloader = {
   stop: () => Promise<void>;
   hotReloadStatus: () => GatewayHotReloadStatus;
-  notifyPluginMetadataChanged: () => void;
+  notifyPluginMetadataChanged: GatewayPluginMetadataRefresh;
+};
+
+type PluginMetadataRefreshWaiter = {
+  generation: number;
+  resolve: (result: GatewayPluginMetadataRefreshResult) => void;
+  reject: (error: Error) => void;
 };
 
 type PluginInstallRecords = Record<string, PluginInstallRecord>;
@@ -277,6 +287,42 @@ export function startGatewayConfigReloader(opts: {
   let lastSourceOnlyRuntimeRefresh: RuntimeConfigSnapshotRefreshOptions | undefined;
   let lastSourceOnlyRuntimeConfig: OpenClawConfig | null = null;
   let lastSourceOnlySourceConfig: OpenClawConfig | null = null;
+  let requestedPluginMetadataGeneration = 0;
+  let committedPluginMetadataGeneration = 0;
+  let pluginMetadataRefreshWaiters: PluginMetadataRefreshWaiter[] = [];
+
+  const commitPluginMetadataRefresh = (generation: number) => {
+    if (generation <= committedPluginMetadataGeneration) {
+      return;
+    }
+    committedPluginMetadataGeneration = generation;
+    const result = { committed: true, generation } as const;
+    const settled = pluginMetadataRefreshWaiters.filter(
+      (waiter) => waiter.generation <= generation,
+    );
+    pluginMetadataRefreshWaiters = pluginMetadataRefreshWaiters.filter(
+      (waiter) => waiter.generation > generation,
+    );
+    for (const waiter of settled) {
+      waiter.resolve(result);
+    }
+  };
+
+  const rejectPluginMetadataRefresh = (generation: number, error: unknown) => {
+    if (generation <= committedPluginMetadataGeneration) {
+      return;
+    }
+    const rejection = error instanceof Error ? error : new Error(String(error));
+    const rejected = pluginMetadataRefreshWaiters.filter(
+      (waiter) => waiter.generation <= generation,
+    );
+    pluginMetadataRefreshWaiters = pluginMetadataRefreshWaiters.filter(
+      (waiter) => waiter.generation > generation,
+    );
+    for (const waiter of rejected) {
+      waiter.reject(rejection);
+    }
+  };
 
   const appendExternalAudit = (
     record: Omit<ConfigExternalChangeAuditRecord, "ts" | "source" | "event" | "configPath">,
@@ -812,6 +858,7 @@ export function startGatewayConfigReloader(opts: {
       return;
     }
     running = true;
+    const pluginMetadataGeneration = requestedPluginMetadataGeneration;
     if (debounceTimer) {
       clearTimeout(debounceTimer);
       debounceTimer = null;
@@ -833,6 +880,7 @@ export function startGatewayConfigReloader(opts: {
               pendingWrite.preparedCandidate,
               pendingWrite.runtimeRefresh,
             );
+            commitPluginMetadataRefresh(pluginMetadataGeneration);
             if (activeInProcessConfig === pendingWrite) {
               activeInProcessConfig = null;
             }
@@ -906,6 +954,7 @@ export function startGatewayConfigReloader(opts: {
               intentCandidate.runtimeRefresh,
               snapshot.parsed,
             );
+            commitPluginMetadataRefresh(pluginMetadataGeneration);
             if (watcherIntentCandidate === intentCandidate) {
               watcherIntentCandidate = null;
               watcherIntentCameFromPendingWrite = false;
@@ -1032,6 +1081,7 @@ export function startGatewayConfigReloader(opts: {
           undefined,
           snapshot.parsed,
         );
+        commitPluginMetadataRefresh(pluginMetadataGeneration);
         await promoteAcceptedSnapshot(snapshot, "valid-config");
       });
       await acceptWatchedPaths(snapshot.includedPaths ?? []);
@@ -1040,6 +1090,7 @@ export function startGatewayConfigReloader(opts: {
         opts.log.info(`config reload superseded: ${String(err)}`);
       } else {
         opts.log.error(`config reload failed: ${String(err)}`);
+        rejectPluginMetadataRefresh(pluginMetadataGeneration, err);
       }
     } finally {
       running = false;
@@ -1275,10 +1326,25 @@ export function startGatewayConfigReloader(opts: {
       clearPluginMetadataLifecycleCaches();
       startupInternalWriteHash = null;
       lastAppliedWriteHash = null;
-      scheduleExternalRefresh();
+      requestedPluginMetadataGeneration += 1;
+      const generation = requestedPluginMetadataGeneration;
+      // Metadata invalidation is not a newer config source. Queue it behind any
+      // active config transaction instead of revoking that transaction's epoch;
+      // the next accepted pass publishes the latest coalesced generation.
+      schedule();
+      return new Promise<GatewayPluginMetadataRefreshResult>((resolve, reject) => {
+        pluginMetadataRefreshWaiters = [
+          ...pluginMetadataRefreshWaiters,
+          { generation, resolve, reject },
+        ];
+      });
     },
     stop: async () => {
       stopped = true;
+      rejectPluginMetadataRefresh(
+        requestedPluginMetadataGeneration,
+        new Error("Gateway config reloader stopped before plugin metadata refresh committed"),
+      );
       if (debounceTimer) {
         clearTimeout(debounceTimer);
       }

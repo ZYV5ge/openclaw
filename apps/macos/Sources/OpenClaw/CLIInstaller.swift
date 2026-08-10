@@ -319,9 +319,16 @@ enum CLIInstaller {
         defaults: UserDefaults = AppDefaults.standard) -> Int
     {
         guard case let .ready(location, version) = status else { return 0 }
-        defaults.set(location, forKey: cliValidatedExecutableKey)
-        defaults.set(version, forKey: cliValidatedVersionKey)
-        return 2
+        var writes = 0
+        if defaults.string(forKey: cliValidatedExecutableKey) != location {
+            defaults.set(location, forKey: cliValidatedExecutableKey)
+            writes += 1
+        }
+        if defaults.string(forKey: cliValidatedVersionKey) != version {
+            defaults.set(version, forKey: cliValidatedVersionKey)
+            writes += 1
+        }
+        return writes
     }
 
     @discardableResult
