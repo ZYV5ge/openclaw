@@ -3,6 +3,7 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { valid as validSemver } from "semver";
 
 const defaultRootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const FULL_GIT_COMMIT_RE = /^[0-9a-f]{40}$/iu;
@@ -20,6 +21,7 @@ type ExecFileSync = (
 
 export type BuildInfo = {
   version: string | null;
+  distributionVersion?: string;
   commit: string | null;
   builtAt: string;
 };
@@ -72,6 +74,17 @@ export function normalizeBuildTimestamp(raw: string, source = "OPENCLAW_BUILD_TI
   return normalized;
 }
 
+export function normalizeDistributionVersion(
+  raw: string,
+  source = "OPENCLAW_DISTRIBUTION_VERSION",
+): string {
+  const version = raw.trim();
+  if (!validSemver(version)) {
+    throw new Error(`${source} must be a valid semantic version.`);
+  }
+  return version;
+}
+
 function resolveGitCommit(rootDir: string, execFileSyncImpl: ExecFileSync): string | null {
   let raw: string;
   try {
@@ -93,6 +106,7 @@ export function resolveBuildInfo(options: ResolveBuildInfoOptions = {}): BuildIn
   const explicitSha = env.GIT_SHA?.trim();
   const githubSha = env.GITHUB_SHA?.trim();
   const explicitTimestamp = env.OPENCLAW_BUILD_TIMESTAMP?.trim();
+  const explicitDistributionVersion = env.OPENCLAW_DISTRIBUTION_VERSION?.trim();
   const checkedOutCommit =
     explicitCommit || explicitSha
       ? null
@@ -109,6 +123,9 @@ export function resolveBuildInfo(options: ResolveBuildInfoOptions = {}): BuildIn
 
   return {
     version: readPackageVersion(rootDir),
+    ...(explicitDistributionVersion
+      ? { distributionVersion: normalizeDistributionVersion(explicitDistributionVersion) }
+      : {}),
     commit,
     builtAt,
   };

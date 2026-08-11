@@ -3,6 +3,19 @@ import Testing
 @testable import OpenClawKit
 
 struct ArtifactBuildInfoTests {
+    @Test func `prefers an explicit self-built distribution identity`() {
+        let info = ArtifactBuildInfo(
+            infoDictionary: [
+                "OpenClawDistributionVersion": "2026.8.1-selfbuild.2",
+                "CFBundleShortVersionString": "2026.8.1",
+                "CFBundleVersion": "2608000191",
+            ],
+            versionKeys: ["OpenClawDistributionVersion", "CFBundleShortVersionString"])
+
+        #expect(info.version == "2026.8.1-selfbuild.2")
+        #expect(info.versionDisplay == "2026.8.1-selfbuild.2 (2608000191)")
+    }
+
     @Test func `preserves full provenance and formats compact UTC values`() {
         let commit = "ABCDEF0123456789ABCDEF0123456789ABCDEF01"
         let info = ArtifactBuildInfo(

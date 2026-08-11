@@ -101,7 +101,9 @@ struct AboutSettings: View {
     }
 
     private var buildMetadata: ArtifactBuildInfo {
-        ArtifactBuildInfo(infoDictionary: Bundle.main.infoDictionary ?? [:])
+        ArtifactBuildInfo(
+            infoDictionary: Bundle.main.infoDictionary ?? [:],
+            versionKeys: ["OpenClawDistributionVersion", "CFBundleShortVersionString"])
     }
 }
 

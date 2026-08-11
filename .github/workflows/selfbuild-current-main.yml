@@ -1,0 +1,1036 @@
+name: OpenClaw 2026.8.1 Self-Built Beta 2 arm64 Debug build
+
+on:
+  push:
+    branches:
+      - agent/openclaw-selfbuild-2
+
+permissions:
+  actions: read
+  contents: read
+
+run-name: OpenClaw 2026.8.1 Self-Built Beta 2 Dev arm64 ${{ github.sha }}
+
+concurrency:
+  group: openclaw-2026-8-1-selfbuild-2-arm64-${{ github.sha }}
+  cancel-in-progress: false
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+  NODE_VERSION: "24.16.0"
+  COMPAT_VERSION: "2026.8.1"
+  DISTRIBUTION_VERSION: "2026.8.1-selfbuild.2"
+  DISTRIBUTION_NAME: OpenClaw 2026.8.1 Self-Built Beta 2
+  APP_CANDIDATE_NAME: OpenClaw 2026.8.1 Self-Built Beta 2 Dev
+  APP_BUILD: "2608000191"
+  BUNDLE_ID: ai.openclaw.mac.debug
+  FROZEN_UPSTREAM_SHA: 459c70e14a2c93bf355b31d46a285ffbc0c43438
+  PERSONAL_REPOSITORY: ZYV5ge/openclaw
+  PERSONAL_BRANCH: agent/openclaw-selfbuild-2
+
+jobs:
+  preflight:
+    if: ${{ contains(github.event.head_commit.message, '[selfbuild-arm64]') }}
+    name: Freeze source, guard the diff, and test packaging contracts
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Validate immutable personal build request
+        env:
+          HEAD_MESSAGE: ${{ github.event.head_commit.message }}
+          REPOSITORY_IS_PRIVATE: ${{ github.event.repository.private }}
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_REPOSITORY" == "$PERSONAL_REPOSITORY" ]]
+          [[ "$GITHUB_REF" == "refs/heads/$PERSONAL_BRANCH" ]]
+          [[ "$REPOSITORY_IS_PRIVATE" == "false" ]]
+          [[ "$GITHUB_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$HEAD_MESSAGE" == *"[selfbuild-arm64]"* ]]
+
+      - name: Checkout exact candidate source
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 20
+          persist-credentials: false
+
+      - name: Prove frozen official baseline and allowed diff
+        run: |
+          set -euo pipefail
+          [[ "$(git rev-parse HEAD)" == "$GITHUB_SHA" ]]
+          git remote add official-openclaw https://github.com/openclaw/openclaw.git
+          git fetch --no-tags --filter=blob:none official-openclaw "$FROZEN_UPSTREAM_SHA"
+          [[ "$(git rev-parse "$FROZEN_UPSTREAM_SHA^{commit}")" == "$FROZEN_UPSTREAM_SHA" ]]
+          git merge-base --is-ancestor "$FROZEN_UPSTREAM_SHA" "$GITHUB_SHA"
+
+          allowed_file() {
+            case "$1" in
+              .github/workflows/selfbuild-current-main.yml | \
+              apps/macos/Sources/OpenClaw/AboutSettings.swift | \
+              apps/shared/OpenClawKit/Tests/OpenClawKitTests/ArtifactBuildInfoTests.swift | \
+              scripts/package-mac-app.sh | \
+              scripts/write-build-info.ts | \
+              test/scripts/package-mac-app.test.ts | \
+              test/scripts/write-build-info.test.ts)
+                return 0
+                ;;
+              *)
+                return 1
+                ;;
+            esac
+          }
+
+          unexpected=0
+          while IFS= read -r changed; do
+            [[ -n "$changed" ]] || continue
+            if ! allowed_file "$changed"; then
+              echo "::error::Unexpected product change relative to official main: $changed"
+              unexpected=1
+            fi
+          done < <(git diff --name-only "$FROZEN_UPSTREAM_SHA..$GITHUB_SHA")
+          (( unexpected == 0 ))
+          git diff --check "$FROZEN_UPSTREAM_SHA..$GITHUB_SHA"
+          git diff --name-status "$FROZEN_UPSTREAM_SHA..$GITHUB_SHA" \
+            | tee "$RUNNER_TEMP/allowed-diff.txt"
+
+      - name: Prove current official model-catalog path is untouched
+        run: |
+          set -euo pipefail
+          git diff --quiet "$FROZEN_UPSTREAM_SHA..$GITHUB_SHA" -- \
+            ui/src/pages/chat/chat-state-refresh.ts \
+            ui/src/pages/chat/models.ts \
+            src/agents/model-catalog-visibility.ts \
+            src/gateway/server-methods/models.ts
+          rg -F 'view: "configured"' ui/src/pages/chat/models.ts
+          rg -F 'models: false' ui/src/pages/chat/chat-state-refresh.ts
+          rg -F 'refreshModelCatalog: true' ui/src/pages/chat/chat-state-refresh.ts
+          if rg -F 'view: "all"' \
+            ui/src/pages/chat/models.ts \
+            apps/shared/OpenClawKit/Sources/OpenClawChatUI/ChatGatewayRequest.swift; then
+            echo "::error::A local all-model bypass was reintroduced."
+            exit 1
+          fi
+
+      - name: Setup pinned Node and pnpm
+        uses: ./.github/actions/setup-node-env
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          install-bun: "false"
+          install-deps: "true"
+          frozen-lockfile: "true"
+          use-actions-cache: "false"
+          save-actions-cache: "false"
+
+      - name: Test workflow, identity, packaging, and official model refresh
+        run: |
+          set -euo pipefail
+          pnpm check:workflows
+          node_modules/.bin/oxfmt --check \
+            scripts/write-build-info.ts \
+            test/scripts/package-mac-app.test.ts \
+            test/scripts/write-build-info.test.ts
+          node scripts/run-vitest.mjs run \
+            test/scripts/package-mac-app.test.ts \
+            test/scripts/write-build-info.test.ts \
+            src/agents/model-catalog-visibility.test.ts
+          pnpm --dir ui exec vitest run --config vitest.config.ts \
+            src/pages/chat/models.test.ts \
+            src/pages/chat/chat-state.test.ts \
+            src/pages/chat/components/chat-message.test.ts \
+            src/pages/chat/chat-thread.test.ts
+          pnpm tsgo:core
+          pnpm tsgo:ui
+
+      - name: Record preflight boundary
+        run: |
+          set -euo pipefail
+          {
+            echo "## Frozen self-build request"
+            echo
+            echo "- Official main baseline: $FROZEN_UPSTREAM_SHA"
+            echo "- Candidate source: $GITHUB_SHA"
+            echo "- Compatibility version: $COMPAT_VERSION"
+            echo "- Distribution version: $DISTRIBUTION_VERSION"
+            echo "- Product logic: unchanged from the frozen official baseline"
+            echo "- Target: arm64 Debug App + darwin-arm64 runtime + matching Codex plugin"
+            echo "- Excluded: Universal App, Intel App, DMG, notarization, deployment"
+            echo
+            echo '```text'
+            cat "$RUNNER_TEMP/allowed-diff.txt"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  macos_arm64_bundle:
+    name: Build and verify the same-source arm64 Debug bundle
+    needs: preflight
+    runs-on: macos-26
+    timeout-minutes: 180
+    env:
+      APP_VERSION: "2026.8.1"
+      BUILD_CONFIG: debug
+      BUILD_ARCHS: arm64
+      SIGN_IDENTITY: "-"
+      ALLOW_ADHOC_SIGNING: "1"
+      CODESIGN_TIMESTAMP: "off"
+      DISABLE_LIBRARY_VALIDATION: "0"
+      OPENCLAW_DISTRIBUTION_VERSION: "2026.8.1-selfbuild.2"
+      OPENCLAW_DISTRIBUTION_NAME: OpenClaw 2026.8.1 Self-Built Beta 2
+      NODE_OPTIONS: --max-old-space-size=6144
+      PNPM_CONFIG_CHILD_CONCURRENCY: "2"
+      PNPM_CONFIG_NETWORK_CONCURRENCY: "8"
+    steps:
+      - name: Verify the ARM64 build host
+        run: |
+          set -euo pipefail
+          [[ "$RUNNER_ARCH" == "ARM64" ]]
+          [[ "$(uname -m)" == "arm64" ]]
+          if [[ -n "${OPENCLAW_PROFILE+x}" || -n "${OPENCLAW_MONITOR_APP_REPLACEMENT+x}" ]]; then
+            echo "::error::Profile and replacement-monitor overrides must be absent."
+            exit 1
+          fi
+
+      - name: Checkout exact candidate source
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 20
+          persist-credentials: false
+
+      - name: Recheck source identity and allowed paths
+        run: |
+          set -euo pipefail
+          [[ "$(git rev-parse HEAD)" == "$GITHUB_SHA" ]]
+          git cat-file -e "$FROZEN_UPSTREAM_SHA^{commit}"
+          git merge-base --is-ancestor "$FROZEN_UPSTREAM_SHA" "$GITHUB_SHA"
+          changed_count="$(git diff --name-only "$FROZEN_UPSTREAM_SHA..$GITHUB_SHA" | wc -l | tr -d ' ')"
+          [[ "$changed_count" == "7" ]]
+
+      - name: Select pinned Xcode 26.6 and Swift 6.3+
+        run: |
+          set -euo pipefail
+          xcode_app=/Applications/Xcode_26.6.app
+          [[ -d "$xcode_app/Contents/Developer" ]] || xcode_app=/Applications/Xcode_26.6.0.app
+          [[ -d "$xcode_app/Contents/Developer" ]]
+          sudo xcode-select -s "$xcode_app/Contents/Developer"
+          [[ "$(xcodebuild -version | awk 'NR == 1 { print $2 }')" == "26.6" ]]
+          source scripts/lib/swift-toolchain.sh
+          require_swift_toolchain
+          xcodebuild -version
+          swift --version
+
+      - name: Setup pinned Node and pnpm
+        uses: ./.github/actions/setup-node-env
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          install-bun: "false"
+          install-deps: "true"
+          frozen-lockfile: "true"
+          use-actions-cache: "false"
+          save-actions-cache: "false"
+
+      - name: Validate compatibility and distribution identities
+        run: |
+          set -euo pipefail
+          node --input-type=module <<'NODE'
+          import assert from "node:assert/strict";
+          import fs from "node:fs";
+          const root = JSON.parse(fs.readFileSync("package.json", "utf8"));
+          const codex = JSON.parse(fs.readFileSync("extensions/codex/package.json", "utf8"));
+          assert.equal(root.version, process.env.COMPAT_VERSION);
+          assert.equal(codex.version, process.env.COMPAT_VERSION);
+          assert.equal(codex.openclaw?.build?.openclawVersion, process.env.COMPAT_VERSION);
+          assert.equal(codex.openclaw?.compat?.pluginApi, `>=${process.env.COMPAT_VERSION}`);
+          assert.match(process.env.DISTRIBUTION_VERSION, /^2026\.8\.1-selfbuild\.[1-9][0-9]*$/u);
+          assert.match(process.env.APP_BUILD, /^[1-9][0-9]*$/u);
+          assert.equal(process.env.BUNDLE_ID, "ai.openclaw.mac.debug");
+          NODE
+          if [[ -n "$(git status --porcelain=v1 --untracked-files=all)" ]]; then
+            echo "::error::Dependency setup changed tracked source."
+            git status --short
+            exit 1
+          fi
+
+      - name: Freeze reproducible metadata and output identity
+        run: |
+          set -euo pipefail
+          commit_epoch="$(git show -s --format=%ct "$GITHUB_SHA")"
+          build_timestamp="$(
+            node -e \
+              'process.stdout.write(new Date(Number(process.argv[1]) * 1000).toISOString())' \
+              "$commit_epoch"
+          )"
+          [[ "$build_timestamp" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3}Z$ ]]
+          short_sha="${GITHUB_SHA:0:12}"
+          artifact_name="OpenClaw-${DISTRIBUTION_VERSION}-Dev-arm64-${short_sha}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          bundle_dir="$RUNNER_TEMP/$artifact_name"
+          [[ ! -e "$bundle_dir" ]]
+          mkdir -p "$bundle_dir"
+          echo "GIT_COMMIT=$GITHUB_SHA" >> "$GITHUB_ENV"
+          echo "OPENCLAW_BUILD_TIMESTAMP=$build_timestamp" >> "$GITHUB_ENV"
+          echo "ARTIFACT_NAME=$artifact_name" >> "$GITHUB_ENV"
+          echo "BUNDLE_DIR=$bundle_dir" >> "$GITHUB_ENV"
+
+      - name: Build Core, Gateway, CLI, plugins, and Control UI once
+        run: |
+          set -euo pipefail
+          pnpm build
+          test -s dist/build-info.json
+          test -s dist/control-ui/index.html
+          node --input-type=module <<'NODE'
+          import fs from "node:fs";
+          const info = JSON.parse(fs.readFileSync("dist/build-info.json", "utf8"));
+          const expected = {
+            version: process.env.COMPAT_VERSION,
+            distributionVersion: process.env.DISTRIBUTION_VERSION,
+            commit: process.env.GITHUB_SHA,
+            builtAt: process.env.OPENCLAW_BUILD_TIMESTAMP,
+          };
+          for (const [key, value] of Object.entries(expected)) {
+            if (info[key] !== value) {
+              throw new Error(`build-info ${key}=${info[key]}, expected ${value}`);
+            }
+          }
+          fs.copyFileSync("dist/build-info.json", `${process.env.BUNDLE_DIR}/build-info.json`);
+          NODE
+
+      - name: Record the built Control UI tree
+        run: |
+          set -euo pipefail
+          UI_ROOT="$PWD/dist/control-ui" OUTPUT="$BUNDLE_DIR/control-ui-source.json" \
+            node --input-type=module <<'NODE'
+          import crypto from "node:crypto";
+          import fs from "node:fs";
+          import path from "node:path";
+          const root = fs.realpathSync(process.env.UI_ROOT);
+          const files = [];
+          const walk = (directory) => {
+            for (const name of fs.readdirSync(directory).sort()) {
+              const absolute = path.join(directory, name);
+              const stat = fs.lstatSync(absolute);
+              if (stat.isDirectory()) walk(absolute);
+              else if (stat.isFile()) files.push(absolute);
+            }
+          };
+          walk(root);
+          const hash = crypto.createHash("sha256");
+          for (const file of files) {
+            hash.update(path.relative(root, file));
+            hash.update("\0");
+            hash.update(fs.readFileSync(file));
+            hash.update("\0");
+          }
+          fs.writeFileSync(
+            process.env.OUTPUT,
+            `${JSON.stringify({ files: files.length, sha256: hash.digest("hex") }, null, 2)}\n`,
+          );
+          NODE
+
+      - name: Package matching runtime source and Codex plugin
+        run: |
+          set -euo pipefail
+          short_sha="${GITHUB_SHA:0:12}"
+          raw_name="openclaw-${DISTRIBUTION_VERSION}-source-npm-${short_sha}.tgz"
+          node scripts/package-openclaw-for-docker.mjs \
+            --skip-build \
+            --allow-unreleased-changelog \
+            --output-dir "$BUNDLE_DIR" \
+            --output-name "$raw_name"
+          test -s "$BUNDLE_DIR/$raw_name"
+
+          codex_temp="$RUNNER_TEMP/codex-package"
+          mkdir -p "$codex_temp"
+          node scripts/lib/plugin-npm-runtime-build.mjs extensions/codex
+          node scripts/generate-npm-package-lock.mjs --package-dir extensions/codex
+          OPENCLAW_PLUGIN_NPM_BUNDLE_DEPENDENCIES=1 \
+            node scripts/lib/plugin-npm-package-manifest.mjs \
+              --run extensions/codex -- \
+              npm pack --json --ignore-scripts --pack-destination "$codex_temp"
+          shopt -s nullglob
+          codex_packages=("$codex_temp"/*.tgz)
+          [[ "${#codex_packages[@]}" == "1" ]]
+          codex_name="openclaw-codex-${DISTRIBUTION_VERSION}-${short_sha}.tgz"
+          cp "${codex_packages[0]}" "$BUNDLE_DIR/$codex_name"
+          test -s "$BUNDLE_DIR/$codex_name"
+
+          codex_check="$RUNNER_TEMP/codex-package-check"
+          mkdir -p "$codex_check"
+          tar -xzf "$BUNDLE_DIR/$codex_name" -C "$codex_check"
+          CODEX_PACKAGE_ROOT="$codex_check/package" node --input-type=module <<'NODE'
+          import fs from "node:fs";
+          import path from "node:path";
+          const manifest = JSON.parse(
+            fs.readFileSync(path.join(process.env.CODEX_PACKAGE_ROOT, "package.json"), "utf8"),
+          );
+          if (manifest.name !== "@openclaw/codex") throw new Error("unexpected Codex package name");
+          if (manifest.version !== process.env.COMPAT_VERSION) throw new Error("Codex version mismatch");
+          if (manifest.openclaw?.build?.openclawVersion !== process.env.COMPAT_VERSION) {
+            throw new Error("Codex host version mismatch");
+          }
+          if (!Array.isArray(manifest.openclaw?.runtimeExtensions)) {
+            throw new Error("Codex package-local runtime metadata is missing");
+          }
+          NODE
+          echo "RAW_PACKAGE_NAME=$raw_name" >> "$GITHUB_ENV"
+          echo "CODEX_PACKAGE_NAME=$codex_name" >> "$GITHUB_ENV"
+
+      - name: Build the official-path arm64 Debug App
+        env:
+          SKIP_PNPM_INSTALL: "1"
+          SKIP_TSC: "1"
+          SKIP_UI_BUILD: "1"
+        run: |
+          set -euo pipefail
+          test -s dist/control-ui/index.html
+          env -u OPENCLAW_PROFILE -u OPENCLAW_MONITOR_APP_REPLACEMENT \
+            bash scripts/package-mac-app.sh
+          test -d dist/OpenClaw.app
+          test -x dist/OpenClaw.app/Contents/MacOS/OpenClaw
+          test -x dist/OpenClaw.app/Contents/MacOS/openclaw-mlx-tts
+
+      - name: Run focused native App, chat, and approval tests
+        run: |
+          set -euo pipefail
+          swift test \
+            --package-path apps/shared/OpenClawKit \
+            --filter 'ArtifactBuildInfoTests|ChatGatewayRequestTests|ChatSubagentActivityTests|ChatToolActivityTests' \
+            --no-parallel 2>&1 | tee "$BUNDLE_DIR/shared-swift-tests.txt"
+          swift test \
+            --package-path apps/macos \
+            --scratch-path apps/macos/.build/arm64 \
+            -c debug \
+            --filter 'ApplicationRelocatorTests|AppProfileTests|ExecApprovalsStoreRefactorTests|DashboardWindowSmokeTests|WebChatSwiftUISmokeTests|CLIInstallerTests|MacNodeModeCoordinatorTests' \
+            --no-parallel 2>&1 | tee "$BUNDLE_DIR/macos-swift-tests.txt"
+          if [[ -n "$(git status --porcelain=v1 --untracked-files=all)" ]]; then
+            echo "::error::Build or tests changed tracked candidate source."
+            git status --short
+            exit 1
+          fi
+
+      - name: Prove Debug integration and SQLite approval ownership
+        run: |
+          set -euo pipefail
+          if git grep -n 'exec-approvals\.json' -- apps/macos/Sources/OpenClaw; then
+            echo "::error::macOS production source still names the legacy approval file."
+            exit 1
+          fi
+          rg -F 'ExecApprovalsSQLiteStore.databaseURL' apps/macos/Sources/OpenClaw/ExecApprovalsStore.swift
+          rg -F 'ExecApprovalsSQLiteStore.withImmediateTransaction' apps/macos/Sources/OpenClaw/ExecApprovalsStore.swift
+          rg -F 'state/openclaw.sqlite#exec_approvals_config' \
+            apps/shared/OpenClawKit/Sources/OpenClawKit/ExecApprovalsSQLiteStore.swift
+          rg -F 'if raw.isEmpty || raw.lowercased() == "default"' \
+            apps/macos/Sources/OpenClaw/AppProfile.swift
+          SOURCE_EVIDENCE="$BUNDLE_DIR/source-evidence.json" node --input-type=module <<'NODE'
+          import { execFileSync } from "node:child_process";
+          import fs from "node:fs";
+          const paths = [
+            "apps/macos/Sources/OpenClaw/ApplicationRelocator.swift",
+            "apps/macos/Sources/OpenClaw/AppProfile.swift",
+            "apps/macos/Sources/OpenClaw/ExecApprovalsStore.swift",
+            "apps/shared/OpenClawKit/Sources/OpenClawKit/ExecApprovalsSQLiteStore.swift",
+            "apps/shared/OpenClawKit/Sources/OpenClawKit/ExecApprovalsLegacyMigrationGate.swift",
+          ];
+          const blobs = Object.fromEntries(
+            paths.map((file) => [
+              file,
+              execFileSync("git", ["rev-parse", `${process.env.GITHUB_SHA}:${file}`], {
+                encoding: "utf8",
+              }).trim(),
+            ]),
+          );
+          fs.writeFileSync(
+            process.env.SOURCE_EVIDENCE,
+            `${JSON.stringify({
+              sourceSha: process.env.GITHUB_SHA,
+              appProfile: "default",
+              replacementMonitorDefaultActive: false,
+              approvals: "state/openclaw.sqlite#exec_approvals_config",
+              legacyJsonWriterPresentInMacProductionSource: false,
+              blobs,
+            }, null, 2)}\n`,
+          );
+          NODE
+
+      - name: Verify App identity, signing, entitlements, architecture, and UI
+        run: |
+          set -euo pipefail
+          app=dist/OpenClaw.app
+          plist="$app/Contents/Info.plist"
+          plist_value() {
+            /usr/libexec/PlistBuddy -c "Print :$2" "$1/Contents/Info.plist"
+          }
+          [[ "$(plist_value "$app" CFBundleIdentifier)" == "$BUNDLE_ID" ]]
+          [[ "$(plist_value "$app" CFBundleShortVersionString)" == "$COMPAT_VERSION" ]]
+          [[ "$(plist_value "$app" CFBundleVersion)" == "$APP_BUILD" ]]
+          [[ "$(plist_value "$app" OpenClawDistributionVersion)" == "$DISTRIBUTION_VERSION" ]]
+          [[ "$(plist_value "$app" OpenClawDistributionName)" == "$DISTRIBUTION_NAME" ]]
+          [[ "$(plist_value "$app" OpenClawGitCommit)" == "$GITHUB_SHA" ]]
+          [[ "$(plist_value "$app" OpenClawBuildTimestamp)" == "$OPENCLAW_BUILD_TIMESTAMP" ]]
+          [[ -z "$(plist_value "$app" SUFeedURL)" ]]
+          [[ "$(plist_value "$app" SUEnableAutomaticChecks)" == "false" ]]
+          test -s "$app/Contents/Resources/install-cli.sh"
+          test -s "$app/Contents/Resources/control-ui/index.html"
+
+          codesign --verify --deep --strict --verbose=4 "$app" \
+            > "$BUNDLE_DIR/codesign-verify.txt" 2>&1
+          codesign -dv --verbose=4 "$app" > "$BUNDLE_DIR/signature.txt" 2>&1
+          grep -Fxq 'Signature=adhoc' "$BUNDLE_DIR/signature.txt"
+          if grep -q '^Authority=' "$BUNDLE_DIR/signature.txt"; then
+            echo "::error::Cloud candidate unexpectedly has a certificate authority."
+            exit 1
+          fi
+
+          codesign -d --entitlements :- "$app" \
+            > "$BUNDLE_DIR/app-entitlements.plist" 2> "$BUNDLE_DIR/app-entitlements.stderr"
+          plutil -lint "$BUNDLE_DIR/app-entitlements.plist"
+          plutil -convert json -o "$BUNDLE_DIR/app-entitlements.json" \
+            "$BUNDLE_DIR/app-entitlements.plist"
+          APP_ENTITLEMENTS="$BUNDLE_DIR/app-entitlements.json" node --input-type=module <<'NODE'
+          import fs from "node:fs";
+          const entitlements = JSON.parse(fs.readFileSync(process.env.APP_ENTITLEMENTS, "utf8"));
+          for (const key of [
+            "com.apple.security.automation.apple-events",
+            "com.apple.security.device.audio-input",
+            "com.apple.security.device.camera",
+            "com.apple.security.personal-information.location",
+          ]) {
+            if (entitlements[key] !== true) throw new Error(`missing entitlement ${key}`);
+          }
+          if (entitlements["com.apple.security.cs.disable-library-validation"] !== undefined) {
+            throw new Error("library validation was disabled");
+          }
+          NODE
+
+          : > "$BUNDLE_DIR/app-architectures.txt"
+          macho_count=0
+          while IFS= read -r -d '' candidate; do
+            if file "$candidate" | grep -q 'Mach-O'; then
+              architectures="$(lipo -archs "$candidate")"
+              relative="${candidate#$app/}"
+              printf '%s\t%s\n' "$relative" "$architectures" >> "$BUNDLE_DIR/app-architectures.txt"
+              [[ "$architectures" == "arm64" ]]
+              macho_count=$((macho_count + 1))
+            fi
+          done < <(find "$app" -type f -print0)
+          (( macho_count > 0 ))
+          [[ "$(lipo -archs "$app/Contents/MacOS/OpenClaw")" == "arm64" ]]
+          [[ "$(lipo -archs "$app/Contents/MacOS/openclaw-mlx-tts")" == "arm64" ]]
+          plutil -convert json -o "$BUNDLE_DIR/Info.plist.json" "$plist"
+
+      - name: Archive and revalidate the arm64 Debug App ZIP
+        run: |
+          set -euo pipefail
+          app=dist/OpenClaw.app
+          zip_name="OpenClaw-${DISTRIBUTION_VERSION}-Dev-macos-arm64-debug.zip"
+          zip_path="$BUNDLE_DIR/$zip_name"
+          ditto -c -k --sequesterRsrc --keepParent "$app" "$zip_path"
+          test -s "$zip_path"
+          zip_check="$RUNNER_TEMP/debug-app-zip-check"
+          mkdir -p "$zip_check"
+          ditto -x -k "$zip_path" "$zip_check"
+          extracted="$zip_check/OpenClaw.app"
+          test -d "$extracted"
+          codesign --verify --deep --strict --verbose=4 "$extracted"
+          [[ "$(lipo -archs "$extracted/Contents/MacOS/OpenClaw")" == "arm64" ]]
+          cmp "$app/Contents/Info.plist" "$extracted/Contents/Info.plist"
+          echo "APP_ZIP_NAME=$zip_name" >> "$GITHUB_ENV"
+
+      - name: Install the production closure and package the ARM64 runtime
+        run: |
+          set -euo pipefail
+          raw_package="$BUNDLE_DIR/$RAW_PACKAGE_NAME"
+          runtime_prefix="$RUNNER_TEMP/openclaw-runtime-prefix"
+          npm_cache="$RUNNER_TEMP/openclaw-runtime-npm-cache"
+          archive_root="$RUNNER_TEMP/openclaw-runtime-archive"
+          mkdir -p "$runtime_prefix" "$npm_cache" "$archive_root"
+          env -u NODE_PATH -u npm_config_arch -u npm_config_platform \
+            npm_config_cache="$npm_cache" \
+            npm install --global \
+              --prefix "$runtime_prefix" \
+              --omit=dev \
+              --include=optional \
+              --no-audit \
+              --no-fund \
+              "$raw_package"
+          runtime_root="$(npm root --global --prefix "$runtime_prefix")/openclaw"
+          test -s "$runtime_root/openclaw.mjs"
+          test -d "$runtime_root/node_modules"
+          test -s "$runtime_root/dist/build-info.json"
+          test -s "$runtime_root/dist/control-ui/index.html"
+          npm ls --global --prefix "$runtime_prefix" --omit=dev --all --json \
+            > "$BUNDLE_DIR/runtime-npm-tree.json"
+          runtime_name="openclaw-${DISTRIBUTION_VERSION}-runtime-darwin-arm64-${GITHUB_SHA:0:12}.tgz"
+          mv "$runtime_root" "$archive_root/package"
+          COPYFILE_DISABLE=1 tar -czf "$BUNDLE_DIR/$runtime_name" -C "$archive_root" package
+          test -s "$BUNDLE_DIR/$runtime_name"
+          echo "RUNTIME_PACKAGE_NAME=$runtime_name" >> "$GITHUB_ENV"
+
+      - name: Verify the runnable self-contained ARM64 runtime
+        run: |
+          set -euo pipefail
+          runtime_check="$RUNNER_TEMP/openclaw-runtime-check"
+          mkdir -p "$runtime_check"
+          tar -xzf "$BUNDLE_DIR/$RUNTIME_PACKAGE_NAME" -C "$runtime_check"
+          runtime="$runtime_check/package"
+          test -s "$runtime/package.json"
+          test -s "$runtime/openclaw.mjs"
+          test -s "$runtime/dist/build-info.json"
+          test -s "$runtime/dist/control-ui/index.html"
+          npm ls --prefix "$runtime" --omit=dev --all --json \
+            > "$BUNDLE_DIR/runtime-npm-tree-unpacked.json"
+
+          env -u NODE_PATH RUNTIME_ROOT="$runtime" node --input-type=module <<'NODE'
+          import fs from "node:fs";
+          import path from "node:path";
+          const root = fs.realpathSync(process.env.RUNTIME_ROOT);
+          const manifest = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));
+          const failures = [];
+          const contained = (candidate) => {
+            const relative = path.relative(root, candidate);
+            return !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
+          };
+          for (const name of Object.keys(manifest.dependencies ?? {})) {
+            try {
+              const directory = fs.realpathSync(path.join(root, "node_modules", ...name.split("/")));
+              if (!contained(directory)) failures.push(`${name} resolves outside runtime`);
+              const dependency = JSON.parse(fs.readFileSync(path.join(directory, "package.json"), "utf8"));
+              if (dependency.name !== name) failures.push(`${name} manifest mismatch`);
+            } catch (error) {
+              failures.push(`${name}: ${String(error)}`);
+            }
+          }
+          const walk = (directory) => {
+            for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+              const candidate = path.join(directory, entry.name);
+              if (entry.isSymbolicLink()) {
+                try {
+                  if (!contained(fs.realpathSync(candidate))) failures.push(`escaping symlink ${candidate}`);
+                } catch (error) {
+                  failures.push(`broken symlink ${candidate}: ${String(error)}`);
+                }
+              } else if (entry.isDirectory()) {
+                walk(candidate);
+              }
+            }
+          };
+          walk(root);
+          if (failures.length > 0) throw new Error(failures.join("\n"));
+          NODE
+
+          runtime_home="$RUNNER_TEMP/openclaw-runtime-home"
+          runtime_state="$runtime_home/.openclaw"
+          mkdir -p "$runtime_state"
+          version_output="$(
+            env -u NODE_PATH HOME="$runtime_home" OPENCLAW_STATE_DIR="$runtime_state" \
+              node "$runtime/openclaw.mjs" --version
+          )"
+          expected_version="OpenClaw $COMPAT_VERSION (${GITHUB_SHA:0:7})"
+          [[ "$version_output" == "$expected_version" ]]
+          env -u NODE_PATH HOME="$runtime_home" OPENCLAW_STATE_DIR="$runtime_state" \
+            node "$runtime/openclaw.mjs" gateway --help >/dev/null
+          env -u NODE_PATH HOME="$runtime_home" OPENCLAW_STATE_DIR="$runtime_state" \
+            node "$runtime/openclaw.mjs" doctor --non-interactive \
+            | tee "$BUNDLE_DIR/runtime-doctor-smoke.txt"
+
+          pty_node="$(find "$runtime/node_modules" -path '*/@lydell/node-pty-darwin-arm64/prebuilds/darwin-arm64/pty.node' -type f -print -quit)"
+          spawn_helper="$(find "$runtime/node_modules" -path '*/@lydell/node-pty-darwin-arm64/prebuilds/darwin-arm64/spawn-helper' -type f -print -quit)"
+          sqlite_vec="$(find "$runtime/node_modules" -path '*/sqlite-vec-darwin-arm64/vec0.dylib' -type f -print -quit)"
+          test -n "$pty_node"
+          test -n "$spawn_helper"
+          test -n "$sqlite_vec"
+          test -x "$spawn_helper"
+          [[ "$(lipo -archs "$pty_node")" == "arm64" ]]
+          [[ "$(lipo -archs "$spawn_helper")" == "arm64" ]]
+          [[ "$(lipo -archs "$sqlite_vec")" == "arm64" ]]
+          if find "$runtime/node_modules" -type d \
+            \( -name 'node-pty-darwin-x64' -o -name 'sqlite-vec-darwin-x64' \) \
+            -print -quit | grep -q .; then
+            echo "::error::ARM64 runtime contains a darwin-x64 native package."
+            exit 1
+          fi
+
+          env -u NODE_PATH RUNTIME_ROOT="$runtime" node --input-type=module <<'NODE'
+          import { createRequire } from "node:module";
+          import fs from "node:fs";
+          import path from "node:path";
+          import { DatabaseSync } from "node:sqlite";
+          const root = fs.realpathSync(process.env.RUNTIME_ROOT);
+          const runtimeRequire = createRequire(path.join(root, "package.json"));
+          const pty = runtimeRequire("@lydell/node-pty");
+          if (typeof pty.spawn !== "function") throw new Error("node-pty failed to load");
+          const sqliteVec = runtimeRequire("sqlite-vec");
+          const extensionPath = fs.realpathSync(sqliteVec.getLoadablePath());
+          if (!extensionPath.startsWith(`${root}${path.sep}`)) {
+            throw new Error(`sqlite-vec resolved outside runtime: ${extensionPath}`);
+          }
+          const db = new DatabaseSync(":memory:", { allowExtension: true });
+          sqliteVec.load(db);
+          const row = db.prepare("SELECT vec_version() AS version").get();
+          db.close();
+          if (typeof row?.version !== "string" || !row.version.trim()) {
+            throw new Error("sqlite-vec did not return a version");
+          }
+          NODE
+
+          RUNTIME_ROOT="$runtime" node --input-type=module <<'NODE'
+          import crypto from "node:crypto";
+          import fs from "node:fs";
+          import path from "node:path";
+          const digestTree = (root) => {
+            const files = [];
+            const walk = (directory) => {
+              for (const name of fs.readdirSync(directory).sort()) {
+                const absolute = path.join(directory, name);
+                const stat = fs.lstatSync(absolute);
+                if (stat.isDirectory()) walk(absolute);
+                else if (stat.isFile()) files.push(absolute);
+              }
+            };
+            walk(root);
+            const hash = crypto.createHash("sha256");
+            for (const file of files) {
+              hash.update(path.relative(root, file));
+              hash.update("\0");
+              hash.update(fs.readFileSync(file));
+              hash.update("\0");
+            }
+            return { files: files.length, sha256: hash.digest("hex") };
+          };
+          const source = JSON.parse(
+            fs.readFileSync(path.join(process.env.BUNDLE_DIR, "control-ui-source.json"), "utf8"),
+          );
+          const appUi = digestTree("dist/OpenClaw.app/Contents/Resources/control-ui");
+          const runtimeUi = digestTree(path.join(process.env.RUNTIME_ROOT, "dist/control-ui"));
+          if (JSON.stringify(appUi) !== JSON.stringify(source)) throw new Error("App UI differs from source UI");
+          if (JSON.stringify(runtimeUi) !== JSON.stringify(source)) {
+            throw new Error("runtime UI differs from source UI");
+          }
+          fs.writeFileSync(
+            path.join(process.env.BUNDLE_DIR, "control-ui-parity.json"),
+            `${JSON.stringify({ source, app: appUi, runtime: runtimeUi }, null, 2)}\n`,
+          );
+          const buildInfo = JSON.parse(
+            fs.readFileSync(path.join(process.env.RUNTIME_ROOT, "dist/build-info.json"), "utf8"),
+          );
+          for (const [key, value] of Object.entries({
+            version: process.env.COMPAT_VERSION,
+            distributionVersion: process.env.DISTRIBUTION_VERSION,
+            commit: process.env.GITHUB_SHA,
+            builtAt: process.env.OPENCLAW_BUILD_TIMESTAMP,
+          })) {
+            if (buildInfo[key] !== value) throw new Error(`runtime build-info mismatch: ${key}`);
+          }
+          NODE
+
+      - name: Validate Codex convergence in default and node-host state roots
+        run: |
+          set -euo pipefail
+          runtime="$RUNNER_TEMP/openclaw-runtime-check/package"
+          codex_package="$BUNDLE_DIR/$CODEX_PACKAGE_NAME"
+          convergence_root="$RUNNER_TEMP/codex-convergence"
+          npm_cache="$RUNNER_TEMP/codex-convergence-npm-cache"
+          [[ ! -e "$convergence_root" ]]
+          mkdir -p "$convergence_root/home" "$npm_cache"
+
+          validate_state_root() {
+            local label="$1"
+            local state_dir="$2"
+            local doctor_receipt="$BUNDLE_DIR/codex-doctor-$label.json"
+            local convergence_receipt="$BUNDLE_DIR/codex-convergence-$label.json"
+            mkdir -p "$state_dir"
+            env -u NODE_PATH \
+              HOME="$convergence_root/home" \
+              OPENCLAW_STATE_DIR="$state_dir" \
+              NPM_CONFIG_CACHE="$npm_cache" \
+              node "$runtime/openclaw.mjs" \
+                plugins install "npm-pack:$codex_package" --force
+            env -u NODE_PATH \
+              HOME="$convergence_root/home" \
+              OPENCLAW_STATE_DIR="$state_dir" \
+              node "$runtime/openclaw.mjs" doctor --lint \
+                --only core/doctor/configured-plugin-installs \
+                --only core/doctor/plugin-registry \
+                --json > "$doctor_receipt"
+            if find "$state_dir" -name exec-approvals.json -type f -print -quit | grep -q .; then
+              echo "::error::Codex convergence recreated legacy approval JSON in $label state."
+              exit 1
+            fi
+            codex_manifest="$(
+              find "$state_dir" -type f \
+                -path '*/node_modules/@openclaw/codex/package.json' \
+                -print -quit
+            )"
+            test -n "$codex_manifest"
+            VALIDATION_LABEL="$label" \
+            RUNTIME_ROOT="$runtime" \
+            CODEX_ARCHIVE="$codex_package" \
+            CODEX_MANIFEST="$codex_manifest" \
+            DOCTOR_RECEIPT="$doctor_receipt" \
+            CONVERGENCE_RECEIPT="$convergence_receipt" \
+              node --input-type=module <<'NODE'
+          import crypto from "node:crypto";
+          import fs from "node:fs";
+          import { createRequire } from "node:module";
+          import path from "node:path";
+          const digest = (file) =>
+            crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex");
+          const runtimeRoot = fs.realpathSync(process.env.RUNTIME_ROOT);
+          const codexManifestPath = fs.realpathSync(process.env.CODEX_MANIFEST);
+          const codexRoot = path.dirname(codexManifestPath);
+          const codex = JSON.parse(fs.readFileSync(codexManifestPath, "utf8"));
+          const runtimeManifestPath = path.join(runtimeRoot, "package.json");
+          const runtimeManifest = JSON.parse(fs.readFileSync(runtimeManifestPath, "utf8"));
+          const buildInfoPath = path.join(runtimeRoot, "dist/build-info.json");
+          const buildInfo = JSON.parse(fs.readFileSync(buildInfoPath, "utf8"));
+          const doctor = JSON.parse(fs.readFileSync(process.env.DOCTOR_RECEIPT, "utf8"));
+          if (doctor.ok !== true || !Array.isArray(doctor.findings) || doctor.findings.length !== 0) {
+            throw new Error("Codex Doctor receipt is not clean");
+          }
+          if (codex.name !== "@openclaw/codex") throw new Error("installed Codex name mismatch");
+          if (codex.version !== process.env.COMPAT_VERSION) throw new Error("installed Codex version mismatch");
+          if (codex.openclaw?.build?.openclawVersion !== process.env.COMPAT_VERSION) {
+            throw new Error("installed Codex host mismatch");
+          }
+          const peerTarget = fs.realpathSync(path.join(codexRoot, "node_modules/openclaw"));
+          if (peerTarget !== runtimeRoot) throw new Error("Codex peer does not target packaged runtime");
+          const codexRequire = createRequire(codexManifestPath);
+          const sdkEntry = fs.realpathSync(codexRequire.resolve("openclaw/plugin-sdk/core"));
+          const sdkRelative = path.relative(runtimeRoot, sdkEntry);
+          if (sdkRelative.startsWith(`..${path.sep}`) || path.isAbsolute(sdkRelative)) {
+            throw new Error("Codex SDK resolved outside packaged runtime");
+          }
+          if (runtimeManifest.version !== process.env.COMPAT_VERSION) throw new Error("runtime peer mismatch");
+          if (buildInfo.distributionVersion !== process.env.DISTRIBUTION_VERSION) {
+            throw new Error("runtime distribution identity mismatch");
+          }
+          fs.writeFileSync(
+            process.env.CONVERGENCE_RECEIPT,
+            `${JSON.stringify({
+              stateRoot: process.env.VALIDATION_LABEL,
+              sourceSha: process.env.GITHUB_SHA,
+              compatibilityVersion: process.env.COMPAT_VERSION,
+              distributionVersion: process.env.DISTRIBUTION_VERSION,
+              codex: {
+                version: codex.version,
+                archiveSha256: digest(process.env.CODEX_ARCHIVE),
+                packageJsonSha256: digest(codexManifestPath),
+              },
+              peerTarget: {
+                version: runtimeManifest.version,
+                distributionVersion: buildInfo.distributionVersion,
+                sourceSha: buildInfo.commit,
+                containedPluginSdk: true,
+              },
+              doctor: { ok: doctor.ok, checksRun: doctor.checksRun, findings: doctor.findings.length },
+              legacyApprovalJsonCreated: false,
+            }, null, 2)}\n`,
+          );
+          NODE
+          }
+
+          validate_state_root default "$convergence_root/home/.openclaw"
+          validate_state_root node-host "$convergence_root/home/.openclaw-cli-state"
+
+      - name: Write provenance, validation receipt, and checksums
+        run: |
+          set -euo pipefail
+          if find "$BUNDLE_DIR" -maxdepth 1 -name '*.dmg' -print -quit | grep -q .; then
+            echo "::error::This workflow must not produce a DMG."
+            exit 1
+          fi
+          BUNDLE_DIR="$BUNDLE_DIR" node --input-type=module <<'NODE'
+          import crypto from "node:crypto";
+          import fs from "node:fs";
+          import path from "node:path";
+          const dir = process.env.BUNDLE_DIR;
+          const digest = (file) =>
+            crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex");
+          const info = JSON.parse(fs.readFileSync(path.join(dir, "Info.plist.json"), "utf8"));
+          const buildInfo = JSON.parse(fs.readFileSync(path.join(dir, "build-info.json"), "utf8"));
+          const defaultCodex = JSON.parse(
+            fs.readFileSync(path.join(dir, "codex-convergence-default.json"), "utf8"),
+          );
+          const nodeHostCodex = JSON.parse(
+            fs.readFileSync(path.join(dir, "codex-convergence-node-host.json"), "utf8"),
+          );
+          if (defaultCodex.codex.archiveSha256 !== nodeHostCodex.codex.archiveSha256) {
+            throw new Error("default and node-host Codex archives disagree");
+          }
+          const validation = {
+            schemaVersion: 2,
+            sourceSha: process.env.GITHUB_SHA,
+            frozenOfficialMainSha: process.env.FROZEN_UPSTREAM_SHA,
+            compatibilityVersion: process.env.COMPAT_VERSION,
+            distributionVersion: process.env.DISTRIBUTION_VERSION,
+            app: {
+              archive: process.env.APP_ZIP_NAME,
+              sha256: digest(path.join(dir, process.env.APP_ZIP_NAME)),
+              bundleIdentifier: info.CFBundleIdentifier,
+              shortVersion: info.CFBundleShortVersionString,
+              build: info.CFBundleVersion,
+              distributionVersion: info.OpenClawDistributionVersion,
+              architectures: ["arm64"],
+              configuration: "debug",
+              signature: "ad-hoc",
+              notarized: false,
+            },
+            runtime: {
+              archive: process.env.RUNTIME_PACKAGE_NAME,
+              sha256: digest(path.join(dir, process.env.RUNTIME_PACKAGE_NAME)),
+              packageVersion: buildInfo.version,
+              distributionVersion: buildInfo.distributionVersion,
+              architecture: "darwin-arm64",
+              selfContained: true,
+              doctorPassed: true,
+            },
+            codex: {
+              archive: process.env.CODEX_PACKAGE_NAME,
+              sha256: digest(path.join(dir, process.env.CODEX_PACKAGE_NAME)),
+              packageVersion: defaultCodex.codex.version,
+              defaultStateConverged: defaultCodex.doctor.ok,
+              nodeHostStateConverged: nodeHostCodex.doctor.ok,
+            },
+            controlUiSameSource: true,
+            legacyApprovalJsonWriterInMacProductionSource: false,
+            cloudBuildComplete: true,
+            macBookInstalled: false,
+            macBookAccepted: false,
+            macMiniInstalled: false,
+          };
+          fs.writeFileSync(path.join(dir, "VALIDATION.json"), `${JSON.stringify(validation, null, 2)}\n`);
+          const provenance = {
+            schemaVersion: 2,
+            kind: "openclaw-selfbuild-same-source-arm64-debug-bundle",
+            unofficialSelfBuild: true,
+            source: {
+              officialRepository: "openclaw/openclaw",
+              frozenOfficialMainSha: process.env.FROZEN_UPSTREAM_SHA,
+              candidateRepository: process.env.GITHUB_REPOSITORY,
+              candidateBranch: process.env.PERSONAL_BRANCH,
+              candidateSha: process.env.GITHUB_SHA,
+            },
+            allowedLocalChanges: [
+              ".github/workflows/selfbuild-current-main.yml",
+              "apps/macos/Sources/OpenClaw/AboutSettings.swift",
+              "apps/shared/OpenClawKit/Tests/OpenClawKitTests/ArtifactBuildInfoTests.swift",
+              "scripts/package-mac-app.sh",
+              "scripts/write-build-info.ts",
+              "test/scripts/package-mac-app.test.ts",
+              "test/scripts/write-build-info.test.ts",
+            ],
+            identity: {
+              humanName: process.env.DISTRIBUTION_NAME,
+              compatibilityVersion: process.env.COMPAT_VERSION,
+              distributionVersion: process.env.DISTRIBUTION_VERSION,
+              appleShortVersion: process.env.COMPAT_VERSION,
+              appleNumericBuild: process.env.APP_BUILD,
+              bundleIdentifier: process.env.BUNDLE_ID,
+            },
+            components: {
+              app: process.env.APP_ZIP_NAME,
+              runtime: process.env.RUNTIME_PACKAGE_NAME,
+              rawRuntimeSource: process.env.RAW_PACKAGE_NAME,
+              codexPlugin: process.env.CODEX_PACKAGE_NAME,
+            },
+            boundaries: {
+              appArchitecture: "arm64",
+              runtimeArchitecture: "darwin-arm64",
+              universalAppBuilt: false,
+              intelAppBuilt: false,
+              dmgBuilt: false,
+              cloudSignature: "ad-hoc",
+              notarized: false,
+              localAppleDevelopmentResignRequiredBeforeControlledInstall: true,
+            },
+            officialBehaviorContracts: {
+              modelCatalog: "models.list view=configured with startup live-catalog refresh",
+              customViewAllBypass: false,
+              appProfile: "default",
+              approvals: "SQLite state/openclaw.sqlite#exec_approvals_config",
+            },
+            publication: {
+              npm: false,
+              githubRelease: false,
+              issue: false,
+              pullRequest: false,
+              installed: false,
+              launched: false,
+            },
+            workflow: {
+              path: ".github/workflows/selfbuild-current-main.yml",
+              runId: process.env.GITHUB_RUN_ID,
+              runAttempt: Number(process.env.GITHUB_RUN_ATTEMPT),
+              url: `${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}`,
+            },
+          };
+          fs.writeFileSync(path.join(dir, "PROVENANCE.json"), `${JSON.stringify(provenance, null, 2)}\n`);
+          const boundary = [
+            "# Installation boundary",
+            "",
+            `${process.env.DISTRIBUTION_NAME} is an unofficial same-source development build.`,
+            `Compatibility version: ${process.env.COMPAT_VERSION}.`,
+            `Distribution version: ${process.env.DISTRIBUTION_VERSION}.`,
+            `Source: ${process.env.GITHUB_SHA}.`,
+            "",
+            "The cloud App is arm64 Debug and ad-hoc signed. It is not notarized and is not yet a",
+            "MacBook deployment result. Controlled installation requires a stable local Apple Development",
+            "re-sign, a new final ZIP and SHA-256, active-work checks, transactional backup, and the full",
+            "MacBook acceptance matrix. Mac mini rollout may begin only after MacBook acceptance and must",
+            "reuse that exact final signed package SHA-256.",
+            "",
+          ];
+          fs.writeFileSync(path.join(dir, "INSTALLATION-BOUNDARY.md"), boundary.join("\n"));
+          const files = fs
+            .readdirSync(dir)
+            .filter((name) => name !== "SHA256SUMS")
+            .filter((name) => fs.statSync(path.join(dir, name)).isFile())
+            .sort();
+          fs.writeFileSync(
+            path.join(dir, "SHA256SUMS"),
+            `${files.map((name) => `${digest(path.join(dir, name))}  ${name}`).join("\n")}\n`,
+          );
+          NODE
+          test -s "$BUNDLE_DIR/$APP_ZIP_NAME"
+          test -s "$BUNDLE_DIR/$RUNTIME_PACKAGE_NAME"
+          test -s "$BUNDLE_DIR/$CODEX_PACKAGE_NAME"
+          test -s "$BUNDLE_DIR/PROVENANCE.json"
+          test -s "$BUNDLE_DIR/VALIDATION.json"
+          test -s "$BUNDLE_DIR/SHA256SUMS"
+          (cd "$BUNDLE_DIR" && shasum -a 256 -c SHA256SUMS)
+
+      - name: Upload immutable same-source arm64 bundle
+        id: upload_bundle
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: ${{ env.ARTIFACT_NAME }}
+          path: ${{ env.BUNDLE_DIR }}
+          if-no-files-found: error
+          compression-level: 0
+          overwrite: false
+          retention-days: 30
+
+      - name: Record cloud build evidence
+        env:
+          ARTIFACT_DIGEST: ${{ steps.upload_bundle.outputs.artifact-digest }}
+          ARTIFACT_ID: ${{ steps.upload_bundle.outputs.artifact-id }}
+          ARTIFACT_URL: ${{ steps.upload_bundle.outputs.artifact-url }}
+        run: |
+          set -euo pipefail
+          {
+            echo "## Same-source ARM64 cloud bundle completed"
+            echo
+            echo "- Artifact: $ARTIFACT_NAME"
+            echo "- Artifact ID: $ARTIFACT_ID"
+            echo "- Artifact digest: $ARTIFACT_DIGEST"
+            echo "- Artifact URL: $ARTIFACT_URL"
+            echo "- Official baseline: $FROZEN_UPSTREAM_SHA"
+            echo "- Candidate source: $GITHUB_SHA"
+            echo "- App: Debug arm64, bundle $BUNDLE_ID, ad-hoc signed"
+            echo "- Runtime: self-contained darwin-arm64"
+            echo "- Codex: matching package validated in default and node-host state roots"
+            echo "- Not produced: Universal App, Intel App, DMG, release, deployment"
+            echo "- Next gate: local Apple Development re-sign and controlled MacBook acceptance"
+            echo
+            echo '```text'
+            cat "$BUNDLE_DIR/SHA256SUMS"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

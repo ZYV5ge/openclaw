@@ -4,6 +4,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   normalizeBuildCommit,
+  normalizeDistributionVersion,
   normalizeBuildTimestamp,
   resolveBuildInfo,
   writeBuildInfo,
@@ -64,6 +65,30 @@ describe("write-build-info", () => {
       encoding: "utf8",
       stdio: ["ignore", "pipe", "ignore"],
     });
+  });
+
+  it("records a separate self-built distribution identity without changing runtime compatibility", () => {
+    const rootDir = createPackage("2026.8.1");
+
+    expect(
+      resolveBuildInfo({
+        rootDir,
+        env: { OPENCLAW_DISTRIBUTION_VERSION: "2026.8.1-selfbuild.2" },
+        execFileSync: () => "a".repeat(40),
+        now: () => new Date("2026-08-11T21:35:00.000Z"),
+      }),
+    ).toEqual({
+      version: "2026.8.1",
+      distributionVersion: "2026.8.1-selfbuild.2",
+      commit: "a".repeat(40),
+      builtAt: "2026-08-11T21:35:00.000Z",
+    });
+    expect(normalizeDistributionVersion(" 2026.8.1-selfbuild.2 ")).toBe(
+      "2026.8.1-selfbuild.2",
+    );
+    expect(() => normalizeDistributionVersion("2026.8.1 selfbuild.2")).toThrow(
+      "OPENCLAW_DISTRIBUTION_VERSION must be a valid semantic version.",
+    );
   });
 
   it("uses null when Git metadata is unavailable", () => {

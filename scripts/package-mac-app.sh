@@ -44,6 +44,8 @@ fi
 GIT_BUILD_NUMBER=$(cd "$ROOT_DIR" && git rev-list --count HEAD 2>/dev/null || echo "0")
 APP_VERSION="${APP_VERSION:-$PKG_VERSION}"
 APP_BUILD="${APP_BUILD:-}"
+DISTRIBUTION_VERSION="${OPENCLAW_DISTRIBUTION_VERSION:-}"
+DISTRIBUTION_NAME="${OPENCLAW_DISTRIBUTION_NAME:-}"
 if [[ -n "${BUILD_ARCHS:-}" ]]; then
   BUILD_ARCHS_VALUE="${BUILD_ARCHS}"
 elif [[ "$BUILD_CONFIG" == "release" ]]; then
@@ -425,6 +427,14 @@ plist_set_string_required "$APP_ROOT/Contents/Info.plist" CFBundleShortVersionSt
 plist_set_string_required "$APP_ROOT/Contents/Info.plist" CFBundleVersion "$APP_BUILD"
 plist_set_string_required "$APP_ROOT/Contents/Info.plist" OpenClawBuildTimestamp "$BUILD_TS"
 plist_set_string_required "$APP_ROOT/Contents/Info.plist" OpenClawGitCommit "$BUILD_GIT_COMMIT"
+if [[ -n "$DISTRIBUTION_VERSION" ]]; then
+  plist_set_or_add_string \
+    "$APP_ROOT/Contents/Info.plist" OpenClawDistributionVersion "$DISTRIBUTION_VERSION"
+fi
+if [[ -n "$DISTRIBUTION_NAME" ]]; then
+  plist_set_or_add_string \
+    "$APP_ROOT/Contents/Info.plist" OpenClawDistributionName "$DISTRIBUTION_NAME"
+fi
 if [[ "$BUILD_CONFIG" == "release" ]]; then
   EMBEDDED_GIT_COMMIT="$(plist_print_required "$APP_ROOT/Contents/Info.plist" OpenClawGitCommit)"
   if [[ "$EMBEDDED_GIT_COMMIT" != "$BUILD_GIT_COMMIT" ]]; then
