@@ -604,7 +604,9 @@ describe("repairMissingConfiguredPluginInstalls", () => {
   });
 
   it("persists no-op baseline records with the active plugin policy", async () => {
+    const workspaceDir = "/tmp/openclaw-main-workspace";
     const cfg = {
+      agents: { defaults: { workspace: workspaceDir } },
       plugins: {
         enabled: false,
         allow: ["matrix"],
@@ -632,6 +634,7 @@ describe("repairMissingConfiguredPluginInstalls", () => {
       {
         config: cfg,
         env: {},
+        workspaceDir,
       },
     );
     expect(result.records).toBe(baselineRecords);
@@ -683,6 +686,7 @@ describe("repairMissingConfiguredPluginInstalls", () => {
     expect(mockCallArg(mocks.writePersistedInstalledPluginIndexInstallRecords, 0, 1)).toEqual({
       config: cfg,
       env: {},
+      workspaceDir: expect.any(String),
     });
     expect(result.changes).toEqual([
       'Installed missing configured plugin "matrix" from @openclaw/plugin-matrix@1.2.3.',
@@ -931,6 +935,7 @@ describe("repairMissingConfiguredPluginInstalls", () => {
     expect(mockCallArg(mocks.writePersistedInstalledPluginIndexInstallRecords, 0, 1)).toEqual({
       config: {},
       env: { MATRIX_HOMESERVER: "https://matrix.example.org" },
+      workspaceDir: expect.any(String),
     });
     expect(result.changes).toEqual([
       'Installed missing configured plugin "matrix" from @openclaw/plugin-matrix@1.2.3.',
@@ -1282,6 +1287,7 @@ describe("repairMissingConfiguredPluginInstalls", () => {
       {
         config: expect.any(Object),
         env: {},
+        workspaceDir: expect.any(String),
       },
     );
     expect(result).toEqual({
@@ -1354,6 +1360,7 @@ describe("repairMissingConfiguredPluginInstalls", () => {
       {
         config: expect.any(Object),
         env: {},
+        workspaceDir: expect.any(String),
       },
     );
     expect(result).toEqual({
@@ -1403,6 +1410,7 @@ describe("repairMissingConfiguredPluginInstalls", () => {
       {
         config: {},
         env: {},
+        workspaceDir: expect.any(String),
       },
     );
     expect(result).toEqual({
@@ -2308,6 +2316,7 @@ describe("repairMissingConfiguredPluginInstalls", () => {
     expect(mockCallArg(mocks.writePersistedInstalledPluginIndexInstallRecords, 0, 1)).toEqual({
       config: cfg,
       env: {},
+      workspaceDir: expect.any(String),
     });
     expect(result.changes).toEqual([
       `Installed missing configured plugin "codex" from ${expectedNpmInstallSpec("@openclaw/codex")}.`,
@@ -2367,6 +2376,7 @@ describe("repairMissingConfiguredPluginInstalls", () => {
     expect(mockCallArg(mocks.writePersistedInstalledPluginIndexInstallRecords, 0, 1)).toEqual({
       config: expect.any(Object),
       env: {},
+      workspaceDir: expect.any(String),
     });
     expect(result.changes).toEqual([
       `Installed missing configured plugin "codex" from ${expectedNpmInstallSpec("@openclaw/codex")}.`,
@@ -2769,6 +2779,7 @@ describe("repairMissingConfiguredPluginInstalls", () => {
     expect(mockCallArg(mocks.writePersistedInstalledPluginIndexInstallRecords, 0, 1)).toEqual({
       config: cfg,
       env,
+      workspaceDir: expect.any(String),
     });
     expect(result.changes).toEqual([
       `Installed missing configured plugin "codex" from ${expectedNpmInstallSpec("@openclaw/codex")}.`,
@@ -3009,6 +3020,7 @@ describe("repairMissingConfiguredPluginInstalls", () => {
     expect(mockCallArg(mocks.writePersistedInstalledPluginIndexInstallRecords, 0, 1)).toEqual({
       config: expect.any(Object),
       env: {},
+      workspaceDir: expect.any(String),
     });
     expect(result.changes).toEqual(['Repaired missing configured plugin "demo".']);
   });
@@ -3387,6 +3399,7 @@ describe("repairMissingConfiguredPluginInstalls", () => {
     expect(mockCallArg(mocks.writePersistedInstalledPluginIndexInstallRecords, 0, 1)).toEqual({
       config: expect.any(Object),
       env: {},
+      workspaceDir: expect.any(String),
     });
     expect(result.changes).toEqual([
       `Installed missing configured plugin "discord" from ${expectedNpmInstallSpec("@openclaw/discord")}.`,
@@ -3446,6 +3459,7 @@ describe("repairMissingConfiguredPluginInstalls", () => {
     expect(mockCallArg(mocks.writePersistedInstalledPluginIndexInstallRecords, 0, 1)).toEqual({
       config: expect.any(Object),
       env: {},
+      workspaceDir: expect.any(String),
     });
     expect(result.changes).toEqual(['Repaired missing configured plugin "discord".']);
   });
@@ -3514,6 +3528,7 @@ describe("repairMissingConfiguredPluginInstalls", () => {
     expect(mockCallArg(mocks.writePersistedInstalledPluginIndexInstallRecords, 0, 1)).toEqual({
       config: expect.any(Object),
       env: {},
+      workspaceDir: expect.any(String),
     });
     expect(result).toEqual({
       changes: ['Repaired missing configured plugin "discord".'],
@@ -3574,6 +3589,7 @@ describe("repairMissingConfiguredPluginInstalls", () => {
     expect(mockCallArg(mocks.writePersistedInstalledPluginIndexInstallRecords, 0, 1)).toEqual({
       config: expect.any(Object),
       env: {},
+      workspaceDir: expect.any(String),
     });
     expect(result.changes).toEqual(['Repaired missing configured plugin "brave".']);
   });
@@ -4098,6 +4114,7 @@ describe("repairMissingConfiguredPluginInstalls", () => {
     expect(mockCallArg(mocks.writePersistedInstalledPluginIndexInstallRecords, 0, 1)).toEqual({
       config: expect.any(Object),
       env: {},
+      workspaceDir: expect.any(String),
     });
     expect(result.changes).toEqual([
       'Installed missing configured plugin "brave" from @openclaw/brave-plugin@beta.',

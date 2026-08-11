@@ -120,6 +120,7 @@ import {
 import { buildCodexConversationTurnInput } from "./conversation-turn-input.js";
 import { isIncognitoSessionKey } from "./incognito-session.js";
 import { resumeCodexCliSessionOnNode } from "./node-cli-sessions.js";
+import { resolveCodexProcessSingleton } from "./process-global.js";
 
 const DEFAULT_BOUND_TURN_TIMEOUT_MS = 20 * 60_000;
 const DEFAULT_AGENT_ID = "main";
@@ -216,11 +217,9 @@ const CODEX_CONVERSATION_THREAD_DEVELOPER_INSTRUCTIONS =
   "This Codex thread is bound to an OpenClaw conversation. Answer normally; OpenClaw will deliver your final response back to the conversation.";
 
 function getGlobalState(): CodexConversationGlobalState {
-  const globalState = globalThis as typeof globalThis & {
-    [CODEX_CONVERSATION_GLOBAL_STATE]?: CodexConversationGlobalState;
-  };
-  globalState[CODEX_CONVERSATION_GLOBAL_STATE] ??= { queue: new KeyedAsyncQueue() };
-  return globalState[CODEX_CONVERSATION_GLOBAL_STATE];
+  return resolveCodexProcessSingleton(CODEX_CONVERSATION_GLOBAL_STATE, () => ({
+    queue: new KeyedAsyncQueue(),
+  }));
 }
 
 async function startCodexConversationThread(

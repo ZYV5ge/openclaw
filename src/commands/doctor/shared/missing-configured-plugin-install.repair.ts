@@ -1,5 +1,9 @@
 import { rm } from "node:fs/promises";
 import { stripAnsi } from "../../../../packages/terminal-core/src/ansi.js";
+import {
+  resolveAgentWorkspaceDir,
+  resolveDefaultAgentId,
+} from "../../../agents/agent-scope-config.js";
 import type { OpenClawConfig } from "../../../config/types.openclaw.js";
 import type { PluginInstallRecord } from "../../../config/types.plugins.js";
 import type { ClawHubRiskAcknowledgementRequest } from "../../../plugins/clawhub.js";
@@ -377,7 +381,11 @@ async function repairMissingPluginInstalls(params: {
     }
   }
 
-  const persistedIndexOptions = { config: params.cfg, env };
+  const persistedIndexOptions = {
+    config: params.cfg,
+    env,
+    workspaceDir: resolveAgentWorkspaceDir(params.cfg, resolveDefaultAgentId(params.cfg), env),
+  };
   if (nextRecords !== records) {
     await writePersistedInstalledPluginIndexInstallRecords(nextRecords, persistedIndexOptions);
   } else if (params.baselineRecords) {

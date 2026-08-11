@@ -853,6 +853,35 @@ describe("cli session history", () => {
     });
   });
 
+  it("deduplicates a local user turn against its CLI copy with an appended bootstrap warning", () => {
+    const prompt = "Please reply with exactly: HISTORY_DEDUPE_OK";
+    const timestamp = Date.parse("2026-08-10T20:35:20.000Z");
+    const localMessages = [
+      {
+        role: "user",
+        content: prompt,
+        timestamp,
+        idempotencyKey: "run-bootstrap-warning:user",
+      },
+    ];
+    const importedMessages = [
+      {
+        role: "user",
+        content: `${prompt}\n\n[Bootstrap truncation warning]\nSome workspace bootstrap files were truncated before injection.\nTreat Project Context as partial and read the relevant files directly if details seem missing.\n- USER.md: 16110 raw -> 4000 injected (~75% removed; max/file).\n- USER.md has a fixed 4000-character bootstrap cap; keep it compact.`,
+        timestamp: timestamp + 60_000,
+        __openclaw: {
+          importedFrom: "claude-cli",
+          externalId: "cli-bootstrap-warning-copy",
+          cliSessionId: "session-bootstrap-warning",
+        },
+      },
+    ];
+
+    const merged = mergeImportedChatHistoryMessages({ localMessages, importedMessages });
+
+    expect(merged).toEqual(localMessages);
+  });
+
   it.each([
     ["deduplicates a local redacted copy against an imported full copy", false],
     ["deduplicates when both local and imported copies are already redacted", true],

@@ -11,6 +11,7 @@ import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import type { PluginRuntime } from "openclaw/plugin-sdk/plugin-runtime";
 import { completeWithPreparedSimpleCompletionModel } from "openclaw/plugin-sdk/simple-completion-runtime";
 import type { CodexAppServerBindingStore } from "./src/app-server/session-binding.js";
+import { readCodexProcessSingleton } from "./src/process-global.js";
 import type { CodexSessionCatalogControl } from "./src/session-catalog-types.js";
 
 // `codex` is legacy input only until Part 2 doctor migration rewrites stored refs.
@@ -34,11 +35,12 @@ type CodexAppServerAgentHarness = AgentHarnessV2 & {
 };
 
 async function disposeSharedCodexAppServerClients(): Promise<void> {
-  const dispose = (
-    globalThis as typeof globalThis & {
-      [SHARED_CODEX_APP_SERVER_CLIENT_DISPOSER]?: () => Promise<void>;
-    }
-  )[SHARED_CODEX_APP_SERVER_CLIENT_DISPOSER];
+  const localDispose = (globalThis as Record<PropertyKey, unknown>)[
+    SHARED_CODEX_APP_SERVER_CLIENT_DISPOSER
+  ] as (() => Promise<void>) | undefined;
+  const dispose =
+    localDispose ??
+    readCodexProcessSingleton<() => Promise<void>>(SHARED_CODEX_APP_SERVER_CLIENT_DISPOSER);
   await dispose?.();
 }
 

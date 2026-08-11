@@ -8,6 +8,7 @@ import {
   resolveWindowsExecutablePath,
   resolveWindowsSpawnProgram,
 } from "openclaw/plugin-sdk/windows-spawn";
+import { resolveCodexProcessSingleton } from "../process-global.js";
 import type { CodexAppServerClient, CodexAppServerRuntimeIdentity } from "./client.js";
 import type { CodexAppServerStartOptions } from "./config.js";
 import { resolveCodexAppServerSpawnEnv } from "./transport-stdio.js";
@@ -109,11 +110,10 @@ function getRuntimeArtifactBindings(): WeakMap<
   CodexAppServerClient,
   AgentHarnessRuntimeArtifactBinding
 > {
-  const globalState = globalThis as typeof globalThis & {
-    [ARTIFACT_BINDINGS_SYMBOL]?: WeakMap<CodexAppServerClient, AgentHarnessRuntimeArtifactBinding>;
-  };
-  globalState[ARTIFACT_BINDINGS_SYMBOL] ??= new WeakMap();
-  return globalState[ARTIFACT_BINDINGS_SYMBOL];
+  return resolveCodexProcessSingleton(
+    ARTIFACT_BINDINGS_SYMBOL,
+    () => new WeakMap<CodexAppServerClient, AgentHarnessRuntimeArtifactBinding>(),
+  );
 }
 
 function throwIfAborted(signal?: AbortSignal): void {

@@ -276,6 +276,63 @@ describe("shared Codex app-server client", () => {
     expect(isCodexAppServerStartSelectionChangedError(error)).toBe(true);
   });
 
+  it("reuses a process-scoped shared client across plugin global contexts", async () => {
+    const stateKey = Symbol.for("openclaw.codexAppServerClientState");
+    const globalStore = globalThis as Record<PropertyKey, unknown>;
+    const processStore = process as NodeJS.Process & Record<PropertyKey, unknown>;
+    const originalGlobalState = globalStore[stateKey];
+    const originalProcessState = processStore[stateKey];
+    const first = createClientHarness();
+    const unexpectedReplacement = createClientHarness();
+    let started = 0;
+    const startSpy = vi.spyOn(CodexAppServerClient, "start").mockImplementation(() => {
+      const harness = started++ === 0 ? first : unexpectedReplacement;
+      void sendInitializeResult(harness, "openclaw/0.147.0 (Linux; test)");
+      return harness.client;
+    });
+    const options = {
+      startOptions: {
+        transport: "stdio" as const,
+        homeScope: "user" as const,
+        command: "codex",
+        args: ["app-server"],
+        headers: {},
+        env: { CODEX_HOME: "/tmp/codex-home" },
+      },
+      timeoutMs: 1_000,
+    };
+    let secondClient: CodexAppServerClient | undefined;
+
+    try {
+      const firstClient = await getLeasedSharedCodexAppServerClient(options);
+      expect(releaseLeasedSharedCodexAppServerClient(firstClient)).toBe(true);
+      const sharedState = globalStore[stateKey];
+      expect(sharedState).toBeDefined();
+
+      Reflect.deleteProperty(globalStore, stateKey);
+      secondClient = await getLeasedSharedCodexAppServerClient(options);
+
+      expect(secondClient).toBe(firstClient);
+      expect(startSpy).toHaveBeenCalledOnce();
+    } finally {
+      if (secondClient) {
+        releaseLeasedSharedCodexAppServerClient(secondClient);
+      }
+      first.client.close();
+      unexpectedReplacement.client.close();
+      if (originalGlobalState === undefined) {
+        Reflect.deleteProperty(globalStore, stateKey);
+      } else {
+        globalStore[stateKey] = originalGlobalState;
+      }
+      if (originalProcessState === undefined) {
+        Reflect.deleteProperty(processStore, stateKey);
+      } else {
+        processStore[stateKey] = originalProcessState;
+      }
+    }
+  });
+
   it("fingerprints argv without exposing secret-shaped config overrides", () => {
     const identity = resolveCodexAppServerSpawnIdentity({
       transport: "stdio",

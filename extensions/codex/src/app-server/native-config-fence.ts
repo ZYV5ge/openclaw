@@ -1,4 +1,5 @@
 /** Serializes this Gateway's native config writes with its config-loading requests. */
+import { resolveCodexProcessSingleton } from "../process-global.js";
 
 type CodexNativeConfigFenceState = Map<string, Promise<void>>;
 
@@ -12,11 +13,7 @@ type CodexNativeConfigFenceOptions = {
 const CODEX_NATIVE_CONFIG_FENCE_STATE = Symbol.for("openclaw.codexNativeConfigFenceState");
 
 function getFenceState(): CodexNativeConfigFenceState {
-  const globalState = globalThis as typeof globalThis & {
-    [CODEX_NATIVE_CONFIG_FENCE_STATE]?: CodexNativeConfigFenceState;
-  };
-  globalState[CODEX_NATIVE_CONFIG_FENCE_STATE] ??= new Map();
-  return globalState[CODEX_NATIVE_CONFIG_FENCE_STATE];
+  return resolveCodexProcessSingleton(CODEX_NATIVE_CONFIG_FENCE_STATE, () => new Map());
 }
 
 /** Acquires the per-CODEX_HOME fence and returns an idempotent release. */

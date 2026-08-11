@@ -30,6 +30,7 @@ import {
   resolveCodexBindingModelProviderFallback,
 } from "./app-server/thread-lifecycle.js";
 import { formatCodexDisplayText } from "./command-formatters.js";
+import { resolveCodexProcessSingleton } from "./process-global.js";
 
 type ActiveTurn = {
   identity: CodexAppServerBindingIdentity;
@@ -45,11 +46,10 @@ type PermissionsMode = "default" | "yolo";
 const CODEX_CONVERSATION_CONTROL_STATE = Symbol.for("openclaw.codex.conversationControl");
 
 function getActiveTurns(): Map<string, ActiveTurn> {
-  const globalState = globalThis as typeof globalThis & {
-    [CODEX_CONVERSATION_CONTROL_STATE]?: Map<string, ActiveTurn>;
-  };
-  globalState[CODEX_CONVERSATION_CONTROL_STATE] ??= new Map();
-  return globalState[CODEX_CONVERSATION_CONTROL_STATE];
+  return resolveCodexProcessSingleton(
+    CODEX_CONVERSATION_CONTROL_STATE,
+    () => new Map<string, ActiveTurn>(),
+  );
 }
 
 export function trackCodexConversationActiveTurn(active: ActiveTurn): () => void {

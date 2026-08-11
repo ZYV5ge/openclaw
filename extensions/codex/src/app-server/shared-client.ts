@@ -7,6 +7,7 @@ import path from "node:path";
 import type { AgentHarnessRuntimeArtifactBinding } from "openclaw/plugin-sdk/agent-harness-runtime";
 import { resolveDefaultAgentDir, type AuthProfileStore } from "openclaw/plugin-sdk/agent-runtime";
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
+import { resolveCodexProcessSingleton, setCodexProcessSingleton } from "../process-global.js";
 import { CodexAppServerStartupError } from "./attempt-timeouts.js";
 import {
   applyCodexAppServerAuthProfile,
@@ -114,30 +115,25 @@ const CODEX_APP_SERVER_CLIENT_START_METADATA = Symbol.for(
 );
 
 function getSharedCodexAppServerClientState(): SharedCodexAppServerClientState {
-  const globalState = globalThis as typeof globalThis & {
-    [SHARED_CODEX_APP_SERVER_CLIENT_STATE]?: SharedCodexAppServerClientState;
-  };
-  globalState[SHARED_CODEX_APP_SERVER_CLIENT_STATE] ??= {
-    clients: new Map(),
-    liveClients: new Set(),
-    entriesByClient: new WeakMap(),
-    leasedReleases: new WeakMap(),
-  };
-  return globalState[SHARED_CODEX_APP_SERVER_CLIENT_STATE];
+  return resolveCodexProcessSingleton<SharedCodexAppServerClientState>(
+    SHARED_CODEX_APP_SERVER_CLIENT_STATE,
+    () => ({
+      clients: new Map(),
+      liveClients: new Set(),
+      entriesByClient: new WeakMap(),
+      leasedReleases: new WeakMap(),
+    }),
+  );
 }
 
 function getCodexAppServerClientStartMetadata(): WeakMap<
   CodexAppServerClient,
   CodexAppServerClientStartMetadata
 > {
-  const globalState = globalThis as typeof globalThis & {
-    [CODEX_APP_SERVER_CLIENT_START_METADATA]?: WeakMap<
-      CodexAppServerClient,
-      CodexAppServerClientStartMetadata
-    >;
-  };
-  globalState[CODEX_APP_SERVER_CLIENT_START_METADATA] ??= new WeakMap();
-  return globalState[CODEX_APP_SERVER_CLIENT_START_METADATA];
+  return resolveCodexProcessSingleton(
+    CODEX_APP_SERVER_CLIENT_START_METADATA,
+    () => new WeakMap<CodexAppServerClient, CodexAppServerClientStartMetadata>(),
+  );
 }
 
 /** Reads the exact successful spawn selection plus its initialized runtime identity. */
@@ -1267,11 +1263,10 @@ export async function clearSharedCodexAppServerClientAndWait(options?: {
   await Promise.all(clients.map((client) => client.closeAndWait(options)));
 }
 
-(
-  globalThis as typeof globalThis & {
-    [SHARED_CODEX_APP_SERVER_CLIENT_DISPOSER]?: () => Promise<void>;
-  }
-)[SHARED_CODEX_APP_SERVER_CLIENT_DISPOSER] = clearSharedCodexAppServerClientAndWait;
+setCodexProcessSingleton(
+  SHARED_CODEX_APP_SERVER_CLIENT_DISPOSER,
+  clearSharedCodexAppServerClientAndWait,
+);
 
 function getOrCreateSharedClientEntry(
   state: SharedCodexAppServerClientState,

@@ -1,31 +1,31 @@
-name: OpenClaw 2026.8.1 Self-Built Beta 2 arm64 Debug build
+name: OpenClaw 2026.8.1 Self-Built Beta 3 arm64 Debug build
 
 on:
   push:
     branches:
-      - agent/openclaw-selfbuild-2
+      - agent/openclaw-selfbuild-3
 
 permissions:
   actions: read
   contents: read
 
-run-name: OpenClaw 2026.8.1 Self-Built Beta 2 Dev arm64 ${{ github.sha }}
+run-name: OpenClaw 2026.8.1 Self-Built Beta 3 Dev arm64 ${{ github.sha }}
 
 concurrency:
-  group: openclaw-2026-8-1-selfbuild-2-arm64-${{ github.sha }}
+  group: openclaw-2026-8-1-selfbuild-3-arm64-${{ github.sha }}
   cancel-in-progress: false
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
   NODE_VERSION: "24.16.0"
   COMPAT_VERSION: "2026.8.1"
-  DISTRIBUTION_VERSION: "2026.8.1-selfbuild.2"
-  DISTRIBUTION_NAME: OpenClaw 2026.8.1 Self-Built Beta 2
-  APP_BUILD: "2608000191"
+  DISTRIBUTION_VERSION: "2026.8.1-selfbuild.3"
+  DISTRIBUTION_NAME: OpenClaw 2026.8.1 Self-Built Beta 3
+  APP_BUILD: "2608000192"
   BUNDLE_ID: ai.openclaw.mac.debug
-  FROZEN_UPSTREAM_SHA: 459c70e14a2c93bf355b31d46a285ffbc0c43438
+  FROZEN_UPSTREAM_SHA: 76c7cd73085ebcac8450e4d0e70fb41c1898f775
   PERSONAL_REPOSITORY: ZYV5ge/openclaw
-  PERSONAL_BRANCH: agent/openclaw-selfbuild-2
+  PERSONAL_BRANCH: agent/openclaw-selfbuild-3
 
 jobs:
   preflight:
@@ -67,8 +67,23 @@ jobs:
               .github/workflows/selfbuild-current-main.yml | \
               apps/macos/Sources/OpenClaw/AboutSettings.swift | \
               apps/shared/OpenClawKit/Tests/OpenClawKitTests/ArtifactBuildInfoTests.swift | \
+              extensions/codex/harness.ts | \
+              extensions/codex/src/app-server/computer-use-health.ts | \
+              extensions/codex/src/app-server/config-utils.ts | \
+              extensions/codex/src/app-server/config.test.ts | \
+              extensions/codex/src/app-server/native-config-fence.ts | \
+              extensions/codex/src/app-server/runtime-artifact.ts | \
+              extensions/codex/src/app-server/shared-client.test.ts | \
+              extensions/codex/src/app-server/shared-client.ts | \
+              extensions/codex/src/conversation-binding.ts | \
+              extensions/codex/src/conversation-control.ts | \
+              extensions/codex/src/process-global.ts | \
               scripts/package-mac-app.sh | \
               scripts/write-build-info.ts | \
+              src/commands/doctor/shared/missing-configured-plugin-install.repair.ts | \
+              src/commands/doctor/shared/missing-configured-plugin-install.test.ts | \
+              src/gateway/cli-session-history.merge.ts | \
+              src/gateway/cli-session-history.test.ts | \
               test/scripts/package-mac-app.test.ts | \
               test/scripts/write-build-info.test.ts)
                 return 0
@@ -120,15 +135,34 @@ jobs:
           use-actions-cache: "false"
           save-actions-cache: "false"
 
-      - name: Test workflow, identity, packaging, and official model refresh
+      - name: Test workflow, identity, retained hotfixes, packaging, and official model refresh
         run: |
           set -euo pipefail
           pnpm check:workflows
           node_modules/.bin/oxfmt --check \
+            extensions/codex/harness.ts \
+            extensions/codex/src/app-server/computer-use-health.ts \
+            extensions/codex/src/app-server/config-utils.ts \
+            extensions/codex/src/app-server/config.test.ts \
+            extensions/codex/src/app-server/native-config-fence.ts \
+            extensions/codex/src/app-server/runtime-artifact.ts \
+            extensions/codex/src/app-server/shared-client.test.ts \
+            extensions/codex/src/app-server/shared-client.ts \
+            extensions/codex/src/conversation-binding.ts \
+            extensions/codex/src/conversation-control.ts \
+            extensions/codex/src/process-global.ts \
             scripts/write-build-info.ts \
+            src/commands/doctor/shared/missing-configured-plugin-install.repair.ts \
+            src/commands/doctor/shared/missing-configured-plugin-install.test.ts \
+            src/gateway/cli-session-history.merge.ts \
+            src/gateway/cli-session-history.test.ts \
             test/scripts/package-mac-app.test.ts \
             test/scripts/write-build-info.test.ts
           node scripts/run-vitest.mjs run \
+            extensions/codex/src/app-server/config.test.ts \
+            extensions/codex/src/app-server/shared-client.test.ts \
+            src/commands/doctor/shared/missing-configured-plugin-install.test.ts \
+            src/gateway/cli-session-history.test.ts \
             test/scripts/package-mac-app.test.ts \
             test/scripts/write-build-info.test.ts \
             src/agents/model-catalog-visibility.test.ts
@@ -150,7 +184,7 @@ jobs:
             echo "- Candidate source: $GITHUB_SHA"
             echo "- Compatibility version: $COMPAT_VERSION"
             echo "- Distribution version: $DISTRIBUTION_VERSION"
-            echo "- Product logic: unchanged from the frozen official baseline"
+            echo "- Product logic: frozen official baseline plus the enumerated retained r3 hotfix stack"
             echo "- Target: arm64 Debug App + darwin-arm64 runtime + matching Codex plugin"
             echo "- Excluded: Universal App, Intel App, DMG, notarization, deployment"
             echo
@@ -172,8 +206,8 @@ jobs:
       ALLOW_ADHOC_SIGNING: "1"
       CODESIGN_TIMESTAMP: "off"
       DISABLE_LIBRARY_VALIDATION: "0"
-      OPENCLAW_DISTRIBUTION_VERSION: "2026.8.1-selfbuild.2"
-      OPENCLAW_DISTRIBUTION_NAME: OpenClaw 2026.8.1 Self-Built Beta 2
+      OPENCLAW_DISTRIBUTION_VERSION: "2026.8.1-selfbuild.3"
+      OPENCLAW_DISTRIBUTION_NAME: OpenClaw 2026.8.1 Self-Built Beta 3
       NODE_OPTIONS: --max-old-space-size=6144
       PNPM_CONFIG_CHILD_CONCURRENCY: "2"
       PNPM_CONFIG_NETWORK_CONCURRENCY: "8"
@@ -202,7 +236,7 @@ jobs:
           git cat-file -e "$FROZEN_UPSTREAM_SHA^{commit}"
           git merge-base --is-ancestor "$FROZEN_UPSTREAM_SHA" "$GITHUB_SHA"
           changed_count="$(git diff --name-only "$FROZEN_UPSTREAM_SHA..$GITHUB_SHA" | wc -l | tr -d ' ')"
-          [[ "$changed_count" == "7" ]]
+          [[ "$changed_count" == "22" ]]
 
       - name: Select pinned Xcode 26.6 and Swift 6.3+
         run: |
@@ -923,10 +957,39 @@ jobs:
               ".github/workflows/selfbuild-current-main.yml",
               "apps/macos/Sources/OpenClaw/AboutSettings.swift",
               "apps/shared/OpenClawKit/Tests/OpenClawKitTests/ArtifactBuildInfoTests.swift",
+              "extensions/codex/harness.ts",
+              "extensions/codex/src/app-server/computer-use-health.ts",
+              "extensions/codex/src/app-server/config-utils.ts",
+              "extensions/codex/src/app-server/config.test.ts",
+              "extensions/codex/src/app-server/native-config-fence.ts",
+              "extensions/codex/src/app-server/runtime-artifact.ts",
+              "extensions/codex/src/app-server/shared-client.test.ts",
+              "extensions/codex/src/app-server/shared-client.ts",
+              "extensions/codex/src/conversation-binding.ts",
+              "extensions/codex/src/conversation-control.ts",
+              "extensions/codex/src/process-global.ts",
               "scripts/package-mac-app.sh",
               "scripts/write-build-info.ts",
+              "src/commands/doctor/shared/missing-configured-plugin-install.repair.ts",
+              "src/commands/doctor/shared/missing-configured-plugin-install.test.ts",
+              "src/gateway/cli-session-history.merge.ts",
+              "src/gateway/cli-session-history.test.ts",
               "test/scripts/package-mac-app.test.ts",
               "test/scripts/write-build-info.test.ts",
+            ],
+            localHotfixContracts: [
+              {
+                id: "codex-process-singletons",
+                purpose: "share Codex app-server clients, fences, queues, and secrets across Jiti globals",
+              },
+              {
+                id: "plugin-index-workspace",
+                purpose: "persist Doctor plugin metadata for the configured default-agent workspace",
+              },
+              {
+                id: "claude-cli-bootstrap-history-dedupe",
+                purpose: "avoid duplicate imported prompts that differ only by an appended bootstrap warning",
+              },
             ],
             identity: {
               humanName: process.env.DISTRIBUTION_NAME,

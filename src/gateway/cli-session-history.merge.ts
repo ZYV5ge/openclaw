@@ -8,8 +8,33 @@ import {
 import { stripInboundMetadata } from "../auto-reply/reply/strip-inbound-meta.js";
 
 const DEDUPE_TIMESTAMP_WINDOW_MS = 5 * 60 * 1000;
+const BOOTSTRAP_WARNING_HEADER = "[Bootstrap truncation warning]";
+const BOOTSTRAP_WARNING_INTRO = [
+  "Some workspace bootstrap files were truncated before injection.",
+  "Treat Project Context as partial and read the relevant files directly if details seem missing.",
+];
 
-function extractComparableText(message: unknown): string | undefined {
+function stripAppendedBootstrapWarning(text: string): string {
+  const marker = `\n\n${BOOTSTRAP_WARNING_HEADER}\n`;
+  const markerIndex = text.lastIndexOf(marker);
+  if (markerIndex < 0) {
+    return text;
+  }
+  const warningLines = text.slice(markerIndex + marker.length).split("\n");
+  if (
+    warningLines.length <= BOOTSTRAP_WARNING_INTRO.length ||
+    !BOOTSTRAP_WARNING_INTRO.every((line, index) => warningLines[index] === line) ||
+    !warningLines.slice(BOOTSTRAP_WARNING_INTRO.length).every((line) => line.startsWith("- "))
+  ) {
+    return text;
+  }
+  return text.slice(0, markerIndex);
+}
+
+function extractComparableText(
+  message: unknown,
+  options?: { stripBootstrapWarning?: boolean },
+): string | undefined {
   if (!message || typeof message !== "object") {
     return undefined;
   }
@@ -41,7 +66,10 @@ function extractComparableText(message: unknown): string | undefined {
     return undefined;
   }
   const visible = role === "user" ? stripInboundMetadata(joined) : joined;
-  const normalized = visible.replace(/\s+/g, " ").trim();
+  const comparable = options?.stripBootstrapWarning
+    ? stripAppendedBootstrapWarning(visible)
+    : visible;
+  const normalized = comparable.replace(/\s+/g, " ").trim();
   return normalized || undefined;
 }
 
@@ -115,7 +143,16 @@ function isEquivalentImportedMessage(existing: unknown, imported: unknown): bool
 
   const existingText = extractComparableText(existing);
   const importedText = extractComparableText(imported);
-  if (!existingText || !importedText || existingText !== importedText) {
+  const importedIdentity = resolveImportedExternalIdentity(imported);
+  const importedTextWithoutBootstrapWarning =
+    importedIdentity?.importedFrom === "claude-cli"
+      ? extractComparableText(imported, { stripBootstrapWarning: true })
+      : undefined;
+  if (
+    !existingText ||
+    !importedText ||
+    (existingText !== importedText && existingText !== importedTextWithoutBootstrapWarning)
+  ) {
     return false;
   }
 

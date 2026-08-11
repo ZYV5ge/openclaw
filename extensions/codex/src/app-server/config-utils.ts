@@ -5,6 +5,7 @@ import {
   normalizeTrimmedStringList,
   parseBooleanValue,
 } from "openclaw/plugin-sdk/string-coerce-runtime";
+import { resolveCodexProcessSingleton } from "../process-global.js";
 import type { OpenClawExecAsk, OpenClawExecSecurity } from "./config-contracts.js";
 import type { CodexServiceTier } from "./protocol.js";
 
@@ -128,11 +129,7 @@ export function hashSecretForKey(value: string | undefined, label: string): stri
 }
 
 function getStartOptionsKeySecret(): Buffer {
-  const globalState = globalThis as typeof globalThis & {
-    [START_OPTIONS_KEY_SECRET_SYMBOL]?: Buffer;
-  };
-  globalState[START_OPTIONS_KEY_SECRET_SYMBOL] ??= randomBytes(32);
-  return globalState[START_OPTIONS_KEY_SECRET_SYMBOL];
+  return resolveCodexProcessSingleton(START_OPTIONS_KEY_SECRET_SYMBOL, () => randomBytes(32));
 }
 
 function splitShellWords(value: string): string[] {

@@ -3054,6 +3054,42 @@ allowed_sandbox_modes = ["read-only", "workspace-write"]
     expect(first).not.toContain("sk-reload");
   });
 
+  it("keeps secret-derived shared-client keys stable across plugin global contexts", async () => {
+    const secretKey = Symbol.for("openclaw.codexAppServerStartOptionsKeySecret");
+    const globalStore = globalThis as Record<PropertyKey, unknown>;
+    const processStore = process as NodeJS.Process & Record<PropertyKey, unknown>;
+    const originalGlobalSecret = globalStore[secretKey];
+    const originalProcessSecret = processStore[secretKey];
+    const startOptions = {
+      transport: "stdio" as const,
+      homeScope: "user" as const,
+      command: "codex",
+      args: ["app-server"],
+      headers: {},
+      env: { CODEX_HOME: "/tmp/codex-home" },
+    };
+    const first = codexAppServerStartOptionsKey(startOptions);
+
+    try {
+      Reflect.deleteProperty(globalStore, secretKey);
+      vi.resetModules();
+      const reloaded = await import("./config.js");
+
+      expect(reloaded.codexAppServerStartOptionsKey(startOptions)).toEqual(first);
+    } finally {
+      if (originalGlobalSecret === undefined) {
+        Reflect.deleteProperty(globalStore, secretKey);
+      } else {
+        globalStore[secretKey] = originalGlobalSecret;
+      }
+      if (originalProcessSecret === undefined) {
+        Reflect.deleteProperty(processStore, secretKey);
+      } else {
+        processStore[secretKey] = originalProcessSecret;
+      }
+    }
+  });
+
   it("derives distinct shared-client keys for distinct agent dirs", () => {
     const startOptions = {
       transport: "stdio" as const,
