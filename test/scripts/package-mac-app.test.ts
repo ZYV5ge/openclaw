@@ -1120,6 +1120,18 @@ describe("package-mac-app plist stamping", () => {
     expect(stampBlock).not.toContain("|| true");
   });
 
+  it("stamps optional self-built distribution identity before signing", () => {
+    const script = readFileSync(scriptPath, "utf8");
+    const distributionStamp = script.indexOf("OpenClawDistributionVersion");
+    const signing = script.indexOf('echo "🔏 Signing bundle');
+
+    expect(script).toContain('DISTRIBUTION_VERSION="${OPENCLAW_DISTRIBUTION_VERSION:-}"');
+    expect(script).toContain('DISTRIBUTION_NAME="${OPENCLAW_DISTRIBUTION_NAME:-}"');
+    expect(script).toContain("OpenClawDistributionName");
+    expect(distributionStamp).toBeGreaterThan(0);
+    expect(distributionStamp).toBeLessThan(signing);
+  });
+
   it.runIf(process.platform === "darwin")(
     "sets required strings and fails when the plist cannot be stamped",
     () => {
