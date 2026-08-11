@@ -21,7 +21,6 @@ env:
   COMPAT_VERSION: "2026.8.1"
   DISTRIBUTION_VERSION: "2026.8.1-selfbuild.2"
   DISTRIBUTION_NAME: OpenClaw 2026.8.1 Self-Built Beta 2
-  APP_CANDIDATE_NAME: OpenClaw 2026.8.1 Self-Built Beta 2 Dev
   APP_BUILD: "2608000191"
   BUNDLE_ID: ai.openclaw.mac.debug
   FROZEN_UPSTREAM_SHA: 459c70e14a2c93bf355b31d46a285ffbc0c43438
@@ -101,10 +100,10 @@ jobs:
             ui/src/pages/chat/models.ts \
             src/agents/model-catalog-visibility.ts \
             src/gateway/server-methods/models.ts
-          rg -F 'view: "configured"' ui/src/pages/chat/models.ts
-          rg -F 'models: false' ui/src/pages/chat/chat-state-refresh.ts
-          rg -F 'refreshModelCatalog: true' ui/src/pages/chat/chat-state-refresh.ts
-          if rg -F 'view: "all"' \
+          grep -F 'view: "configured"' ui/src/pages/chat/models.ts
+          grep -F 'models: false' ui/src/pages/chat/chat-state-refresh.ts
+          grep -F 'refreshModelCatalog: true' ui/src/pages/chat/chat-state-refresh.ts
+          if grep -F 'view: "all"' \
             ui/src/pages/chat/models.ts \
             apps/shared/OpenClawKit/Sources/OpenClawChatUI/ChatGatewayRequest.swift; then
             echo "::error::A local all-model bypass was reintroduced."
@@ -413,11 +412,11 @@ jobs:
             echo "::error::macOS production source still names the legacy approval file."
             exit 1
           fi
-          rg -F 'ExecApprovalsSQLiteStore.databaseURL' apps/macos/Sources/OpenClaw/ExecApprovalsStore.swift
-          rg -F 'ExecApprovalsSQLiteStore.withImmediateTransaction' apps/macos/Sources/OpenClaw/ExecApprovalsStore.swift
-          rg -F 'state/openclaw.sqlite#exec_approvals_config' \
+          grep -F 'ExecApprovalsSQLiteStore.databaseURL' apps/macos/Sources/OpenClaw/ExecApprovalsStore.swift
+          grep -F 'ExecApprovalsSQLiteStore.withImmediateTransaction' apps/macos/Sources/OpenClaw/ExecApprovalsStore.swift
+          grep -F 'state/openclaw.sqlite#exec_approvals_config' \
             apps/shared/OpenClawKit/Sources/OpenClawKit/ExecApprovalsSQLiteStore.swift
-          rg -F 'if raw.isEmpty || raw.lowercased() == "default"' \
+          grep -F 'if raw.isEmpty || raw.lowercased() == "default"' \
             apps/macos/Sources/OpenClaw/AppProfile.swift
           SOURCE_EVIDENCE="$BUNDLE_DIR/source-evidence.json" node --input-type=module <<'NODE'
           import { execFileSync } from "node:child_process";
