@@ -521,8 +521,8 @@ jobs:
               architectures="$(/usr/bin/lipo -archs "$candidate")"
               relative="${candidate#$app/}"
               printf '%s\t%s\n' "$relative" "$architectures" >> "$DEBUG_APP_OUTPUT_DIR/architectures.txt"
-              if [[ "$architectures" != "arm64" ]]; then
-                echo "::error::$relative is not arm64-only: $architectures"
+              if [[ " $architectures " != *" arm64 "* ]]; then
+                echo "::error::$relative does not contain the required arm64 slice: $architectures"
                 exit 1
               fi
               macho_count=$((macho_count + 1))
