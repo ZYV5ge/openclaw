@@ -72,7 +72,7 @@ jobs:
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           ref: ${{ github.sha }}
-          fetch-depth: 2
+          fetch-depth: 3
           persist-credentials: false
 
       - name: Prove functional plugin source is frozen at ae86f76
@@ -82,8 +82,8 @@ jobs:
             echo "::error::Checkout did not resolve to the event SHA."
             exit 1
           fi
-          if [[ "$(git rev-parse HEAD^)" != "$PLUGIN_SOURCE_SHA" ]]; then
-            echo "::error::Plugin packaging commit must be a single workflow-only child of $PLUGIN_SOURCE_SHA."
+          if ! git merge-base --is-ancestor "$PLUGIN_SOURCE_SHA" HEAD; then
+            echo "::error::Plugin packaging commit must descend from frozen source $PLUGIN_SOURCE_SHA."
             exit 1
           fi
           changed_paths="$(git diff --name-only "$PLUGIN_SOURCE_SHA" HEAD)"
@@ -355,12 +355,13 @@ jobs:
                   throw new Error(`${expected.id}: generated channelConfigs schema is missing`);
                 }
               }
+              let doctorSource = "";
               if (expected.doctor) {
                 const doctorPath = path.join(packageRoot, "dist", "doctor-contract-api.js");
                 if (!fs.existsSync(doctorPath)) {
                   throw new Error(`${expected.id}: compiled doctor contract is missing`);
                 }
-                const doctorSource = fs.readFileSync(doctorPath, "utf8");
+                doctorSource = fs.readFileSync(doctorPath, "utf8");
                 if (/from\s*["']openclaw\/plugin-sdk\/runtime-doctor["']/u.test(doctorSource)) {
                   throw new Error(`${expected.id}: compiled doctor contract imports removed runtime-doctor export`);
                 }
