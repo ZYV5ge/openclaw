@@ -1,0 +1,848 @@
+name: OpenClaw 2026.8.1 Self-Built external plugin package
+
+on:
+  push:
+    branches:
+      - agent/openclaw-beta-5-1
+
+permissions:
+  actions: read
+  contents: read
+
+run-name: OpenClaw 2026.8.1 Self-Built external plugins ${{ github.sha }}
+
+concurrency:
+  group: selfbuild-plugin-package-${{ github.sha }}
+  cancel-in-progress: false
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+  NODE_VERSION: "24.15.0"
+  PERSONAL_REPOSITORY: ZYV5ge/openclaw
+  PERSONAL_BRANCH: agent/openclaw-beta-5-1
+  PLUGIN_SOURCE_SHA: ae86f76c51e753545c0c5d35b0d074fdbb73b081
+  HOST_PRODUCT_VERSION: 2026.8.1-selfbuild.1
+  HOST_PLUGIN_API_VERSION: 2026.8.1
+  HOST_ARTIFACT_RUN_ID: "31420475880"
+  HOST_ARTIFACT_ID: "9079089412"
+  HOST_ARTIFACT_NAME: OpenClaw-2026.8.1-selfbuild.1-macos-universal-ae86f76c51e7
+  HOST_ARTIFACT_DIGEST: sha256:f825cbcd9a94d4e8cea8776668aacfb72808b51070ae124a67e2e55f34b9702f
+  HOST_RUNTIME_NAME: openclaw-2026.8.1-selfbuild.1-runtime-darwin-arm64-ae86f76c51e7.tgz
+  HOST_RUNTIME_SHA256: 197699701030cd7e7876899d08d2d8746b792fd711d5c9bb93e577a30bedff14
+
+jobs:
+  package_external_plugins:
+    if: ${{ contains(github.event.head_commit.message, '[plugins-only]') }}
+    name: Package and validate eight external plugins
+    runs-on: macos-26
+    timeout-minutes: 90
+    steps:
+      - name: Validate immutable plugin-only request
+        env:
+          HEAD_MESSAGE: ${{ github.event.head_commit.message }}
+          REPOSITORY_IS_PRIVATE: ${{ github.event.repository.private }}
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_REPOSITORY" != "$PERSONAL_REPOSITORY" ]]; then
+            echo "::error::This workflow is restricted to $PERSONAL_REPOSITORY."
+            exit 1
+          fi
+          if [[ "$REPOSITORY_IS_PRIVATE" != "false" ]]; then
+            echo "::error::This cloud package must use the existing public repository."
+            exit 1
+          fi
+          if [[ "$GITHUB_REF" != "refs/heads/$PERSONAL_BRANCH" ]]; then
+            echo "::error::This workflow only accepts the existing personal branch."
+            exit 1
+          fi
+          if [[ ! "$GITHUB_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::GitHub did not supply a full lowercase source SHA."
+            exit 1
+          fi
+          if [[ "$HEAD_MESSAGE" != *"[plugins-only]"* ]]; then
+            echo "::error::The explicit [plugins-only] marker is required."
+            exit 1
+          fi
+          if [[ "$HEAD_MESSAGE" == *"[package]"* ]]; then
+            echo "::error::The plugin-only request must not trigger the full Mac package workflow."
+            exit 1
+          fi
+
+      - name: Checkout exact packaging commit
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 2
+          persist-credentials: false
+
+      - name: Prove functional plugin source is frozen at ae86f76
+        run: |
+          set -euo pipefail
+          if [[ "$(git rev-parse HEAD)" != "$GITHUB_SHA" ]]; then
+            echo "::error::Checkout did not resolve to the event SHA."
+            exit 1
+          fi
+          if [[ "$(git rev-parse HEAD^)" != "$PLUGIN_SOURCE_SHA" ]]; then
+            echo "::error::Plugin packaging commit must be a single workflow-only child of $PLUGIN_SOURCE_SHA."
+            exit 1
+          fi
+          changed_paths="$(git diff --name-only "$PLUGIN_SOURCE_SHA" HEAD)"
+          if [[ "$changed_paths" != ".github/workflows/selfbuild-plugin-package.yml" ]]; then
+            echo "::error::Unexpected paths differ from frozen plugin source:"
+            printf '%s\n' "$changed_paths"
+            exit 1
+          fi
+          git diff --check "$PLUGIN_SOURCE_SHA" HEAD
+          git diff --quiet "$PLUGIN_SOURCE_SHA" HEAD -- \
+            extensions/acpx \
+            extensions/deepseek \
+            extensions/discord \
+            extensions/feishu \
+            extensions/google-meet \
+            extensions/perplexity \
+            extensions/tencent \
+            extensions/venice \
+            scripts/plugin-npm-publish.sh \
+            scripts/verify-plugin-npm-published-runtime.mts \
+            scripts/lib/plugin-npm-package-manifest.mjs \
+            scripts/lib/plugin-npm-package-manifest.mts \
+            scripts/lib/plugin-npm-runtime-build.mjs \
+            scripts/lib/plugin-npm-runtime-build.mts \
+            package.json \
+            pnpm-lock.yaml
+
+      - name: Setup pinned Node and pnpm without shared caches
+        uses: ./.github/actions/setup-node-env
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          install-bun: "false"
+          install-deps: "true"
+          frozen-lockfile: "true"
+          use-actions-cache: "false"
+          save-actions-cache: "false"
+
+      - name: Validate workflow and frozen package contracts
+        run: |
+          set -euo pipefail
+          pnpm check:workflows
+          node --input-type=module <<'NODE'
+          import fs from "node:fs";
+
+          const expected = [
+            ["acpx", "extensions/acpx", "@openclaw/acpx"],
+            ["deepseek", "extensions/deepseek", "@openclaw/deepseek-provider"],
+            ["discord", "extensions/discord", "@openclaw/discord"],
+            ["feishu", "extensions/feishu", "@openclaw/feishu"],
+            ["google-meet", "extensions/google-meet", "@openclaw/google-meet"],
+            ["perplexity", "extensions/perplexity", "@openclaw/perplexity-plugin"],
+            ["tencent", "extensions/tencent", "@openclaw/tencent-provider"],
+            ["venice", "extensions/venice", "@openclaw/venice-provider"],
+          ];
+          for (const [pluginId, packageDir, packageName] of expected) {
+            const packageJson = JSON.parse(fs.readFileSync(`${packageDir}/package.json`, "utf8"));
+            const manifest = JSON.parse(
+              fs.readFileSync(`${packageDir}/openclaw.plugin.json`, "utf8"),
+            );
+            if (packageJson.name !== packageName || packageJson.version !== "2026.8.1") {
+              throw new Error(`${packageDir} is not the expected 2026.8.1 package`);
+            }
+            if (manifest.id !== pluginId) {
+              throw new Error(`${packageDir} manifest id is ${manifest.id}, expected ${pluginId}`);
+            }
+            if (packageJson.openclaw?.compat?.pluginApi !== ">=2026.8.1") {
+              throw new Error(`${packageDir} does not target the 2026.8.1 plugin API`);
+            }
+            if (packageJson.openclaw?.build?.openclawVersion !== "2026.8.1") {
+              throw new Error(`${packageDir} was not authored against OpenClaw 2026.8.1`);
+            }
+          }
+          NODE
+
+      - name: Prepare unique plugin artifact directories
+        run: |
+          set -euo pipefail
+          short_source="${PLUGIN_SOURCE_SHA:0:12}"
+          short_package="${GITHUB_SHA:0:12}"
+          artifact_name="OpenClaw-${HOST_PRODUCT_VERSION}-external-plugins-${short_source}-${short_package}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          output_dir="$RUNNER_TEMP/$artifact_name"
+          pack_metadata_dir="$RUNNER_TEMP/plugin-pack-metadata-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          if [[ -e "$output_dir" || -e "$pack_metadata_dir" ]]; then
+            echo "::error::Unique output directory already exists."
+            exit 1
+          fi
+          mkdir -p "$output_dir" "$pack_metadata_dir"
+          echo "PLUGIN_ARTIFACT_NAME=$artifact_name" >> "$GITHUB_ENV"
+          echo "PLUGIN_OUTPUT_DIR=$output_dir" >> "$GITHUB_ENV"
+          echo "PACK_METADATA_DIR=$pack_metadata_dir" >> "$GITHUB_ENV"
+
+      - name: Build and pack exactly eight plugins with the official path
+        run: |
+          set -euo pipefail
+          while IFS='|' read -r plugin_id package_dir package_name; do
+            [[ -n "$plugin_id" ]] || continue
+            pack_output="$PACK_METADATA_DIR/$plugin_id-output.txt"
+            pack_json="$PACK_METADATA_DIR/$plugin_id.json"
+            before_count="$(find "$PLUGIN_OUTPUT_DIR" -maxdepth 1 -type f -name '*.tgz' | wc -l | tr -d ' ')"
+            OPENCLAW_PLUGIN_NPM_PACK_OUTPUT_DIR="$PLUGIN_OUTPUT_DIR" \
+              bash scripts/plugin-npm-publish.sh --pack "$package_dir" > "$pack_output"
+            node --import tsx --input-type=module - "$pack_output" "$pack_json" <<'NODE'
+          import fs from "node:fs";
+          import { resolveNpmJsonEntries } from "./scripts/lib/npm-json-output.mts";
+
+          const raw = fs.readFileSync(process.argv[2], "utf8").trim();
+          let entries;
+          for (let index = raw.length - 1; index >= 0; index -= 1) {
+            if (raw[index] !== "[" && raw[index] !== "{") continue;
+            try {
+              const candidate = resolveNpmJsonEntries(JSON.parse(raw.slice(index)));
+              if (candidate.length > 0) {
+                entries = candidate;
+                break;
+              }
+            } catch {
+              // npm may print bundled-dependency summaries before its JSON result.
+            }
+          }
+          if (!entries || entries.length !== 1) {
+            throw new Error("npm pack did not emit exactly one package JSON entry");
+          }
+          fs.writeFileSync(process.argv[3], `${JSON.stringify(entries, null, 2)}\n`);
+          NODE
+            after_count="$(find "$PLUGIN_OUTPUT_DIR" -maxdepth 1 -type f -name '*.tgz' | wc -l | tr -d ' ')"
+            if [[ "$after_count" -ne $((before_count + 1)) ]]; then
+              echo "::error::$package_name did not add exactly one TGZ."
+              exit 1
+            fi
+            TARBALL_NAME="$(PACK_JSON="$pack_json" node --input-type=module <<'NODE'
+          import fs from "node:fs";
+          import path from "node:path";
+          const entries = JSON.parse(fs.readFileSync(process.env.PACK_JSON, "utf8"));
+          const filename = entries[0]?.filename;
+          if (
+            typeof filename !== "string" ||
+            !filename.endsWith(".tgz") ||
+            filename.includes("\0") ||
+            filename !== path.basename(filename) ||
+            filename !== path.win32.basename(filename)
+          ) {
+            throw new Error(`unsafe npm pack filename: ${JSON.stringify(filename)}`);
+          }
+          process.stdout.write(filename);
+          NODE
+            )"
+            test -s "$PLUGIN_OUTPUT_DIR/$TARBALL_NAME"
+            OPENCLAW_PLUGIN_NPM_VERIFY_ATTEMPTS=1 \
+              OPENCLAW_PLUGIN_NPM_README_VERIFY_ATTEMPTS=1 \
+              node --import tsx scripts/verify-plugin-npm-published-runtime.mts \
+                "$PLUGIN_OUTPUT_DIR/$TARBALL_NAME" \
+                > "$PACK_METADATA_DIR/$plugin_id-runtime-verifier.txt"
+          done <<'PLUGINS'
+          acpx|extensions/acpx|@openclaw/acpx
+          deepseek|extensions/deepseek|@openclaw/deepseek-provider
+          discord|extensions/discord|@openclaw/discord
+          feishu|extensions/feishu|@openclaw/feishu
+          google-meet|extensions/google-meet|@openclaw/google-meet
+          perplexity|extensions/perplexity|@openclaw/perplexity-plugin
+          tencent|extensions/tencent|@openclaw/tencent-provider
+          venice|extensions/venice|@openclaw/venice-provider
+          PLUGINS
+          tgz_count="$(find "$PLUGIN_OUTPUT_DIR" -maxdepth 1 -type f -name '*.tgz' | wc -l | tr -d ' ')"
+          if [[ "$tgz_count" -ne 8 ]]; then
+            echo "::error::Expected exactly eight plugin TGZs, found $tgz_count."
+            exit 1
+          fi
+
+      - name: Validate packed runtime, generated metadata, and checksums
+        run: |
+          set -euo pipefail
+          node --input-type=module <<'NODE'
+          import crypto from "node:crypto";
+          import { execFileSync } from "node:child_process";
+          import fs from "node:fs";
+          import os from "node:os";
+          import path from "node:path";
+
+          const packages = [
+            { id: "acpx", dir: "extensions/acpx", name: "@openclaw/acpx", doctor: true, migrations: true },
+            {
+              id: "deepseek",
+              dir: "extensions/deepseek",
+              name: "@openclaw/deepseek-provider",
+            },
+            { id: "discord", dir: "extensions/discord", name: "@openclaw/discord", doctor: true, migrations: true, channel: true, setup: true },
+            { id: "feishu", dir: "extensions/feishu", name: "@openclaw/feishu", doctor: true, channel: true, setup: true },
+            { id: "google-meet", dir: "extensions/google-meet", name: "@openclaw/google-meet" },
+            { id: "perplexity", dir: "extensions/perplexity", name: "@openclaw/perplexity-plugin" },
+            { id: "tencent", dir: "extensions/tencent", name: "@openclaw/tencent-provider", setup: true },
+            { id: "venice", dir: "extensions/venice", name: "@openclaw/venice-provider" },
+          ];
+          const outputDir = process.env.PLUGIN_OUTPUT_DIR;
+          const metadataDir = process.env.PACK_METADATA_DIR;
+          const sourceSha = process.env.PLUGIN_SOURCE_SHA;
+          const digest = (algorithm, data, encoding = "hex") =>
+            crypto.createHash(algorithm).update(data).digest(encoding);
+          const cleanEntry = (entry) => String(entry).replace(/^\.\//u, "");
+          const records = [];
+
+          for (const expected of packages) {
+            const pack = JSON.parse(
+              fs.readFileSync(path.join(metadataDir, `${expected.id}.json`), "utf8"),
+            );
+            if (!Array.isArray(pack) || pack.length !== 1) {
+              throw new Error(`${expected.id}: invalid npm pack receipt`);
+            }
+            const packEntry = pack[0];
+            const tarballName = packEntry.filename;
+            const tarballPath = path.join(outputDir, tarballName);
+            const tarball = fs.readFileSync(tarballPath);
+            const actualIntegrity = `sha512-${digest("sha512", tarball, "base64")}`;
+            const actualShasum = digest("sha1", tarball);
+            const actualSha256 = digest("sha256", tarball);
+            if (packEntry.integrity !== actualIntegrity || packEntry.shasum !== actualShasum) {
+              throw new Error(`${expected.id}: npm integrity or shasum does not match TGZ bytes`);
+            }
+
+            const extractRoot = fs.mkdtempSync(path.join(os.tmpdir(), `openclaw-${expected.id}-`));
+            try {
+              execFileSync("tar", ["-xzf", tarballPath, "-C", extractRoot]);
+              const packageRoot = path.join(extractRoot, "package");
+              const packageJson = JSON.parse(
+                fs.readFileSync(path.join(packageRoot, "package.json"), "utf8"),
+              );
+              const pluginManifest = JSON.parse(
+                fs.readFileSync(path.join(packageRoot, "openclaw.plugin.json"), "utf8"),
+              );
+              if (
+                packageJson.name !== expected.name ||
+                packageJson.version !== "2026.8.1" ||
+                packEntry.name !== expected.name ||
+                packEntry.version !== "2026.8.1"
+              ) {
+                throw new Error(`${expected.id}: packed identity mismatch`);
+              }
+              if (
+                pluginManifest.id !== expected.id ||
+                packageJson.openclaw?.install?.npmSpec !== expected.name ||
+                packageJson.openclaw?.compat?.pluginApi !== ">=2026.8.1" ||
+                packageJson.openclaw?.build?.openclawVersion !== "2026.8.1"
+              ) {
+                throw new Error(`${expected.id}: packed OpenClaw contract mismatch`);
+              }
+              const runtimeEntries = packageJson.openclaw?.runtimeExtensions;
+              if (!Array.isArray(runtimeEntries) || runtimeEntries.length === 0) {
+                throw new Error(`${expected.id}: packed runtimeExtensions are missing`);
+              }
+              for (const entry of runtimeEntries) {
+                if (!fs.existsSync(path.join(packageRoot, cleanEntry(entry)))) {
+                  throw new Error(`${expected.id}: packed runtime entry is missing: ${entry}`);
+                }
+              }
+              if (!runtimeEntries.some((entry) => cleanEntry(entry) === "dist/index.js")) {
+                throw new Error(`${expected.id}: dist/index.js is not the packaged runtime entry`);
+              }
+              if (expected.setup) {
+                const runtimeSetupEntry = packageJson.openclaw?.runtimeSetupEntry;
+                if (
+                  typeof runtimeSetupEntry !== "string" ||
+                  !fs.existsSync(path.join(packageRoot, cleanEntry(runtimeSetupEntry)))
+                ) {
+                  throw new Error(`${expected.id}: generated runtime setup entry is missing`);
+                }
+              }
+              if (expected.channel) {
+                const generated = pluginManifest.channelConfigs?.[expected.id];
+                if (!generated?.schema || Object.keys(generated.schema).length === 0) {
+                  throw new Error(`${expected.id}: generated channelConfigs schema is missing`);
+                }
+              }
+              if (expected.doctor) {
+                const doctorPath = path.join(packageRoot, "dist", "doctor-contract-api.js");
+                if (!fs.existsSync(doctorPath)) {
+                  throw new Error(`${expected.id}: compiled doctor contract is missing`);
+                }
+                const doctorSource = fs.readFileSync(doctorPath, "utf8");
+                if (/from\s*["']openclaw\/plugin-sdk\/runtime-doctor["']/u.test(doctorSource)) {
+                  throw new Error(`${expected.id}: compiled doctor contract imports removed runtime-doctor export`);
+                }
+                if (
+                  expected.migrations &&
+                  !doctorSource.includes("openclaw/plugin-sdk/runtime-doctor-migrations")
+                ) {
+                  throw new Error(`${expected.id}: compiled doctor contract lacks migrations contract`);
+                }
+              }
+
+              const sourceTreeTar = execFileSync(
+                "git",
+                ["archive", "--format=tar", sourceSha, expected.dir],
+                { maxBuffer: 256 * 1024 * 1024 },
+              );
+              const sourceGitTree = execFileSync(
+                "git",
+                ["rev-parse", `${sourceSha}:${expected.dir}`],
+                { encoding: "utf8" },
+              ).trim();
+              const runtimeVerifier = fs
+                .readFileSync(path.join(metadataDir, `${expected.id}-runtime-verifier.txt`), "utf8")
+                .trim();
+              if (!runtimeVerifier.includes("plugin-npm-published-runtime-check:") || !runtimeVerifier.includes(" OK ")) {
+                throw new Error(`${expected.id}: official runtime verifier did not report success`);
+              }
+              records.push({
+                pluginId: expected.id,
+                sourceDirectory: expected.dir,
+                sourceGitTree,
+                sourceTreeTarSha256: digest("sha256", sourceTreeTar),
+                packageName: expected.name,
+                packageVersion: packageJson.version,
+                pluginApi: packageJson.openclaw.compat.pluginApi,
+                builtWithOpenClawVersion: packageJson.openclaw.build.openclawVersion,
+                tarballName,
+                bytes: fs.statSync(tarballPath).size,
+                sha256: actualSha256,
+                npmIntegrity: actualIntegrity,
+                npmShasum: actualShasum,
+                unpackedSize: packEntry.unpackedSize,
+                fileCount: Array.isArray(packEntry.files) ? packEntry.files.length : undefined,
+                runtimeExtensions: runtimeEntries,
+                runtimeSetupEntry: packageJson.openclaw.runtimeSetupEntry ?? null,
+                generatedChannelConfig: expected.channel === true,
+                doctorContract: expected.doctor
+                  ? {
+                      artifact: "dist/doctor-contract-api.js",
+                      removedRuntimeDoctorImport: false,
+                      runtimeDoctorMigrationsCompatible: true,
+                      migrationsContractImport: doctorSource.includes(
+                        "openclaw/plugin-sdk/runtime-doctor-migrations",
+                      ),
+                    }
+                  : null,
+                officialRuntimeVerifier: runtimeVerifier,
+              });
+            } finally {
+              fs.rmSync(extractRoot, { force: true, recursive: true });
+            }
+          }
+          const tgzs = fs.readdirSync(outputDir).filter((name) => name.endsWith(".tgz"));
+          if (tgzs.length !== packages.length || records.length !== packages.length) {
+            throw new Error(`expected ${packages.length} validated TGZs, found ${tgzs.length}`);
+          }
+          fs.writeFileSync(
+            path.join(outputDir, "plugins-manifest.json"),
+            `${JSON.stringify({ schemaVersion: 1, sourceSha, packages: records }, null, 2)}\n`,
+          );
+          NODE
+
+      - name: Download the already-built matching self-build host
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: ${{ env.HOST_ARTIFACT_NAME }}
+          path: ${{ runner.temp }}/matching-host-artifact
+          repository: ZYV5ge/openclaw
+          run-id: 31420475880
+          github-token: ${{ github.token }}
+
+      - name: Verify prior artifact provenance and extract its ARM64 runtime
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HOST_ARTIFACT_DIR: ${{ runner.temp }}/matching-host-artifact
+        run: |
+          set -euo pipefail
+          if [[ "$RUNNER_ARCH" != "ARM64" || "$(uname -m)" != "arm64" ]]; then
+            echo "::error::The matching darwin-arm64 runtime must be tested on an ARM64 macOS runner."
+            exit 1
+          fi
+          artifact_json="$RUNNER_TEMP/host-artifact-api.json"
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$HOST_ARTIFACT_ID" > "$artifact_json"
+          ARTIFACT_JSON="$artifact_json" node --input-type=module <<'NODE'
+          import fs from "node:fs";
+          const artifact = JSON.parse(fs.readFileSync(process.env.ARTIFACT_JSON, "utf8"));
+          if (artifact.id !== Number(process.env.HOST_ARTIFACT_ID)) throw new Error("host artifact id mismatch");
+          if (artifact.name !== process.env.HOST_ARTIFACT_NAME) throw new Error("host artifact name mismatch");
+          if (artifact.digest !== process.env.HOST_ARTIFACT_DIGEST) throw new Error("host artifact digest mismatch");
+          if (artifact.expired === true) throw new Error("host artifact has expired");
+          if (artifact.workflow_run?.head_sha !== process.env.PLUGIN_SOURCE_SHA) {
+            throw new Error("host artifact source SHA mismatch");
+          }
+          NODE
+          runtime_matches="$(find "$HOST_ARTIFACT_DIR" -type f -name "$HOST_RUNTIME_NAME" -print)"
+          if [[ "$(printf '%s\n' "$runtime_matches" | sed '/^$/d' | wc -l | tr -d ' ')" -ne 1 ]]; then
+            echo "::error::Expected exactly one matching ARM64 runtime archive."
+            exit 1
+          fi
+          runtime_tgz="$runtime_matches"
+          if [[ "$(shasum -a 256 "$runtime_tgz" | awk '{print $1}')" != "$HOST_RUNTIME_SHA256" ]]; then
+            echo "::error::Matching host runtime SHA-256 differs from the accepted build."
+            exit 1
+          fi
+          host_extract="$RUNNER_TEMP/matching-host-runtime"
+          mkdir -p "$host_extract"
+          tar -xzf "$runtime_tgz" -C "$host_extract"
+          host_root="$host_extract/package"
+          test -s "$host_root/openclaw.mjs"
+          test -s "$host_root/package.json"
+          test -s "$host_root/dist/build-info.json"
+          HOST_ROOT="$host_root" node --input-type=module <<'NODE'
+          import fs from "node:fs";
+          import path from "node:path";
+          const packageJson = JSON.parse(fs.readFileSync(path.join(process.env.HOST_ROOT, "package.json"), "utf8"));
+          const buildInfo = JSON.parse(fs.readFileSync(path.join(process.env.HOST_ROOT, "dist/build-info.json"), "utf8"));
+          if (packageJson.version !== process.env.HOST_PRODUCT_VERSION) throw new Error("host product version mismatch");
+          if (buildInfo.commit !== process.env.PLUGIN_SOURCE_SHA) throw new Error("host source commit mismatch");
+          NODE
+          reported_version="$(node "$host_root/openclaw.mjs" --version)"
+          if [[ "$reported_version" != "$HOST_PRODUCT_VERSION" ]]; then
+            echo "::error::Host CLI reports $reported_version, expected $HOST_PRODUCT_VERSION."
+            exit 1
+          fi
+          echo "MATCHING_HOST_ROOT=$host_root" >> "$GITHUB_ENV"
+          echo "MATCHING_HOST_RUNTIME_PATH=$runtime_tgz" >> "$GITHUB_ENV"
+
+      - name: Install, toggle, and load all plugins in an isolated profile
+        run: |
+          set -euo pipefail
+          validation_root="$RUNNER_TEMP/plugin-isolated-validation"
+          validation_home="$validation_root/home"
+          validation_state="$validation_home/.openclaw"
+          validation_config="$validation_state/openclaw.json"
+          validation_receipts="$RUNNER_TEMP/plugin-validation-receipts"
+          mkdir -p "$validation_state" "$validation_receipts"
+          printf '{}\n' > "$validation_config"
+          export HOME="$validation_home"
+          export OPENCLAW_STATE_DIR="$validation_state"
+          export OPENCLAW_CONFIG_PATH="$validation_config"
+          export OPENCLAW_COMPATIBILITY_HOST_VERSION="$HOST_PLUGIN_API_VERSION"
+          export NO_COLOR=1
+
+          host_cli() {
+            node "$MATCHING_HOST_ROOT/openclaw.mjs" "$@"
+          }
+
+          host_version="$(host_cli --version)"
+          if [[ "$host_version" != "$HOST_PRODUCT_VERSION" ]]; then
+            echo "::error::Isolated host product identity changed during validation."
+            exit 1
+          fi
+
+          while IFS='|' read -r plugin_id package_name; do
+            [[ -n "$plugin_id" ]] || continue
+            tarball_name="$(PLUGIN_ID="$plugin_id" node --input-type=module <<'NODE'
+          import fs from "node:fs";
+          import path from "node:path";
+          const manifest = JSON.parse(fs.readFileSync(path.join(process.env.PLUGIN_OUTPUT_DIR, "plugins-manifest.json"), "utf8"));
+          const record = manifest.packages.find((entry) => entry.pluginId === process.env.PLUGIN_ID);
+          if (!record) throw new Error(`missing package record for ${process.env.PLUGIN_ID}`);
+          process.stdout.write(record.tarballName);
+          NODE
+            )"
+            host_cli plugins install "npm-pack:$PLUGIN_OUTPUT_DIR/$tarball_name" --force \
+              > "$validation_receipts/$plugin_id-install.txt" 2>&1
+            host_cli plugins disable "$plugin_id" \
+              > "$validation_receipts/$plugin_id-disable.txt" 2>&1
+            host_cli plugins inspect "$plugin_id" --json \
+              > "$validation_receipts/$plugin_id-disabled.json" \
+              2> "$validation_receipts/$plugin_id-disabled.stderr"
+            PLUGIN_ID="$plugin_id" RECEIPT="$validation_receipts/$plugin_id-disabled.json" \
+              node --input-type=module <<'NODE'
+          import fs from "node:fs";
+          const report = JSON.parse(fs.readFileSync(process.env.RECEIPT, "utf8"));
+          if (report.plugin?.id !== process.env.PLUGIN_ID || report.plugin?.enabled !== false || report.plugin?.status !== "disabled") {
+            throw new Error(`${process.env.PLUGIN_ID}: disabled state was not observable`);
+          }
+          NODE
+            host_cli plugins enable "$plugin_id" \
+              > "$validation_receipts/$plugin_id-enable.txt" 2>&1
+            host_cli plugins inspect "$plugin_id" --runtime --json \
+              > "$validation_receipts/$plugin_id-enabled.json" \
+              2> "$validation_receipts/$plugin_id-enabled.stderr"
+            PLUGIN_ID="$plugin_id" PACKAGE_NAME="$package_name" RECEIPT="$validation_receipts/$plugin_id-enabled.json" \
+              node --input-type=module <<'NODE'
+          import fs from "node:fs";
+          const report = JSON.parse(fs.readFileSync(process.env.RECEIPT, "utf8"));
+          if (
+            report.plugin?.id !== process.env.PLUGIN_ID ||
+            report.plugin?.enabled !== true ||
+            report.plugin?.status !== "loaded" ||
+            report.plugin?.version !== "2026.8.1" ||
+            report.install?.source !== "npm" ||
+            report.install?.version !== "2026.8.1" ||
+            typeof report.install?.installPath !== "string"
+          ) {
+            throw new Error(`${process.env.PLUGIN_ID}: enabled installed runtime state is invalid`);
+          }
+          NODE
+          done <<'PLUGINS'
+          acpx|@openclaw/acpx
+          deepseek|@openclaw/deepseek-provider
+          discord|@openclaw/discord
+          feishu|@openclaw/feishu
+          google-meet|@openclaw/google-meet
+          perplexity|@openclaw/perplexity-plugin
+          tencent|@openclaw/tencent-provider
+          venice|@openclaw/venice-provider
+          PLUGINS
+
+          host_cli plugins list --json \
+            > "$validation_receipts/plugins-list.json" \
+            2> "$validation_receipts/plugins-list.stderr"
+          host_cli doctor --lint \
+            --only core/doctor/configured-plugin-installs \
+            --only core/doctor/plugin-registry \
+            --json \
+            > "$validation_receipts/doctor.json" \
+            2> "$validation_receipts/doctor.stderr"
+
+          VALIDATION_RECEIPTS="$validation_receipts" \
+            node --input-type=module <<'NODE'
+          import fs from "node:fs";
+          import path from "node:path";
+          import { pathToFileURL } from "node:url";
+
+          const ids = ["acpx", "deepseek", "discord", "feishu", "google-meet", "perplexity", "tencent", "venice"];
+          const receiptDir = process.env.VALIDATION_RECEIPTS;
+          const list = JSON.parse(fs.readFileSync(path.join(receiptDir, "plugins-list.json"), "utf8"));
+          if (!Array.isArray(list.registry?.diagnostics) || list.registry.diagnostics.length !== 0) {
+            throw new Error(`registry diagnostics are not empty: ${JSON.stringify(list.registry?.diagnostics)}`);
+          }
+          if (!Array.isArray(list.diagnostics) || list.diagnostics.length !== 0) {
+            throw new Error(`plugin diagnostics are not empty: ${JSON.stringify(list.diagnostics)}`);
+          }
+          for (const id of ids) {
+            const plugin = list.plugins?.find((entry) => entry.id === id);
+            if (!plugin || plugin.enabled !== true || plugin.status !== "loaded" || plugin.version !== "2026.8.1") {
+              throw new Error(`${id}: final registry state is not enabled and loaded`);
+            }
+          }
+          const doctor = JSON.parse(fs.readFileSync(path.join(receiptDir, "doctor.json"), "utf8"));
+          if (doctor.ok !== true || !Array.isArray(doctor.findings) || doctor.findings.length !== 0) {
+            throw new Error(`focused Doctor is not clean: ${JSON.stringify(doctor.findings)}`);
+          }
+
+          const contractLoads = [];
+          for (const id of ["acpx", "discord", "feishu"]) {
+            const inspect = JSON.parse(
+              fs.readFileSync(path.join(receiptDir, `${id}-enabled.json`), "utf8"),
+            );
+            const installPath = inspect.install?.installPath;
+            if (typeof installPath !== "string") throw new Error(`${id}: install path missing`);
+            const candidates = [
+              path.join(installPath, "doctor-contract-api.js"),
+              path.join(installPath, "dist", "doctor-contract-api.js"),
+            ];
+            const contractPath = candidates.find((candidate) => fs.existsSync(candidate));
+            if (!contractPath) throw new Error(`${id}: installed doctor contract artifact missing`);
+            const module = await import(`${pathToFileURL(contractPath).href}?validation=${Date.now()}`);
+            const exports = Object.keys(module).sort();
+            if (exports.length === 0) throw new Error(`${id}: doctor contract exported no symbols`);
+            contractLoads.push({ pluginId: id, artifact: "dist/doctor-contract-api.js", exports });
+          }
+
+          const toggles = ids.map((id) => {
+            const disabled = JSON.parse(
+              fs.readFileSync(path.join(receiptDir, `${id}-disabled.json`), "utf8"),
+            );
+            const enabled = JSON.parse(
+              fs.readFileSync(path.join(receiptDir, `${id}-enabled.json`), "utf8"),
+            );
+            return {
+              pluginId: id,
+              disabledObserved: disabled.plugin?.enabled === false && disabled.plugin?.status === "disabled",
+              enabledObserved: enabled.plugin?.enabled === true && enabled.plugin?.status === "loaded",
+              version: enabled.plugin?.version,
+              source: enabled.install?.source,
+            };
+          });
+          const receipt = {
+            schemaVersion: 1,
+            isolatedProfile: true,
+            userProfileTouched: false,
+            productVersion: process.env.HOST_PRODUCT_VERSION,
+            compatibilityHostVersion: process.env.HOST_PLUGIN_API_VERSION,
+            sourceSha: process.env.PLUGIN_SOURCE_SHA,
+            packageCount: ids.length,
+            registryDiagnostics: 0,
+            pluginDiagnostics: 0,
+            focusedDoctor: {
+              ok: doctor.ok,
+              checksRun: doctor.checksRun,
+              findings: doctor.findings.length,
+              checks: [
+                "core/doctor/configured-plugin-installs",
+                "core/doctor/plugin-registry",
+              ],
+            },
+            toggles,
+            doctorContractLoads: contractLoads,
+            removedRuntimeDoctorExportErrors: 0,
+          };
+          fs.writeFileSync(
+            path.join(process.env.PLUGIN_OUTPUT_DIR, "isolated-validation.json"),
+            `${JSON.stringify(receipt, null, 2)}\n`,
+          );
+          NODE
+
+          if grep -R -n -F \
+            -e 'ERR_PACKAGE_PATH_NOT_EXPORTED' \
+            -e 'openclaw/plugin-sdk/runtime-doctor"' \
+            -e "openclaw/plugin-sdk/runtime-doctor'" \
+            "$validation_receipts"; then
+            echo "::error::Removed runtime-doctor contract or export error appeared in validation logs."
+            exit 1
+          fi
+
+      - name: Write provenance, convergence instructions, and SHA256SUMS
+        run: |
+          set -euo pipefail
+          node --input-type=module <<'NODE'
+          import crypto from "node:crypto";
+          import fs from "node:fs";
+          import path from "node:path";
+
+          const outputDir = process.env.PLUGIN_OUTPUT_DIR;
+          const packageManifest = JSON.parse(
+            fs.readFileSync(path.join(outputDir, "plugins-manifest.json"), "utf8"),
+          );
+          const validation = JSON.parse(
+            fs.readFileSync(path.join(outputDir, "isolated-validation.json"), "utf8"),
+          );
+          const provenance = {
+            schemaVersion: 1,
+            kind: "openclaw-selfbuild-external-plugin-package",
+            distributionName: "OpenClaw 2026.8.1 Self-Built Beta 1",
+            productVersion: process.env.HOST_PRODUCT_VERSION,
+            pluginApiContract: process.env.HOST_PLUGIN_API_VERSION,
+            unofficialSelfBuild: true,
+            published: false,
+            deployed: false,
+            source: {
+              repository: process.env.GITHUB_REPOSITORY,
+              pluginSha: process.env.PLUGIN_SOURCE_SHA,
+              packagingSha: process.env.GITHUB_SHA,
+              branch: process.env.PERSONAL_BRANCH,
+              pluginSourceModified: false,
+            },
+            workflow: {
+              path: ".github/workflows/selfbuild-plugin-package.yml",
+              runId: process.env.GITHUB_RUN_ID,
+              runAttempt: Number(process.env.GITHUB_RUN_ATTEMPT),
+              url: `${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}`,
+              runner: "macos-26",
+              runnerArch: process.env.RUNNER_ARCH,
+              node: process.version,
+            },
+            matchingHost: {
+              productVersion: process.env.HOST_PRODUCT_VERSION,
+              pluginApiContract: process.env.HOST_PLUGIN_API_VERSION,
+              sourceSha: process.env.PLUGIN_SOURCE_SHA,
+              artifactRunId: Number(process.env.HOST_ARTIFACT_RUN_ID),
+              artifactId: Number(process.env.HOST_ARTIFACT_ID),
+              artifactName: process.env.HOST_ARTIFACT_NAME,
+              artifactDigest: process.env.HOST_ARTIFACT_DIGEST,
+              runtimeArchive: process.env.HOST_RUNTIME_NAME,
+              runtimeSha256: process.env.HOST_RUNTIME_SHA256,
+            },
+            packageCount: packageManifest.packages.length,
+            packageManifest: "plugins-manifest.json",
+            isolatedValidation: validation,
+            mutationCapabilities: {
+              npmPublish: false,
+              githubRelease: false,
+              pullRequest: false,
+              appBuild: false,
+              runtimeBuild: false,
+              codexBuild: false,
+              userMachineInstall: false,
+            },
+          };
+          fs.writeFileSync(
+            path.join(outputDir, "provenance.json"),
+            `${JSON.stringify(provenance, null, 2)}\n`,
+          );
+
+          const instructions = [
+            "# External plugin convergence receipt",
+            "",
+            "These eight TGZ files are unpublished official-plugin builds from OpenClaw source",
+            `${process.env.PLUGIN_SOURCE_SHA}. They target plugin API ${process.env.HOST_PLUGIN_API_VERSION}`,
+            `and were validated with the matching ${process.env.HOST_PRODUCT_VERSION} self-build host.`,
+            "",
+            "No App, Gateway/CLI runtime, Codex package, user profile, or running process was changed.",
+            "",
+            "For a later controlled deployment, keep the product identity unchanged and expose the",
+            `explicit host contract OPENCLAW_COMPATIBILITY_HOST_VERSION=${process.env.HOST_PLUGIN_API_VERSION}`,
+            "while installing each TGZ with the matching packaged runtime. Validate each isolated",
+            "state root with:",
+            "",
+            "```sh",
+            "OPENCLAW_COMPATIBILITY_HOST_VERSION=2026.8.1 OPENCLAW_STATE_DIR=\"<state-root>\" \\",
+            "  node \"<matching-runtime>/openclaw.mjs\" plugins install \"npm-pack:<artifact>/<plugin.tgz>\" --force",
+            "OPENCLAW_COMPATIBILITY_HOST_VERSION=2026.8.1 OPENCLAW_STATE_DIR=\"<state-root>\" \\",
+            "  node \"<matching-runtime>/openclaw.mjs\" doctor --lint \\",
+            "    --only core/doctor/configured-plugin-installs --only core/doctor/plugin-registry --json",
+            "```",
+            "",
+            "This receipt is evidence only and did not deploy those commands on a user machine.",
+            "",
+          ];
+          fs.writeFileSync(path.join(outputDir, "PLUGIN-CONVERGENCE.md"), instructions.join("\n"));
+
+          const hash = (file) =>
+            crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex");
+          const files = fs
+            .readdirSync(outputDir)
+            .filter((name) => name !== "SHA256SUMS")
+            .filter((name) => fs.statSync(path.join(outputDir, name)).isFile())
+            .sort();
+          const lines = files.map((name) => `${hash(path.join(outputDir, name))}  ${name}`);
+          fs.writeFileSync(path.join(outputDir, "SHA256SUMS"), `${lines.join("\n")}\n`);
+          NODE
+          if [[ "$(find "$PLUGIN_OUTPUT_DIR" -maxdepth 1 -type f -name '*.tgz' | wc -l | tr -d ' ')" -ne 8 ]]; then
+            echo "::error::Final artifact does not contain exactly eight TGZs."
+            exit 1
+          fi
+          test -s "$PLUGIN_OUTPUT_DIR/plugins-manifest.json"
+          test -s "$PLUGIN_OUTPUT_DIR/isolated-validation.json"
+          test -s "$PLUGIN_OUTPUT_DIR/provenance.json"
+          test -s "$PLUGIN_OUTPUT_DIR/PLUGIN-CONVERGENCE.md"
+          test -s "$PLUGIN_OUTPUT_DIR/SHA256SUMS"
+          (cd "$PLUGIN_OUTPUT_DIR" && shasum -a 256 -c SHA256SUMS)
+          cat "$PLUGIN_OUTPUT_DIR/plugins-manifest.json"
+          cat "$PLUGIN_OUTPUT_DIR/isolated-validation.json"
+          cat "$PLUGIN_OUTPUT_DIR/provenance.json"
+          cat "$PLUGIN_OUTPUT_DIR/SHA256SUMS"
+
+      - name: Upload separate immutable plugin artifact
+        id: upload_plugins
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: ${{ env.PLUGIN_ARTIFACT_NAME }}
+          path: ${{ env.PLUGIN_OUTPUT_DIR }}
+          if-no-files-found: error
+          compression-level: 0
+          overwrite: false
+          retention-days: 7
+
+      - name: Record artifact evidence
+        env:
+          ARTIFACT_DIGEST: ${{ steps.upload_plugins.outputs.artifact-digest }}
+          ARTIFACT_ID: ${{ steps.upload_plugins.outputs.artifact-id }}
+          ARTIFACT_URL: ${{ steps.upload_plugins.outputs.artifact-url }}
+        run: |
+          set -euo pipefail
+          {
+            echo "## External plugin package ready"
+            echo
+            echo "- Artifact: $PLUGIN_ARTIFACT_NAME"
+            echo "- Artifact ID: $ARTIFACT_ID"
+            echo "- Artifact digest: $ARTIFACT_DIGEST"
+            echo "- Artifact URL: $ARTIFACT_URL"
+            echo "- Plugin source: $PLUGIN_SOURCE_SHA"
+            echo "- Packaging source: $GITHUB_SHA"
+            echo "- Matching host: $HOST_PRODUCT_VERSION (plugin API $HOST_PLUGIN_API_VERSION)"
+            echo "- Contents: exactly eight TGZs plus checksums, provenance, convergence, and isolated validation receipts"
+            echo "- Publication/deployment: none"
+            echo
+            echo '```text'
+            cat "$PLUGIN_OUTPUT_DIR/SHA256SUMS"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
