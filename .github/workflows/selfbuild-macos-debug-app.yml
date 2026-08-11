@@ -143,8 +143,9 @@ jobs:
             echo "::error::The locked Swift package graph requires Swift 6.3 or newer."
             exit 1
           fi
+          swift_version_line="$(printf '%s\n' "$swift_version" | head -n 1)"
           echo "OPENCLAW_XCODE_VERSION=$xcode_version" >> "$GITHUB_ENV"
-          echo "OPENCLAW_SWIFT_VERSION=$swift_version" >> "$GITHUB_ENV"
+          echo "OPENCLAW_SWIFT_VERSION=$swift_version_line" >> "$GITHUB_ENV"
 
       - name: Setup pinned Node and pnpm without shared caches
         uses: ./.github/actions/setup-node-env
