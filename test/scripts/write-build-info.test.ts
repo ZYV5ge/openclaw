@@ -83,9 +83,7 @@ describe("write-build-info", () => {
       commit: "a".repeat(40),
       builtAt: "2026-08-11T21:35:00.000Z",
     });
-    expect(normalizeDistributionVersion(" 2026.8.1-selfbuild.2 ")).toBe(
-      "2026.8.1-selfbuild.2",
-    );
+    expect(normalizeDistributionVersion(" 2026.8.1-selfbuild.2 ")).toBe("2026.8.1-selfbuild.2");
     expect(() => normalizeDistributionVersion("2026.8.1 selfbuild.2")).toThrow(
       "OPENCLAW_DISTRIBUTION_VERSION must be a valid semantic version.",
     );
