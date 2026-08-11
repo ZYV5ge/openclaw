@@ -72,7 +72,7 @@ jobs:
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           ref: ${{ github.sha }}
-          fetch-depth: 3
+          fetch-depth: 4
           persist-credentials: false
 
       - name: Prove functional plugin source is frozen at ae86f76
@@ -492,12 +492,14 @@ jobs:
           if (buildInfo.commit !== process.env.PLUGIN_SOURCE_SHA) throw new Error("host source commit mismatch");
           NODE
           reported_version="$(node "$host_root/openclaw.mjs" --version)"
-          if [[ "$reported_version" != "$HOST_PRODUCT_VERSION" ]]; then
-            echo "::error::Host CLI reports $reported_version, expected $HOST_PRODUCT_VERSION."
+          expected_version_banner="OpenClaw $HOST_PRODUCT_VERSION (${PLUGIN_SOURCE_SHA:0:7})"
+          if [[ "$reported_version" != "$expected_version_banner" ]]; then
+            echo "::error::Host CLI reports $reported_version, expected $expected_version_banner."
             exit 1
           fi
           echo "MATCHING_HOST_ROOT=$host_root" >> "$GITHUB_ENV"
           echo "MATCHING_HOST_RUNTIME_PATH=$runtime_tgz" >> "$GITHUB_ENV"
+          echo "MATCHING_HOST_CLI_BANNER=$reported_version" >> "$GITHUB_ENV"
 
       - name: Install, toggle, and load all plugins in an isolated profile
         run: |
@@ -520,7 +522,7 @@ jobs:
           }
 
           host_version="$(host_cli --version)"
-          if [[ "$host_version" != "$HOST_PRODUCT_VERSION" ]]; then
+          if [[ "$host_version" != "$MATCHING_HOST_CLI_BANNER" ]]; then
             echo "::error::Isolated host product identity changed during validation."
             exit 1
           fi
